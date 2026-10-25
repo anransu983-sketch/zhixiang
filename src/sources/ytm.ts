@@ -522,23 +522,61 @@ function playlistVideoToTrack(raw: YtmPlaylistVideo): Track | null {
     };
 }
 
-async function browseYtm(clientName: string, clientVersion: string, browseId: string): Promise<unknown> {
-    // 注意：这里故意不带 visitorData（见文件头实测结论）。
-    const body = JSON.stringify({
-        context: {
-            client: { clientName, clientVersion, hl: 'zh-CN', gl: 'CN' }
-        },
-        browseId
-    });
-    const response = await httpPost(`${BROWSE_URL}?key=${INNERTUBE_KEY}`, body, HEADERS);
-    if (response.status !== 200) {
-        throw new Error('YTM 榜单加载失败，请稍后重试');
+async function browseYtm(browseId: string): Promise<unknown> {
+    // 榜单页 browse 的两条铁律（见文件头沙箱实测）：
+    // 1) context.client 里绝不带 visitorData 字段——带空串回 404，不带回 200。
+    //    所以“先搜一次拿 visitorData 再 browse”对榜单无效；visitorData 只对
+    //    取链（player）有用，那边已有搜索缓存兜底。
+    // 2) WEB_REMIX 榜单 browse 回 400，不是回落选项；回落只换移动端 client。
+    // 真机 ANDROID browse 失败时自动换 IOS 再试一次（同款真实 client，不编数据）；
+    // 成功响应自带的 visitorData 顺手缓存，供后续取链用。
+    const clients = PLAYER_CLIENTS.filter(
+        (client) => client.name === 'ANDROID' || client.name === 'IOS'
+    );
+    for (const client of clients) {
+        const contextClient: Record<string, unknown> = {
+            clientName: client.name,
+            clientVersion: client.version,
+            hl: 'zh-CN',
+            gl: 'CN'
+        };
+        if (client.deviceMake) {
+            contextClient.deviceMake = client.deviceMake;
+        }
+        if (client.deviceModel) {
+            contextClient.deviceModel = client.deviceModel;
+        }
+        if (client.osName) {
+            contextClient.osName = client.osName;
+        }
+        if (client.osVersion) {
+            contextClient.osVersion = client.osVersion;
+        }
+        const body = JSON.stringify({
+            context: { client: contextClient },
+            browseId
+        });
+        try {
+            const response = await httpPost(`${BROWSE_URL}?key=${INNERTUBE_KEY}`, body, HEADERS);
+            if (response.status !== 200) {
+                continue;
+            }
+            const parsed = JSON.parse(response.body) as unknown;
+            const visitorData = (parsed as { responseContext?: { visitorData?: unknown } })
+                .responseContext?.visitorData;
+            if (typeof visitorData === 'string' && visitorData.length > 0) {
+                cachedVisitorData = visitorData;
+            }
+            return parsed;
+        } catch {
+            continue;
+        }
     }
-    return JSON.parse(response.body) as unknown;
+    throw new Error('YTM 榜单加载失败，请稍后重试');
 }
 
 export async function fetchYtmChartPosters(): Promise<Poster[]> {
-    const charts = await browseYtm('ANDROID', '20.10.38', CHART_BROWSE_ID);
+    const charts = await browseYtm(CHART_BROWSE_ID);
     const carousels: YtmCarousel[] = [];
     collectCarousels(charts, carousels);
     const posters: Poster[] = [];
@@ -559,7 +597,7 @@ export async function fetchYtmChartPosters(): Promise<Poster[]> {
                 continue;
             }
             try {
-                const playlist = await browseYtm('ANDROID', '20.10.38', `VL${playlistId}`);
+                const playlist = await browseYtm(`VL${playlistId}`);
                 const videos: YtmPlaylistVideo[] = [];
                 collectPlaylistVideos(playlist, videos);
                 const tracks: Track[] = [];
