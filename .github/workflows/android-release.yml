@@ -19,6 +19,10 @@ on:
         type: boolean
         default: true
 
+# 发布 Release 需要写 contents；新仓默认 token 权限不足时 gh release create 会 403（第四轮即因此失败）。
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
