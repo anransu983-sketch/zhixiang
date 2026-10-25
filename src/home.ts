@@ -14,6 +14,7 @@ import {
     clearSession as clearNeteaseSession,
     fetchQrKey,
     loadSession as loadNeteaseSession,
+    qrContentUrl,
     qrImageUrl,
     saveSession as saveNeteaseSession,
     validateStoredSession,
@@ -21,6 +22,7 @@ import {
 } from './sources/netease-session';
 import { buildEapiCookieHeader, shortHash } from './sources/netease-eapi';
 import { httpGet, httpPost } from './native/http';
+import { openExternalUrl } from './native/external-open';
 import { APP_VERSION } from './version';
 import {
     clearYtmSession,
@@ -628,6 +630,34 @@ function renderNeteaseLoginBlock(): HTMLElement {
         currentKey = key;
         console.log('[Netease] 二维码已生成，等待扫码');
         status.textContent = '用网易云 App 扫码登录';
+        // 在网易云 App 里打开确认（Claude 2026-10-25 绕过办法）：把二维码
+        // 的链接直接发 ACTION_VIEW，系统若把该域名路由给网易云 App，
+        // 就直接进 App 内确认页，不用相机、不用切屏，短命码也够用。
+        // 自动换新码会重建整个 body，按钮每次都跟着新 key 重建。
+        const makeOpenInAppButton = (): HTMLButtonElement => {
+            const openInApp = document.createElement('button');
+            openInApp.type = 'button';
+            openInApp.className = 'login-btn';
+            openInApp.textContent = '在网易云 App 里打开确认';
+            openInApp.addEventListener('click', () => {
+                openInApp.disabled = true;
+                void (async () => {
+                    try {
+                        const handled = await openExternalUrl(qrContentUrl(key));
+                        console.log(
+                            handled
+                                ? '[Netease] 已调起外部打开（网易云 App 或浏览器）'
+                                : '[Netease] 无应用可处理该链接，只能扫码'
+                        );
+                    } catch {
+                        console.log('[Netease] 无应用可处理该链接，只能扫码');
+                    } finally {
+                        openInApp.disabled = false;
+                    }
+                })();
+            });
+            return openInApp;
+        };
         const qr = document.createElement('img');
         qr.className = 'login-qr';
         qr.src = qrImageUrl(key);
@@ -638,6 +668,7 @@ function renderNeteaseLoginBlock(): HTMLElement {
             }
             stopPoll();
             status.textContent = '二维码图片加载失败，请检查网络后点刷新重试';
+            body.appendChild(makeOpenInAppButton());
             const refresh = document.createElement('button');
             refresh.type = 'button';
             refresh.className = 'login-btn';
@@ -648,6 +679,7 @@ function renderNeteaseLoginBlock(): HTMLElement {
             body.appendChild(refresh);
         });
         body.appendChild(qr);
+        body.appendChild(makeOpenInAppButton());
         const cancel = document.createElement('button');
         cancel.type = 'button';
         cancel.className = 'login-btn';

@@ -109,6 +109,30 @@ export function qrImageUrl(key: string): string {
     return `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=0&data=${encodeURIComponent(qrContentUrl(key))}`;
 }
 
+// 出口 IP 回显（Claude 2026-10-25 实验）：取码时与每次检查时都经同一桥
+// 抓一次 api.ip.sb/ip，只在 IP 变化时记一行（首个也记），用变化断定
+// 同一 key 的两次请求是否走了不同出口。失败静默；一律不 await，
+// 不拖慢取码与轮询。日志里是出口地址（VPN 节点或运营商共享地址），
+// 只发到用户自己的 VPS，不进公开仓库。
+let lastEchoIp = '';
+function probeEgressIp(): void {
+    void httpGet('https://api.ip.sb/ip')
+        .then((response) => {
+            if (response.status !== 200) {
+                return;
+            }
+            const ip = response.body.trim();
+            if (!ip || ip === lastEchoIp) {
+                return;
+            }
+            lastEchoIp = ip;
+            console.log(`[Netease] 出口 IP ${ip}`);
+        })
+        .catch(() => {
+            // 回显失败不记日志、不干扰扫码。
+        });
+}
+
 export async function fetchQrKey(): Promise<string> {
     // eapi App 扫码 type=3：请求本身带稳定设备标识（见 netease-eapi.ts），
     // 服务端按设备认 key。游客注册暖机已在 0.1.24 拿掉（实测拿不到会话
@@ -140,6 +164,7 @@ export async function fetchQrKey(): Promise<string> {
     // 诊断（Claude 2026-10-25）：每次取码都记 key 前 6 位与身份指纹——
     // 一会话里取码次数、以及取码与轮询是否同一身份，凭这几行就能断。
     console.log(`[Netease] 取码 ${key.slice(0, 6)} 身份=${getEapiIdentityHash()}`);
+    probeEgressIp();
     return key;
 }
 
@@ -171,6 +196,7 @@ let lastCheckKeyPrefix = '';
 let lastCheckIdentityHash = '';
 
 export async function checkQr(key: string): Promise<QrCheckResult> {
+    probeEgressIp();
     const keyPrefix = key.slice(0, 6);
     const identityHash = getEapiIdentityHash();
     if (keyPrefix !== lastCheckKeyPrefix || identityHash !== lastCheckIdentityHash) {

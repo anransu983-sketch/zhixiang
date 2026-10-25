@@ -12,6 +12,7 @@ public class MainActivity extends BridgeActivity {
         // 必须在桥接创建前注册，否则 Web 层调不到它。
         registerPlugin(LocalMusicPlugin.class);
         registerPlugin(HttpBridgePlugin.class);
+        registerPlugin(ExternalOpenPlugin.class);
         registerPlugin(PlaybackPlugin.class);
         registerPlugin(WallpaperPlugin.class);
         registerPlugin(YtmSignInPlugin.class);
