@@ -9,6 +9,10 @@
 //   801 等待扫码 / 802 已扫码待确认 / 803 成功（801 实测通；803 只能真机扫码验）。
 //   803 的 body.cookie 就是会话凭证（字符串或数组，数组用 '; ' 拼）；
 //   拿不到时才用响应 Set-Cookie 兜底（桥已回传 setCookies）。
+// 会话承接（2026-10-25 修）：取 key 与轮询必须带同一套 cookie——先逛首页拿
+//   MUSIC_A/__csrf，再取 key，轮询全程带罐子里的 cookie、每轮用新 Set-Cookie
+//   更新罐子。之前是每请求裸发（无 Cookie），首轮 801 看着正常，但扫码确认
+//   时服务端找不到 key 绑定的会话，8821 拒绝；官网与中转服务都是带会话走的。
 // - 登录判定只认 MUSIC_U：游客会话只有 MUSIC_A/__csrf、没有 MUSIC_U，绝不能算登录。
 // - 会话校验：GET /api/user/level（需登录端点），匿名回 code 301；200 为有效，
 //   301 为过期。/api/login/status 与 /api/user/account 直连均回 404（只是中转
@@ -19,6 +23,36 @@ import { httpGet } from '../native/http';
 const UNIKEY_URL = 'https://music.163.com/api/login/qrcode/unikey';
 const QR_CHECK_URL = 'https://music.163.com/api/login/qrcode/client/login';
 const USER_LEVEL_URL = 'https://music.163.com/api/user/level';
+const HOMEPAGE_URL = 'https://music.163.com/';
+
+// 二维码流程专用的 cookie 罐：首页 → 取 key → 轮询全程共用，扫码确认时
+// 服务端按这套会话找 key 的归属；与已登录会话（MUSIC_U）无关，别混用。
+const qrJar = new Map<string, string>();
+
+function qrJarUpdate(setCookies: string[] | undefined): void {
+    if (!setCookies) {
+        return;
+    }
+    for (const entry of setCookies) {
+        const pair = entry.split(';', 1)[0]?.trim();
+        if (!pair) {
+            continue;
+        }
+        const name = pair.split('=', 1)[0]?.trim();
+        if (name) {
+            qrJar.set(name, pair);
+        }
+    }
+}
+
+function qrJarHeader(): string {
+    return [...qrJar.values()].join('; ');
+}
+
+function qrHeaders(): Record<string, string> {
+    const cookie = qrJarHeader();
+    return cookie ? { ...HEADERS, Cookie: cookie } : HEADERS;
+}
 const STORAGE_KEY = 'zx_netease_session_v1';
 
 const HEADERS: Record<string, string> = {
@@ -39,6 +73,7 @@ export type SessionValidity = 'none' | 'valid' | 'expired' | 'unknown';
 
 export type QrCheckResult =
     | { code: 800 | 801 | 802; message: string }
+    | { code: 8821; message: string }
     | { code: 803; message: string; session: NeteaseSession | null };
 
 export function loadSession(): NeteaseSession | null {
@@ -102,10 +137,21 @@ export function qrImageUrl(key: string): string {
 }
 
 export async function fetchQrKey(): Promise<string> {
-    const response = await httpGet(`${UNIKEY_URL}?type=1`, HEADERS);
+    // 先逛首页拿游客会话（MUSIC_A/__csrf），再取 key：两步的 Set-Cookie
+    // 都进罐子，轮询与扫码确认全程带同一套会话。首页失败不中断（取 key
+    // 本身也会下发会话 cookie），只影响会话完整度。
+    qrJar.clear();
+    try {
+        const home = await httpGet(HOMEPAGE_URL, HEADERS);
+        qrJarUpdate(home.setCookies);
+    } catch {
+        // 忽略：取 key 那步仍会下发会话。
+    }
+    const response = await httpGet(`${UNIKEY_URL}?type=1`, qrHeaders());
     if (response.status !== 200) {
         throw new Error('拿不到登录二维码，请稍后重试');
     }
+    qrJarUpdate(response.setCookies);
     const parsed = JSON.parse(response.body) as { code?: unknown; unikey?: unknown };
     const key = typeof parsed.unikey === 'string' ? parsed.unikey : '';
     if (!key) {
@@ -137,10 +183,11 @@ function cookieFromSetCookies(setCookies: string[] | undefined): string {
 }
 
 export async function checkQr(key: string): Promise<QrCheckResult> {
-    const response = await httpGet(`${QR_CHECK_URL}?key=${encodeURIComponent(key)}&type=1`, HEADERS);
+    const response = await httpGet(`${QR_CHECK_URL}?key=${encodeURIComponent(key)}&type=1`, qrHeaders());
     if (response.status !== 200) {
         throw new Error(`扫码状态查询失败（HTTP ${response.status}）`);
     }
+    qrJarUpdate(response.setCookies);
     let parsed: {
         code?: unknown;
         message?: unknown;
@@ -163,6 +210,11 @@ export async function checkQr(key: string): Promise<QrCheckResult> {
     }
     if (code === 802) {
         return { code: 802, message: message || '已扫码，请在手机上确认' };
+    }
+    // 8821 不再抛错：它是“这个码被拒绝”的终态，调用方停掉本码轮询、
+    // 给用户换新码再扫；继续轮询同一码只会一直 8821。
+    if (code === 8821) {
+        return { code: 8821, message: message || '请切换其他登录方式或升级新版本再试' };
     }
     if (code !== 803) {
         // 服务端原话 message 一起带上：8821 这类非标准码的含义可能就写在里面。

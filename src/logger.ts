@@ -7,6 +7,9 @@ export type LogLevel = 'log' | 'info' | 'warn' | 'error';
 export interface LogEntry {
     time: string;
     level: LogLevel;
+    // 模块取自消息开头的 [Tag]（如 [Netease]、[Player]），没有则为 app；
+    // 供开发者控制台按模块过滤，对齐 Folia 开发者页的 MODULE 过滤。
+    module: string;
     text: string;
 }
 
@@ -34,7 +37,10 @@ function push(level: LogLevel, args: unknown[]): void {
     const now = new Date();
     const pad = (n: number): string => String(n).padStart(2, '0');
     const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-    entries.push({ time, level, text: args.map(formatArg).join(' ') });
+    const text = args.map(formatArg).join(' ');
+    const tag = /^\[([^\]]+)\]/.exec(text);
+    const module = tag && tag[1] ? tag[1] : 'app';
+    entries.push({ time, level, module, text });
     while (entries.length > MAX_ENTRIES) {
         entries.shift();
     }
@@ -77,6 +83,14 @@ export function getLogEntries(): LogEntry[] {
     return entries.slice();
 }
 
+export function getLogModules(): string[] {
+    const seen = new Set<string>();
+    for (const entry of entries) {
+        seen.add(entry.module);
+    }
+    return [...seen];
+}
+
 export function getLogText(): string {
     return entries.map((e) => `[${e.time}] ${e.level.toUpperCase()} ${e.text}`).join('\n');
 }
@@ -95,8 +109,7 @@ export function subscribeLogs(listener: () => void): () => void {
     };
 }
 
-export async function copyLogText(): Promise<boolean> {
-    const text = getLogText() || '暂无日志';
+export async function copyPlainText(text: string): Promise<boolean> {
     try {
         await navigator.clipboard.writeText(text);
         return true;
@@ -116,4 +129,8 @@ export async function copyLogText(): Promise<boolean> {
             return false;
         }
     }
+}
+
+export async function copyLogText(): Promise<boolean> {
+    return copyPlainText(getLogText() || '暂无日志');
 }

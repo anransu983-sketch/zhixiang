@@ -550,7 +550,42 @@ body {
 .developer-actions {
     display: flex;
     gap: 10px;
+    align-items: center;
     margin-bottom: 10px;
+}
+
+.dev-console-label {
+    margin-right: auto;
+    color: rgba(245, 240, 250, 0.6);
+    font-family: monospace;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+}
+
+.dev-filters {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.dev-search {
+    flex: 1;
+    min-width: 0;
+    padding: 8px 10px;
+    border: 1px solid rgba(245, 240, 250, 0.18);
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.35);
+    color: rgba(245, 240, 250, 0.9);
+    font-size: 13px;
+}
+
+.dev-select {
+    padding: 8px 6px;
+    border: 1px solid rgba(245, 240, 250, 0.18);
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.35);
+    color: rgba(245, 240, 250, 0.9);
+    font-size: 13px;
 }
 
 .developer-log {
@@ -566,4 +601,44 @@ body {
     line-height: 1.5;
     white-space: pre-wrap;
     word-break: break-all;
+}
+
+.dev-line {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    margin-bottom: 2px;
+}
+
+.dev-time {
+    flex-shrink: 0;
+    color: rgba(245, 240, 250, 0.45);
+}
+
+.dev-level {
+    flex-shrink: 0;
+    color: rgba(245, 240, 250, 0.6);
+}
+
+.dev-level-error {
+    color: #f87171;
+}
+
+.dev-level-warn {
+    color: #fbbf24;
+}
+
+.dev-module {
+    flex-shrink: 0;
+    color: #e8a0bf;
+}
+
+.dev-text {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.dev-empty {
+    margin: 0;
+    color: rgba(245, 240, 250, 0.5);
 }

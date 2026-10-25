@@ -6,7 +6,7 @@ import { openPlayerPage } from './player';
 import type { PlaybackState } from './playback';
 import { POSTER_SECTIONS, friendlyPosterError } from './posters';
 import { renderShelf } from './shelf';
-import { clearLogs, copyLogText, getLogEntries, subscribeLogs } from './logger';
+import { clearLogs, copyPlainText, getLogEntries, getLogModules, subscribeLogs, type LogEntry } from './logger';
 import { SOURCES } from './sources/index';
 import { getLocalNotice } from './sources/local';
 import {
@@ -190,8 +190,10 @@ export function renderHome(): HTMLElement {
     return section;
 }
 
-// 开发者区（首页最底部）：应用内日志查看与复制，出问题不用截图，点复制直接发我。
-// 日志只存本机内存，重启后清空；各音源失败提示本就不含凭证，复制出去也是安全的。
+// 开发者区（首页最底部）：对齐 Folia 开发者页的控制台——CONSOLE 计数、
+// COPY/CLEAR、搜索框、LEVEL 与 MODULE 过滤、时间戳＋模块标签的行。出问题
+// 不用截图，筛好后点 COPY 直接发我。日志只存本机内存，重启后清空；
+// 各音源失败提示本就不含凭证，复制出去也是安全的。
 function renderDeveloperSection(): HTMLElement {
     const section = document.createElement('section');
     section.className = 'developer';
@@ -202,63 +204,166 @@ function renderDeveloperSection(): HTMLElement {
 
     const hint = document.createElement('p');
     hint.className = 'developer-hint';
-    hint.textContent = '运行日志只存本机，重启后清空；点复制可把日志发出来定位问题。';
+    hint.textContent = '运行日志只存本机，重启后清空；筛好后点 COPY 可把当前看到的日志发出来定位问题。';
     section.appendChild(hint);
 
     const actions = document.createElement('div');
     actions.className = 'developer-actions';
 
+    const consoleLabel = document.createElement('span');
+    consoleLabel.className = 'dev-console-label';
+    actions.appendChild(consoleLabel);
+
     const copyButton = document.createElement('button');
     copyButton.className = 'login-btn';
-    copyButton.textContent = '复制日志';
-    copyButton.addEventListener('click', async () => {
-        const ok = await copyLogText();
-        copyButton.textContent = ok ? '已复制' : '复制失败，请长按日志手动复制';
-        window.setTimeout(() => {
-            copyButton.textContent = '复制日志';
-        }, 2000);
-    });
     actions.appendChild(copyButton);
 
     const clearButton = document.createElement('button');
     clearButton.className = 'login-btn';
-    clearButton.textContent = '清空';
+    clearButton.textContent = 'CLEAR';
     clearButton.addEventListener('click', () => {
         clearLogs();
     });
     actions.appendChild(clearButton);
     section.appendChild(actions);
 
-    const box = document.createElement('pre');
+    const filters = document.createElement('div');
+    filters.className = 'dev-filters';
+
+    const search = document.createElement('input');
+    search.type = 'search';
+    search.className = 'dev-search';
+    search.placeholder = '搜索日志';
+    filters.appendChild(search);
+
+    const levelSelect = document.createElement('select');
+    levelSelect.className = 'dev-select';
+    for (const [value, label] of [
+        ['ALL', 'LEVEL：全部'],
+        ['log', 'LOG'],
+        ['info', 'INFO'],
+        ['warn', 'WARN'],
+        ['error', 'ERROR']
+    ] as const) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        levelSelect.appendChild(option);
+    }
+    filters.appendChild(levelSelect);
+
+    const moduleSelect = document.createElement('select');
+    moduleSelect.className = 'dev-select';
+    filters.appendChild(moduleSelect);
+    section.appendChild(filters);
+
+    const box = document.createElement('div');
     box.className = 'developer-log';
     section.appendChild(box);
 
-    let shown = 0;
-    const renderNew = (): void => {
+    let searchText = '';
+    let levelFilter = 'ALL';
+    let moduleFilter = 'ALL';
+
+    const filtered = (): LogEntry[] => {
+        const needle = searchText.trim().toLowerCase();
+        return getLogEntries().filter((entry) => {
+            if (levelFilter !== 'ALL' && entry.level !== levelFilter) {
+                return false;
+            }
+            if (moduleFilter !== 'ALL' && entry.module !== moduleFilter) {
+                return false;
+            }
+            if (needle && !entry.text.toLowerCase().includes(needle)) {
+                return false;
+            }
+            return true;
+        });
+    };
+
+    const render = (): void => {
         const all = getLogEntries();
-        if (all.length === 0) {
-            box.textContent = '暂无日志';
-            shown = 0;
+        const shown = filtered();
+        consoleLabel.textContent = `CONSOLE (${all.length})`;
+        copyButton.textContent = `COPY ${shown.length}`;
+
+        // 模块下拉随日志里出现过的模块补齐，选中项还在就保留。
+        const modules = getLogModules();
+        const previous = moduleFilter;
+        moduleSelect.replaceChildren();
+        const allOption = document.createElement('option');
+        allOption.value = 'ALL';
+        allOption.textContent = 'MODULE：全部';
+        moduleSelect.appendChild(allOption);
+        for (const module of modules) {
+            const option = document.createElement('option');
+            option.value = module;
+            option.textContent = module;
+            moduleSelect.appendChild(option);
+        }
+        moduleFilter = modules.includes(previous) || previous === 'ALL' ? previous : 'ALL';
+        moduleSelect.value = moduleFilter;
+
+        const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+        box.replaceChildren();
+        if (shown.length === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'dev-empty';
+            empty.textContent = all.length === 0 ? '暂无日志' : '没有符合筛选的日志';
+            box.appendChild(empty);
             return;
         }
-        if (shown === 0) {
-            box.textContent = '';
+        for (const entry of shown) {
+            const line = document.createElement('div');
+            line.className = 'dev-line';
+            const time = document.createElement('span');
+            time.className = 'dev-time';
+            time.textContent = entry.time;
+            line.appendChild(time);
+            const level = document.createElement('span');
+            level.className = `dev-level dev-level-${entry.level}`;
+            level.textContent = entry.level.toUpperCase();
+            line.appendChild(level);
+            const module = document.createElement('span');
+            module.className = 'dev-module';
+            module.textContent = `[${entry.module}]`;
+            line.appendChild(module);
+            const text = document.createElement('span');
+            text.className = 'dev-text';
+            text.textContent = entry.text;
+            line.appendChild(text);
+            box.appendChild(line);
         }
-        for (let i = shown; i < all.length; i++) {
-            const entry = all[i];
-            if (!entry) {
-                continue;
-            }
-            box.textContent += `[${entry.time}] ${entry.level.toUpperCase()} ${entry.text}\n`;
-        }
-        shown = all.length;
         // 用户没往上翻时才跟到底，正在翻旧日志不抢滚动。
-        if (box.scrollHeight - box.scrollTop - box.clientHeight < 80) {
+        if (nearBottom) {
             box.scrollTop = box.scrollHeight;
         }
     };
-    renderNew();
-    subscribeLogs(renderNew);
+
+    search.addEventListener('input', () => {
+        searchText = search.value;
+        render();
+    });
+    levelSelect.addEventListener('change', () => {
+        levelFilter = levelSelect.value;
+        render();
+    });
+    moduleSelect.addEventListener('change', () => {
+        moduleFilter = moduleSelect.value;
+        render();
+    });
+    copyButton.addEventListener('click', async () => {
+        const lines = filtered().map((e) => `[${e.time}] ${e.level.toUpperCase()} ${e.text}`);
+        const ok = await copyPlainText(lines.join('\n') || '暂无日志');
+        const base = `COPY ${filtered().length}`;
+        copyButton.textContent = ok ? '已复制' : '复制失败，请长按日志手动复制';
+        window.setTimeout(() => {
+            copyButton.textContent = base;
+        }, 2000);
+    });
+
+    render();
+    subscribeLogs(render);
 
     return section;
 }
@@ -328,7 +433,7 @@ function renderNeteaseLoginBlock(): HTMLElement {
         body.appendChild(webButton);
         const hint = document.createElement('p');
         hint.className = 'login-hint';
-        hint.textContent = '扫码登录已被网易云拒绝时，请用网页登录。';
+        hint.textContent = '扫码遇到问题时，网页登录可作备用。';
         body.appendChild(hint);
     };
 
@@ -450,24 +555,9 @@ function renderNeteaseLoginBlock(): HTMLElement {
             try {
                 result = await checkQr(currentKey);
             } catch (error) {
+                // 网络/HTTP 失败才重试；8821 已是 checkQr 返回的终态，不走这里。
                 const reason = qrFailureReason(error);
                 status.textContent = `查询失败（${reason}），正在重试…`;
-                // 8821 是网易云拒扫码路的明示：直接给网页登录入口，不用等用户
-                // 自己回登录区找；按钮只加一次，重复轮询不叠加。
-                if (reason.includes('8821') && !body.querySelector('.netease-web-login-btn')) {
-                    const hint = document.createElement('p');
-                    hint.className = 'login-hint';
-                    hint.textContent = '网易云已拒绝扫码登录，请用网页登录。';
-                    body.appendChild(hint);
-                    const webButton = document.createElement('button');
-                    webButton.type = 'button';
-                    webButton.className = 'login-btn netease-web-login-btn';
-                    webButton.textContent = '网页登录';
-                    webButton.addEventListener('click', () => {
-                        void startWebLogin();
-                    });
-                    body.appendChild(webButton);
-                }
                 return;
             } finally {
                 polling = false;
@@ -487,6 +577,31 @@ function renderNeteaseLoginBlock(): HTMLElement {
                     void startQr();
                 });
                 body.appendChild(refresh);
+            } else if (result.code === 8821) {
+                // 这个码已被拒绝：停掉轮询（继续轮同一码只会一直 8821），
+                // 给换新码按钮与网页登录备用，不自动刷码以免无意义循环。
+                stopPoll();
+                status.textContent = '扫码被拒绝';
+                const hint = document.createElement('p');
+                hint.className = 'login-hint';
+                hint.textContent = '这次扫码被网易云拒绝了，换个新码再扫一次，或用网页登录作备用。';
+                body.appendChild(hint);
+                const refresh = document.createElement('button');
+                refresh.type = 'button';
+                refresh.className = 'login-btn';
+                refresh.textContent = '换新码重新扫';
+                refresh.addEventListener('click', () => {
+                    void startQr();
+                });
+                body.appendChild(refresh);
+                const webButton = document.createElement('button');
+                webButton.type = 'button';
+                webButton.className = 'login-btn netease-web-login-btn';
+                webButton.textContent = '网页登录';
+                webButton.addEventListener('click', () => {
+                    void startWebLogin();
+                });
+                body.appendChild(webButton);
             } else if (result.code === 803) {
                 stopPoll();
                 if (result.session) {

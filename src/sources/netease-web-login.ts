@@ -3,8 +3,8 @@
 // 后把整条 Cookie 交回来。本模块只做插件桥接与凭证校验，会话的保存与界面
 // 刷新由调用方（首页登录区）做，与扫码路共用同一套会话存储。
 //
-// 背景：二维码登录路（unikey type=1）已被服务端拒绝，轮询回 8821
-// “请切换其他登录方式或升级新版本再试”，故改走网页登录；登录判定同样只认 MUSIC_U。
+// 定位：扫码登录的备用路（扫码被拒或扫码流程走不通时用）；登录判定同样只认 MUSIC_U。
+// 网页版在手机 WebView 里体验一般（桌面站会闪屏、入口难找），故只作备用，不主推。
 
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { hasMusicU } from './netease-session';
