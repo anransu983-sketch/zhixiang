@@ -154,6 +154,14 @@ public class StreamProxyServer {
             String rawPath = parts[1];
             int qmark = rawPath.indexOf('?');
             String pathOnly = qmark < 0 ? rawPath : rawPath.substring(0, qmark);
+            // 只记路由标签，不记路径与查询串（查询串里有目标地址与 UA）。
+            String route = "/ping".equals(pathOnly) ? "ping"
+                    : "/last".equals(pathOnly) ? "last" : "proxy";
+            Log.i(TAG, "hit route=" + route);
+            if ("/ping".equals(pathOnly)) {
+                writePing(client);
+                return;
+            }
             if ("/last".equals(pathOnly)) {
                 writeLast(client);
                 return;
@@ -297,6 +305,22 @@ public class StreamProxyServer {
             }
         }
         return null;
+    }
+
+    // /ping：回环连通探针，Web 层播歌前拉一次，区分“WebView 到不了代理”
+    // 与“代理到了但上游拒了”。只回固定 ok，不含任何地址。
+    private void writePing(Socket client) throws IOException {
+        byte[] body = "ok".getBytes(StandardCharsets.UTF_8);
+        String response = "HTTP/1.1 200 OK\r\n"
+                + "Access-Control-Allow-Origin: *\r\n"
+                + "Content-Type: text/plain\r\n"
+                + "Content-Length: " + body.length + "\r\n"
+                + "Connection: close\r\n"
+                + "\r\n";
+        OutputStream out = client.getOutputStream();
+        out.write(response.getBytes(StandardCharsets.UTF_8));
+        out.write(body);
+        out.flush();
     }
 
     // /last：最近一次上游取流的诊断，不含目标地址；Web 层失败时拉取记日志。

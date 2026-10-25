@@ -415,6 +415,22 @@ interface ResolvedPlay {
     proxyPort?: number;
 }
 
+// 回环连通探针：只记端口与成败，不记地址。失败时记错误名与 message
+//（明文被拦时 WebView 只给 TypeError: Failed to fetch），供日志分流用。
+async function probeProxy(port: number): Promise<void> {
+    try {
+        const probe = new AbortController();
+        setTimeout(() => probe.abort(), 2000);
+        const res = await fetch(`http://127.0.0.1:${port}/ping`, { signal: probe.signal });
+        const text = (await res.text()).trim();
+        console.log(`[Playback] 代理探针：port=${port} ${text === 'ok' ? 'ok' : `unexpected:${res.status}`}`);
+    } catch (error) {
+        console.log(
+            `[Playback] 代理探针失败：port=${port} ${error instanceof Error ? `${error.name} ${error.message}` : String(error)}`
+        );
+    }
+}
+
 async function resolvePlayUrl(track: Track): Promise<ResolvedPlay> {
     if (track.source === 'local') {
         const source = getSource(track.source);
@@ -428,6 +444,9 @@ async function resolvePlayUrl(track: Track): Promise<ResolvedPlay> {
     if (isAndroid) {
         // 安卓目标路径：远程流一律走本机代理，代理起不来就抛错，绝不直连。
         const port = await ensureStreamProxy();
+        // 播歌前先探一次回环：探针失败只记日志不拦播放，留作分流证据
+        //（WebView 到不了代理 vs 代理到了但上游拒了）。
+        await probeProxy(port);
         let target: string;
         let proxyUserAgent: string | undefined;
         if (track.source === 'ytm') {
@@ -497,8 +516,12 @@ async function startTrack(track: Track, crossfade: boolean): Promise<void> {
                 if (text) {
                     console.log(`[Playback] 代理上次取流：${text}`);
                 }
-            } catch {
-                // 代理诊断端点不可达时不影响失败文案。
+            } catch (probeError) {
+                // 0.1.33 曾静默吞掉这里，导致 15 次失败零诊断日志：
+                // 诊断拉取本身失败也要记错误名与 message，否则分不了流。
+                console.log(
+                    `[Playback] 代理诊断拉取失败：${probeError instanceof Error ? `${probeError.name} ${probeError.message}` : String(probeError)}`
+                );
             }
         }
         throw new Error('播放失败，请换一首试试');
