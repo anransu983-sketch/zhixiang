@@ -41,7 +41,7 @@ export function openPlayerPage(): void {
     if (overlay) {
         overlay.hidden = false;
         stage?.resize();
-        stage?.poke();
+        stage?.resume();
         return;
     }
     overlay = buildPlayerPage();
@@ -67,6 +67,7 @@ function buildPlayerPage(): HTMLElement {
     backButton.textContent = '返回';
     backButton.addEventListener('click', () => {
         page.hidden = true;
+        stage?.suspend();
     });
     content.appendChild(backButton);
 
@@ -261,7 +262,7 @@ function buildPlayerPage(): HTMLElement {
         if (!track) {
             lyricLines = [];
             if (visible) {
-                renderLyrics(null);
+                renderLyrics('还没播放任何歌曲，点一首歌开始播放。');
             }
             void pushWallpaperState();
             return;
@@ -304,7 +305,7 @@ function refreshFromState(state: PlaybackState): void {
     const track = state.track;
     if (!track || !renderLyrics) {
         lyricLines = [];
-        renderLyrics?.(null);
+        renderLyrics?.('还没播放任何歌曲，点一首歌开始播放。');
         return;
     }
     void fetchLyrics(track).then((result) => {

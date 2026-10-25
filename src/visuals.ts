@@ -107,6 +107,7 @@ export class VisualStage {
     private options: VisualStageOptions;
     private rafId: number | null = null;
     private running = false;
+    private suspended = false;
     private staticDrawn = false;
     private drops: Drop[] = [];
     private ripples: Ripple[] = [];
@@ -134,6 +135,12 @@ export class VisualStage {
 
     // 状态变化（播放/暂停、切歌、开关变化）后调用：需要画就重启，不需要就停。
     poke(): void {
+        if (this.suspended) {
+            // 播放页关闭期间：连可见性变化导致的 poke() 也不重启循环，
+            // 否则后台切回前台会把画布在隐藏的播放页里悄悄跑起来。
+            this.stopLoop();
+            return;
+        }
         if (document.hidden) {
             this.stopLoop();
             return;
@@ -172,6 +179,19 @@ export class VisualStage {
         document.removeEventListener('visibilitychange', this.onVisibilityChange);
         this.coverElement.style.transform = '';
         this.coverElement.style.boxShadow = '';
+    }
+
+    // 播放页关闭时调用：只停 rAF 循环，不解绑监听、不清封面样式，
+    // 重开播放页时 resume() 恢复，不用重建 VisualStage。
+    suspend(): void {
+        this.suspended = true;
+        this.stopLoop();
+    }
+
+    // 播放页重开时调用：解除挂起并按当前状态恢复（poke 语义）。
+    resume(): void {
+        this.suspended = false;
+        this.poke();
     }
 
     resize(): void {
