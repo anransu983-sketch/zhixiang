@@ -455,7 +455,8 @@ function renderDeveloperSection(): HTMLElement {
             line.appendChild(module);
             const text = document.createElement('span');
             text.className = 'dev-text';
-            text.textContent = entry.text;
+            // 模块已单独显示一遍，消息开头的 [Tag] 再显示就重复了，去掉。
+            text.textContent = entry.text.replace(/^\[[^\]]+\]\s*/, '');
             line.appendChild(text);
             box.appendChild(line);
         }

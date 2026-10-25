@@ -24,7 +24,6 @@
 
 import { httpGet } from '../native/http';
 import { eapiRequest, getEapiIdentityHash } from './netease-eapi';
-import { warmUpForQr } from './netease-anon';
 
 const USER_LEVEL_URL = 'https://music.163.com/api/user/level';
 const STORAGE_KEY = 'zx_netease_session_v1';
@@ -112,9 +111,8 @@ export function qrImageUrl(key: string): string {
 
 export async function fetchQrKey(): Promise<string> {
     // eapi App 扫码 type=3：请求本身带稳定设备标识（见 netease-eapi.ts），
-    // 服务端按设备认 key。取码前若设备是冷的（无 NMTID），先做一次
-    // 游客注册暖机——Folia 设备的常态是暖的，冷取码疑似只给短命 key。
-    await warmUpForQr();
+    // 服务端按设备认 key。游客注册暖机已在 0.1.24 拿掉（实测拿不到会话
+    // 也拿不到 NMTID，白白拖 2 秒还刷失败日志）；扫码根因改问 Claude。
     const response = await eapiRequest('/api/login/qrcode/unikey', { type: 3 });
     if (response.status !== 200) {
         throw new Error('拿不到登录二维码，请稍后重试');
