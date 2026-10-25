@@ -24,6 +24,7 @@ import {
     loadYtmSession,
     signInYtm
 } from './sources/ytm-session';
+import { signInNeteaseWeb } from './sources/netease-web-login';
 import type { AudioSource, Poster, Track } from './types';
 
 // 第 8 块已接上：歌词动态壁纸与四项视觉都在播放页里，清单不再列它。
@@ -317,6 +318,49 @@ function renderNeteaseLoginBlock(): HTMLElement {
             void startQr();
         });
         body.appendChild(button);
+        const webButton = document.createElement('button');
+        webButton.type = 'button';
+        webButton.className = 'login-btn netease-web-login-btn';
+        webButton.textContent = '网页登录';
+        webButton.addEventListener('click', () => {
+            void startWebLogin();
+        });
+        body.appendChild(webButton);
+        const hint = document.createElement('p');
+        hint.className = 'login-hint';
+        hint.textContent = '扫码登录已被网易云拒绝时，请用网页登录。';
+        body.appendChild(hint);
+    };
+
+    // 网页登录：原生 Activity 里打开网易云官网，用户真的登录一次，
+    // 拿到 MUSIC_U 后与扫码路共用同一套会话存储；昵称头像拿不到时用兜底文案。
+    const startWebLogin = async (): Promise<void> => {
+        stopPoll();
+        body.replaceChildren();
+        const waiting = document.createElement('p');
+        waiting.className = 'login-notice';
+        waiting.textContent = '登录页已打开，完成或取消后自动返回…';
+        body.appendChild(waiting);
+        const result = await signInNeteaseWeb();
+        if (result.ok) {
+            const session: NeteaseSession = {
+                cookie: result.cookie,
+                nickname: '已登录网易云',
+                avatarUrl: '',
+                savedAt: Date.now()
+            };
+            saveNeteaseSession(session);
+            renderLoggedIn(session);
+            void validateStoredSession().then((validity) => {
+                if (validity === 'expired' && loadNeteaseSession()?.cookie === session.cookie) {
+                    renderLoggedOut('登录已过期，请重新登录');
+                }
+            });
+        } else if (result.cancelled) {
+            renderLoggedOut();
+        } else {
+            renderLoggedOut(result.message ?? '网易云网页登录失败');
+        }
     };
 
     const renderLoggedIn = (session: NeteaseSession): void => {
@@ -406,7 +450,24 @@ function renderNeteaseLoginBlock(): HTMLElement {
             try {
                 result = await checkQr(currentKey);
             } catch (error) {
-                status.textContent = `查询失败（${qrFailureReason(error)}），正在重试…`;
+                const reason = qrFailureReason(error);
+                status.textContent = `查询失败（${reason}），正在重试…`;
+                // 8821 是网易云拒扫码路的明示：直接给网页登录入口，不用等用户
+                // 自己回登录区找；按钮只加一次，重复轮询不叠加。
+                if (reason.includes('8821') && !body.querySelector('.netease-web-login-btn')) {
+                    const hint = document.createElement('p');
+                    hint.className = 'login-hint';
+                    hint.textContent = '网易云已拒绝扫码登录，请用网页登录。';
+                    body.appendChild(hint);
+                    const webButton = document.createElement('button');
+                    webButton.type = 'button';
+                    webButton.className = 'login-btn netease-web-login-btn';
+                    webButton.textContent = '网页登录';
+                    webButton.addEventListener('click', () => {
+                        void startWebLogin();
+                    });
+                    body.appendChild(webButton);
+                }
                 return;
             } finally {
                 polling = false;
