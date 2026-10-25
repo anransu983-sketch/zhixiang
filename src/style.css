@@ -1,5 +1,21 @@
 :root {
     color-scheme: dark;
+
+    --bg: #09090b;
+    --card: #18181b;
+    --border: #3f3f46;
+    --accent: #e8a0bf;
+    --on-accent: #241522;
+    --text: #fafafa;
+    --muted: #a1a1aa;
+    --warn: #e8c87a;
+
+    --radius-card: 20px;
+    --radius-cover: 14px;
+    --radius-input: 14px;
+    --section-gap: 32px;
+    --font-sans: system-ui, -apple-system, "PingFang SC", "HarmonyOS Sans SC", "Noto Sans SC",
+        "Source Han Sans SC", "Microsoft YaHei", "Hiragino Sans GB", sans-serif;
 }
 
 * {
@@ -11,24 +27,35 @@ body {
     margin: 0;
     padding: 0;
     height: 100%;
-    background: #14101c;
-    color: #f5f0fa;
-    font-family: system-ui, -apple-system, "PingFang SC", "Noto Sans SC", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
 }
 
+/* 底部留出悬浮迷你播放条的位置，避免盖住最后一区。 */
 #app {
     min-height: 100%;
-    padding: 24px 16px calc(24px + env(safe-area-inset-bottom));
+    padding: 24px 16px calc(112px + env(safe-area-inset-bottom));
+}
+
+/* 区块间距统一：首页直接子元素之间一律 var(--section-gap)。 */
+.home > * + * {
+    margin-top: var(--section-gap);
 }
 
 .home h1 {
-    margin: 0 0 8px;
+    margin: 0;
     font-size: 28px;
 }
 
-.home p {
-    margin: 0 0 24px;
-    color: #c9b8d8;
+.home > p {
+    margin: 8px 0 0;
+    color: var(--muted);
+}
+
+.home h2 {
+    margin: 0 0 12px;
+    font-size: 20px;
 }
 
 .feature-list {
@@ -41,28 +68,37 @@ body {
 
 .feature-list li {
     padding: 14px 16px;
-    border-radius: 16px;
-    background: rgba(255, 255, 255, 0.07);
-}
-
-.home h2 {
-    margin: 28px 0 12px;
-    font-size: 20px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    background: var(--card);
 }
 
 .now-playing {
     padding: 12px 16px;
-    border-radius: 16px;
-    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    background: var(--card);
 }
 
+/* 底部迷你播放条：Folia 风格的悬浮胶囊，贴底、半透明、轻模糊。 */
+.home > .now-playing-bar,
 .now-playing-bar {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: calc(12px + env(safe-area-inset-bottom));
+    z-index: 10;
+    margin: 0;
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 12px 16px;
-    border-radius: 16px;
-    background: rgba(255, 255, 255, 0.07);
+    padding: 10px 12px 10px 18px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: rgba(24, 24, 27, 0.88);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    backdrop-filter: blur(16px) saturate(140%);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
 }
 
 .now-playing-info {
@@ -71,35 +107,67 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    font-size: 14px;
 }
 
 .now-playing-controls {
     flex: none;
     display: flex;
-    gap: 8px;
+    gap: 6px;
 }
 
 .now-playing-btn {
     padding: 8px 12px;
     border: 0;
     border-radius: 999px;
-    background: #e8a0bf;
-    color: #241522;
+    background: var(--accent);
+    color: var(--on-accent);
+    font-family: inherit;
     font-size: 13px;
+    white-space: nowrap;
+}
+
+/* 窄屏：歌名独占一行，按钮排在下面，胶囊圆角收小以免挤变形。 */
+@media (max-width: 440px) {
+    .now-playing-bar {
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 12px 14px;
+        border-radius: 26px;
+    }
+
+    .now-playing-info {
+        flex: 1 1 100%;
+        text-align: center;
+    }
+
+    .now-playing-controls {
+        flex: 1 1 100%;
+        justify-content: center;
+    }
 }
 
 .source-search {
     width: 100%;
-    padding: 12px 14px;
-    border: 1px solid rgba(255, 255, 255, 0.16);
-    border-radius: 12px;
-    background: rgba(255, 255, 255, 0.07);
+    padding: 12px 16px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--card);
     color: inherit;
+    font-family: inherit;
     font-size: 16px;
 }
 
+.source-search:focus,
+.dev-search:focus,
+.dev-select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
 .source-notice {
-    color: #e8c87a;
+    margin: 12px 0 0;
+    color: var(--warn);
 }
 
 .track-list {
@@ -115,15 +183,16 @@ body {
     align-items: center;
     gap: 12px;
     padding: 10px 12px;
-    border-radius: 16px;
-    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    background: var(--card);
 }
 
 .track-cover {
     width: 48px;
     height: 48px;
     flex: none;
-    border-radius: 10px;
+    border-radius: 12px;
     object-fit: cover;
 }
 
@@ -140,7 +209,7 @@ body {
 
 .track-meta {
     margin-top: 4px;
-    color: #c9b8d8;
+    color: var(--muted);
     font-size: 13px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -149,23 +218,24 @@ body {
 
 .track-play {
     flex: none;
-    padding: 8px 14px;
+    padding: 8px 16px;
     border: 0;
     border-radius: 999px;
-    background: #e8a0bf;
-    color: #241522;
+    background: var(--accent);
+    color: var(--on-accent);
+    font-family: inherit;
     font-size: 14px;
 }
 
 /* 海报墙（第 6 块）：首页顶部大封面卡片，CSS grid 排布。 */
-.poster-wall h2 {
-    margin-top: 0;
+.poster-section + .poster-section {
+    margin-top: 8px;
 }
 
 .poster-section h3 {
-    margin: 20px 0 12px;
+    margin: 16px 0 12px;
     font-size: 16px;
-    color: #c9b8d8;
+    color: var(--muted);
 }
 
 .poster-grid {
@@ -176,9 +246,9 @@ body {
 
 .poster-card {
     padding: 10px;
-    border: 0;
-    border-radius: 16px;
-    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    background: var(--card);
     color: inherit;
     font: inherit;
     text-align: left;
@@ -186,20 +256,21 @@ body {
 }
 
 .poster-card.is-playing {
-    box-shadow: 0 0 0 2px #e8a0bf;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
 }
 
 .poster-cover-wrap {
     position: relative;
     aspect-ratio: 1 / 1;
-    border-radius: 12px;
+    border-radius: var(--radius-cover);
     overflow: hidden;
 }
 
 .poster-cover-placeholder {
     position: absolute;
     inset: 0;
-    background: linear-gradient(135deg, #3a2440, #6b3a5e);
+    background: linear-gradient(135deg, #2a1b30, #5a3050);
 }
 
 .poster-cover {
@@ -219,7 +290,7 @@ body {
 
 .poster-subtitle {
     margin-top: 4px;
-    color: #c9b8d8;
+    color: var(--muted);
     font-size: 13px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -231,38 +302,36 @@ body {
     align-items: center;
     gap: 8px;
     margin-top: 8px;
-    color: #c9b8d8;
+    color: var(--muted);
     font-size: 13px;
 }
 
 .poster-badge {
-    padding: 2px 8px;
+    padding: 2px 10px;
     border-radius: 999px;
-    background: rgba(232, 160, 191, 0.25);
-    color: #f5f0fa;
+    background: rgba(232, 160, 191, 0.18);
+    color: var(--text);
     font-size: 12px;
 }
 
 .poster-notice {
-    color: #e8c87a;
+    margin: 12px 0 0;
+    color: var(--warn);
 }
 
 /* 3D 歌单架（第 7 块）：纯 CSS 3D 多层架子，不用图片素材做架子。
    每层一排站着的歌单 + 底部一根架板；整体只给轻微倾角，
    不做拖拽旋转与复杂动画；横向滑动靠 overflow-x 滚动。 */
-.shelf h2 {
-    margin-top: 0;
-}
-
 .shelf-hint {
-    color: #c9b8d8;
+    margin: 0;
+    color: var(--muted);
     font-size: 14px;
 }
 
 .shelf-layer h3 {
-    margin: 20px 0 12px;
+    margin: 16px 0 12px;
     font-size: 16px;
-    color: #c9b8d8;
+    color: var(--muted);
 }
 
 .shelf-scroll {
@@ -289,17 +358,17 @@ body {
     height: 12px;
     margin: 0 4px;
     border-radius: 6px;
-    background: linear-gradient(180deg, #6b435f 0%, #3a2338 55%, #2a1828 100%);
-    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.45);
+    background: linear-gradient(180deg, #52525b 0%, #3f3f46 55%, #27272a 100%);
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.55);
 }
 
 .shelf-record {
     flex: none;
     width: 136px;
     padding: 10px 10px 12px;
-    border: 0;
-    border-radius: 16px;
-    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    background: var(--card);
     color: inherit;
     font: inherit;
     text-align: left;
@@ -307,13 +376,14 @@ body {
 }
 
 .shelf-record.is-playing {
-    box-shadow: 0 0 0 2px #e8a0bf;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
 }
 
 .shelf-record-cover {
     position: relative;
-    width: 116px;
-    height: 116px;
+    width: 114px;
+    height: 114px;
     transform: perspective(800px) rotateY(-10deg);
     transform-origin: left center;
 }
@@ -321,15 +391,15 @@ body {
 .shelf-record-face {
     position: absolute;
     inset: 0;
-    border-radius: 12px;
+    border-radius: var(--radius-cover);
     overflow: hidden;
-    box-shadow: 0 6px 14px rgba(0, 0, 0, 0.4);
+    box-shadow: 0 6px 14px rgba(0, 0, 0, 0.5);
 }
 
 .shelf-record-placeholder {
     position: absolute;
     inset: 0;
-    background: linear-gradient(135deg, #3a2440, #6b3a5e);
+    background: linear-gradient(135deg, #2a1b30, #5a3050);
 }
 
 .shelf-record-image {
@@ -347,7 +417,7 @@ body {
     left: 100%;
     width: 8px;
     border-radius: 0 4px 4px 0;
-    background: linear-gradient(90deg, #2a1a30, #4a2a44);
+    background: linear-gradient(90deg, #1f1a24, #3a2a38);
     transform: perspective(800px) rotateY(35deg);
     transform-origin: left center;
 }
@@ -361,7 +431,7 @@ body {
 
 .shelf-record-subtitle {
     margin-top: 4px;
-    color: #c9b8d8;
+    color: var(--muted);
     font-size: 13px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -370,12 +440,13 @@ body {
 
 .shelf-record-count {
     margin-top: 8px;
-    color: #c9b8d8;
+    color: var(--muted);
     font-size: 13px;
 }
 
 .shelf-notice {
-    color: #e8c87a;
+    margin: 12px 0 0;
+    color: var(--warn);
 }
 
 /* 播放页（第 8 块）：盖在首页上的简单视图，不改首页结构。 */
@@ -384,7 +455,7 @@ body {
     inset: 0;
     z-index: 20;
     overflow-y: auto;
-    background: #14101c;
+    background: var(--bg);
 }
 
 .player-canvas {
@@ -411,7 +482,7 @@ body {
     width: 220px;
     height: 220px;
     object-fit: cover;
-    border-radius: 20px;
+    border-radius: 22px;
     transition: transform 0.2s ease;
 }
 
@@ -422,12 +493,12 @@ body {
 
 .player-artist {
     margin: 0;
-    color: #c9b8d8;
+    color: var(--muted);
 }
 
 .player-note {
     margin: 0;
-    color: #e8c87a;
+    color: var(--warn);
     text-align: center;
     font-size: 13px;
 }
@@ -442,31 +513,32 @@ body {
     max-height: 320px;
     overflow-y: auto;
     padding: 12px 16px;
-    border-radius: 16px;
-    background: rgba(0, 0, 0, 0.35);
+    border-radius: var(--radius-card);
+    background: rgba(9, 9, 11, 0.55);
 }
 
 .player-lyric-line {
     margin: 10px 0;
-    color: #c9b8d8;
+    color: var(--muted);
     text-align: center;
 }
 
 .player-lyric-line.is-active {
-    color: #f5f0fa;
+    color: var(--text);
     font-weight: 700;
 }
 
 .player-lyric-note {
-    color: #e8c87a;
+    color: var(--warn);
     text-align: center;
 }
 
 .player-toggles {
     width: 100%;
     padding: 12px 16px;
-    border-radius: 16px;
-    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    background: var(--card);
     display: grid;
     gap: 10px;
 }
@@ -485,12 +557,16 @@ body {
     margin-top: 4px;
 }
 
+/* 登录区 */
 .login-block {
     padding: 14px;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 16px;
-    background: rgba(255, 255, 255, 0.05);
-    margin-bottom: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    background: var(--card);
+}
+
+.login-block + .login-block {
+    margin-top: 12px;
 }
 
 .login-block h3 {
@@ -516,7 +592,7 @@ body {
     width: 220px;
     height: 220px;
     margin: 8px 0;
-    border-radius: 12px;
+    border-radius: var(--radius-cover);
     background: #fff;
 }
 
@@ -524,26 +600,28 @@ body {
     border: none;
     border-radius: 999px;
     padding: 10px 18px;
-    background: #e8a0bf;
-    color: #241522;
+    background: var(--accent);
+    color: var(--on-accent);
+    font-family: inherit;
     font-size: 14px;
 }
 
 .login-notice {
     margin: 0 0 10px;
-    color: #e8c87a;
+    color: var(--warn);
     font-size: 13px;
 }
 
 .login-hint {
     margin: 10px 0 0;
-    color: rgba(245, 240, 250, 0.6);
+    color: var(--muted);
     font-size: 13px;
 }
 
+/* 开发者区 */
 .developer-hint {
     margin: 0 0 10px;
-    color: rgba(245, 240, 250, 0.6);
+    color: var(--muted);
     font-size: 13px;
 }
 
@@ -556,8 +634,8 @@ body {
 
 .dev-console-label {
     margin-right: auto;
-    color: rgba(245, 240, 250, 0.6);
-    font-family: monospace;
+    color: var(--muted);
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
     font-size: 12px;
     letter-spacing: 0.08em;
 }
@@ -571,20 +649,22 @@ body {
 .dev-search {
     flex: 1;
     min-width: 0;
-    padding: 8px 10px;
-    border: 1px solid rgba(245, 240, 250, 0.18);
-    border-radius: 10px;
-    background: rgba(0, 0, 0, 0.35);
-    color: rgba(245, 240, 250, 0.9);
+    padding: 8px 14px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--card);
+    color: var(--text);
+    font-family: inherit;
     font-size: 13px;
 }
 
 .dev-select {
-    padding: 8px 6px;
-    border: 1px solid rgba(245, 240, 250, 0.18);
-    border-radius: 10px;
-    background: rgba(0, 0, 0, 0.35);
-    color: rgba(245, 240, 250, 0.9);
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--card);
+    color: var(--text);
+    font-family: inherit;
     font-size: 13px;
 }
 
@@ -593,10 +673,11 @@ body {
     overflow: auto;
     margin: 0;
     padding: 12px;
-    border-radius: 12px;
-    background: rgba(0, 0, 0, 0.35);
-    color: rgba(245, 240, 250, 0.85);
-    font-family: monospace;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-input);
+    background: var(--bg);
+    color: rgba(250, 250, 250, 0.85);
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
     font-size: 12px;
     line-height: 1.5;
     white-space: pre-wrap;
@@ -612,12 +693,12 @@ body {
 
 .dev-time {
     flex-shrink: 0;
-    color: rgba(245, 240, 250, 0.45);
+    color: #71717a;
 }
 
 .dev-level {
     flex-shrink: 0;
-    color: rgba(245, 240, 250, 0.6);
+    color: var(--muted);
 }
 
 .dev-level-error {
@@ -630,7 +711,7 @@ body {
 
 .dev-module {
     flex-shrink: 0;
-    color: #e8a0bf;
+    color: var(--accent);
 }
 
 .dev-text {
@@ -640,5 +721,5 @@ body {
 
 .dev-empty {
     margin: 0;
-    color: rgba(245, 240, 250, 0.5);
+    color: #71717a;
 }
