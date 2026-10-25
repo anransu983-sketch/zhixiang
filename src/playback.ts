@@ -472,6 +472,39 @@ async function startTrack(track: Track, crossfade: boolean): Promise<void> {
     }
 }
 
+// 队列内跳过失败曲目：从 startIdx 沿 step 方向逐首试 startTrack，直到播出
+// 或走完队尾。成功时把 queueIndex 落到播出那首；全部失败时 queueIndex 不动
+// （调用方仍可重试），只返回失败数。淡入淡出语义由 startTrack 内部处理，不变。
+async function tryPlayFrom(
+    startIdx: number,
+    crossfade: boolean,
+    step: 1 | -1
+): Promise<{ played: boolean; failed: number }> {
+    let failed = 0;
+    for (let i = startIdx; step === 1 ? i < queue.length : i >= 0; i += step) {
+        const track = queue[i];
+        if (!track) {
+            continue;
+        }
+        try {
+            await startTrack(track, crossfade);
+            queueIndex = i;
+            return { played: true, failed };
+        } catch {
+            failed += 1;
+        }
+    }
+    return { played: false, failed };
+}
+
+// 全部失败时的提示：单首失败保留旧文案，多首才注明跳过了几首。
+function skipAllMessage(failed: number): string {
+    if (failed <= 1) {
+        return '播放失败，请换一首试试';
+    }
+    return `跳过了 ${failed} 首，还是播不了，请换一首试试`;
+}
+
 async function advanceAfterEnded(): Promise<void> {
     if (queueIndex >= queue.length - 1) {
         // 队列播完：停前台服务与代理，状态回到未播放。
@@ -489,18 +522,23 @@ async function advanceAfterEnded(): Promise<void> {
         }
         return;
     }
-    queueIndex += 1;
-    const nextTrack = queue[queueIndex];
-    if (!nextTrack) {
-        return;
-    }
-    try {
-        // 旧首已自然播完，无重叠可言，新首用短淡入。
-        await startTrack(nextTrack, false);
-    } catch (error) {
+    // 旧首已自然播完，无重叠可言，新首用短淡入；中途失败自动往后跳。
+    const result = await tryPlayFrom(queueIndex + 1, false, 1);
+    if (!result.played) {
+        // 剩余曲目全播不了：按播完处理，停前台服务与代理。
         playing = false;
-        lastError = error instanceof Error ? error.message : '播放失败，请换一首试试';
+        lastError = skipAllMessage(result.failed);
         emitTrackChange();
+        try {
+            await stopPlaybackService();
+        } catch {
+            // 忽略。
+        }
+        try {
+            await stopStreamProxy();
+        } catch {
+            // 忽略。
+        }
     }
 }
 
@@ -520,7 +558,11 @@ export async function playQueue(tracks: Track[], startIndex: number): Promise<vo
     const crossfade = playing && activeSlot !== null && currentTrack !== null;
     queue = [...tracks];
     queueIndex = clamped;
-    await startTrack(target, crossfade);
+    // 从起始下标向前逐首试：中途失败自动往后跳，全部失败才抛错。
+    const result = await tryPlayFrom(clamped, crossfade, 1);
+    if (!result.played) {
+        throw new Error(skipAllMessage(result.failed));
+    }
 }
 
 export async function next(): Promise<void> {
@@ -530,16 +572,11 @@ export async function next(): Promise<void> {
     if (queueIndex >= queue.length - 1) {
         return;
     }
-    queueIndex += 1;
-    const target = queue[queueIndex];
-    if (!target) {
-        return;
-    }
-    try {
-        await startTrack(target, playing);
-    } catch (error) {
+    const result = await tryPlayFrom(queueIndex + 1, playing, 1);
+    if (!result.played) {
+        // 全部失败：下标不前移（仍可重试），只停播放并提示。
         playing = false;
-        lastError = error instanceof Error ? error.message : '播放失败，请换一首试试';
+        lastError = skipAllMessage(result.failed);
         emitTrackChange();
     }
 }
@@ -556,16 +593,11 @@ export async function previous(): Promise<void> {
         }
         return;
     }
-    queueIndex -= 1;
-    const target = queue[queueIndex];
-    if (!target) {
-        return;
-    }
-    try {
-        await startTrack(target, playing);
-    } catch (error) {
+    const result = await tryPlayFrom(queueIndex - 1, playing, -1);
+    if (!result.played) {
+        // 全部失败：下标不动（仍可重试），只停播放并提示。
         playing = false;
-        lastError = error instanceof Error ? error.message : '播放失败，请换一首试试';
+        lastError = skipAllMessage(result.failed);
         emitTrackChange();
     }
 }
