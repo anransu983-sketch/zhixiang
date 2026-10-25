@@ -12,6 +12,8 @@ import { registerPlugin } from '@capacitor/core';
 export interface HttpResponse {
     status: number;
     body: string;
+    // 原生侧回传的 Set-Cookie（登录流程拿凭证的兜底）；普通请求不用理会。
+    setCookies?: string[];
 }
 
 interface HttpBridgePlugin {

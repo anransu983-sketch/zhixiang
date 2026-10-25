@@ -15,7 +15,10 @@ import java.net.HttpURLConnection;
 import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 通用原生 HTTP 桥：给 Web 层提供一个不受 WebView CORS 限制的请求通道。
@@ -92,9 +95,25 @@ public class HttpBridgePlugin extends Plugin {
                     : connection.getErrorStream();
             String text = stream == null ? "" : readAll(stream);
 
+            // 登录流程需要响应里的 Set-Cookie（扫码成功时 body 里也可能带凭证，
+            // 这里只是兜底一并回传；不做任何 Cookie 存取，调用方自己决定用哪份）。
+            // 键名按服务端的实际大小写来，匹配时忽略大小写。
+            List<String> setCookies = new ArrayList<>();
+            Map<String, List<String>> headerFields = connection.getHeaderFields();
+            if (headerFields != null) {
+                for (Map.Entry<String, List<String>> entry : headerFields.entrySet()) {
+                    if (entry.getKey() != null
+                            && entry.getKey().equalsIgnoreCase("Set-Cookie")
+                            && entry.getValue() != null) {
+                        setCookies.addAll(entry.getValue());
+                    }
+                }
+            }
+
             JSObject result = new JSObject();
             result.put("status", status);
             result.put("body", text);
+            result.put("setCookies", setCookies);
             call.resolve(result);
         } catch (SocketTimeoutException e) {
             call.reject("请求超时，请检查网络后重试", "TIMEOUT", e);
