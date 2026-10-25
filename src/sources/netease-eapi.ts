@@ -113,7 +113,7 @@ function rememberNmtid(setCookies: string[] | undefined): void {
 
 // ---- MD5（RFC 1321，输入按 UTF-8 编码，输出小写十六进制） ----
 
-function md5Hex(text: string): string {
+export function md5Hex(text: string): string {
     const bytes = new TextEncoder().encode(text);
     const bitLength = bytes.length * 8;
     // 总长 = (消息 + 0x80 + 8 字节长度) 向上取整到 64 的倍数。
@@ -289,6 +289,11 @@ export function shortHash(text: string): string {
 export function getEapiIdentityHash(): string {
     const state = loadDeviceState();
     return shortHash(`${state.deviceId}|${state.nuid}|16.2`);
+}
+
+/** 取码前设备是否已暖（NMTID 在不在）：只认有无，不返回值。 */
+export function hasEapiNmtid(): boolean {
+    return loadDeviceState().nmtid !== '';
 }
 
 /** 当前一次请求的完整 Cookie 串（回显测试用；每次调用 requestId/buildver 都会变，属正常）。 */
