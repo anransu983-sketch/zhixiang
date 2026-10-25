@@ -16,6 +16,8 @@ import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
 import com.getcapacitor.PluginMethod;
 
 /**
@@ -25,15 +27,42 @@ import com.getcapacitor.PluginMethod;
  * cap sync 生成的 capacitor.plugins.json 覆盖不到它，
  * 因此由 MainActivity 在桥接创建前显式注册（见 MainActivity）。
  */
-@CapacitorPlugin(name = "LocalMusic")
+@CapacitorPlugin(
+    name = "LocalMusic",
+    permissions = {
+        @Permission(alias = "audio", strings = { Manifest.permission.READ_MEDIA_AUDIO }),
+        @Permission(alias = "audioLegacy", strings = { Manifest.permission.READ_EXTERNAL_STORAGE })
+    }
+)
 public class LocalMusicPlugin extends Plugin {
 
     @PluginMethod
     public void scan(PluginCall call) {
         if (!hasAudioPermission()) {
-            call.reject("缺少读取音频文件的权限", "PERMISSION_DENIED");
+            // 8.4.2 正确做法：按系统版本选 alias 拉系统授权弹窗，结果回
+            // audioPermissionCallback；不用已废弃的 requestPermissions(int) 老路。
+            // Manifest 声明已在（READ_MEDIA_AUDIO + maxSdk 32 的 READ_EXTERNAL_STORAGE）。
+            String alias = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                ? "audio"
+                : "audioLegacy";
+            requestPermissionForAlias(alias, call, "audioPermissionCallback");
             return;
         }
+        doScan(call);
+    }
+
+    @PermissionCallback
+    private void audioPermissionCallback(PluginCall call) {
+        if (hasAudioPermission()) {
+            // 授权通过：同一 call 直接重扫，不用用户再点一次。
+            doScan(call);
+        } else {
+            // 拒绝（含永久拒绝）：保留去系统设置的提示，TS 侧原样展示。
+            call.reject("缺少读取音频文件的权限", "PERMISSION_DENIED");
+        }
+    }
+
+    private void doScan(PluginCall call) {
         if (getContext() == null) {
             call.reject("系统服务不可用", "NO_CONTEXT");
             return;
