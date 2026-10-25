@@ -1,0 +1,21 @@
+// 音源与曲目的共享类型：各音源实现与播放层都以此为准。
+
+export type SourceId = 'local' | 'netease' | 'ytm';
+
+export interface Track {
+    id: string;
+    title: string;
+    artist: string;
+    album?: string;
+    durationMs?: number;
+    coverUrl?: string;
+    source: SourceId;
+    streamUrl?: string;
+}
+
+export interface AudioSource {
+    id: SourceId;
+    label: string;
+    search(query: string): Promise<Track[]>;
+    resolveStream(track: Track): Promise<string>;
+}

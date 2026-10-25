@@ -44,3 +44,83 @@ body {
     border-radius: 16px;
     background: rgba(255, 255, 255, 0.07);
 }
+
+.home h2 {
+    margin: 28px 0 12px;
+    font-size: 20px;
+}
+
+.now-playing {
+    padding: 12px 16px;
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.07);
+}
+
+.source-search {
+    width: 100%;
+    padding: 12px 14px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.07);
+    color: inherit;
+    font-size: 16px;
+}
+
+.source-notice {
+    color: #e8c87a;
+}
+
+.track-list {
+    list-style: none;
+    margin: 12px 0 0;
+    padding: 0;
+    display: grid;
+    gap: 10px;
+}
+
+.track-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.07);
+}
+
+.track-cover {
+    width: 48px;
+    height: 48px;
+    flex: none;
+    border-radius: 10px;
+    object-fit: cover;
+}
+
+.track-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.track-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.track-meta {
+    margin-top: 4px;
+    color: #c9b8d8;
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.track-play {
+    flex: none;
+    padding: 8px 14px;
+    border: 0;
+    border-radius: 999px;
+    background: #e8a0bf;
+    color: #241522;
+    font-size: 14px;
+}
