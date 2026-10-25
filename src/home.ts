@@ -245,6 +245,9 @@ function renderDeveloperSection(): HTMLElement {
         }
         for (let i = shown; i < all.length; i++) {
             const entry = all[i];
+            if (!entry) {
+                continue;
+            }
             box.textContent += `[${entry.time}] ${entry.level.toUpperCase()} ${entry.text}\n`;
         }
         shown = all.length;
