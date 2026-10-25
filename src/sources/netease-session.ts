@@ -1,27 +1,28 @@
 // 网易云扫码登录会话（全新写）：只存会话凭证，不存密码、不存账号密码。
 //
-// 机制（2026-10-25 沙箱实探，端点均为 music.163.com 直连，不走中转服务）：
-// - 取 key：GET /api/login/qrcode/unikey?type=1 → {code: 200, unikey}（实测通）。
+// 机制（2026-10-25 改走 Folia 桥式 weapi 路；此前裸 /api/ 路已证实不可用：
+// 8821 拒扫码、key 约 22 秒就过期——14:02 与 14:27 两次实测均为生成后 22 秒
+// 回 800，切去网易云 App 扫码再回来根本来不及；803 还拿不到 MUSIC_U）：
+// - 取 key：POST /weapi/login/qrcode/unikey（weapi 加密，{type: '1', csrf_token}）
+//   → {code: 200, unikey}（沙箱实测通，加密方案已验）。
 // - 二维码内容：https://music.163.com/login?codekey=<key>，用户用网易云 App 扫。
-//   二维码图片走 api.qrserver.com 渲染（网易云自家的 qrimg 端点直连回 404，
-//   只有中转服务才有；<img> 加载不受 WebView CORS 限制）。
-// - 轮询：GET /api/login/qrcode/client/login?key=<key>&type=1 → code 800 已过期 /
-//   801 等待扫码 / 802 已扫码待确认 / 803 成功（801 实测通；803 只能真机扫码验）。
+//   二维码图片走 api.qrserver.com 渲染（<img> 加载不受 WebView CORS 限制）。
+// - 轮询：POST /weapi/login/qrcode/client/login（weapi 加密，{key, type: '1'}）
+//   → code 800 已过期 / 801 等待扫码 / 802 已扫码待确认 / 803 成功。
 //   803 的 body.cookie 就是会话凭证（字符串或数组，数组用 '; ' 拼）；
 //   拿不到时才用响应 Set-Cookie 兜底（桥已回传 setCookies）。
-// 会话承接（2026-10-25 修）：取 key 与轮询必须带同一套 cookie——先逛首页拿
-//   MUSIC_A/__csrf，再取 key，轮询全程带罐子里的 cookie、每轮用新 Set-Cookie
-//   更新罐子。之前是每请求裸发（无 Cookie），首轮 801 看着正常，但扫码确认
-//   时服务端找不到 key 绑定的会话，8821 拒绝；官网与中转服务都是带会话走的。
+// 会话承接：取 key 与轮询必须带同一套 cookie——先逛首页拿 MUSIC_A/__csrf，
+//   再取 key，轮询全程带罐子里的 cookie、每轮用新 Set-Cookie 更新罐子；
+//   csrf_token 取罐子里的 __csrf，没有为空。
 // - 登录判定只认 MUSIC_U：游客会话只有 MUSIC_A/__csrf、没有 MUSIC_U，绝不能算登录。
 // - 会话校验：GET /api/user/level（需登录端点），匿名回 code 301；200 为有效，
 //   301 为过期。/api/login/status 与 /api/user/account 直连均回 404（只是中转
 //   服务的包装路径），不用。退出只清本地会话，不调未经证实的服务端登出端点。
 
-import { httpGet } from '../native/http';
+import { httpGet, httpPost, type HttpResponse } from '../native/http';
+import { weapiEncrypt } from './netease-crypto';
 
-const UNIKEY_URL = 'https://music.163.com/api/login/qrcode/unikey';
-const QR_CHECK_URL = 'https://music.163.com/api/login/qrcode/client/login';
+const WEAPI_BASE = 'https://music.163.com/weapi';
 const USER_LEVEL_URL = 'https://music.163.com/api/user/level';
 const HOMEPAGE_URL = 'https://music.163.com/';
 
@@ -52,6 +53,25 @@ function qrJarHeader(): string {
 function qrHeaders(): Record<string, string> {
     const cookie = qrJarHeader();
     return cookie ? { ...HEADERS, Cookie: cookie } : HEADERS;
+}
+
+// 罐子里的 __csrf，没有为空（weapi 要求带 csrf_token，未登录时可为空串）。
+function qrCsrfToken(): string {
+    const entry = qrJar.get('__csrf');
+    if (!entry) {
+        return '';
+    }
+    return entry.split('=', 2)[1] ?? '';
+}
+
+// weapi 请求：参数加密后拼成表单体 POST，Cookie 带罐子里的会话。
+async function weapiQr(path: string, data: Record<string, unknown>): Promise<HttpResponse> {
+    const encrypted = await weapiEncrypt({ ...data, csrf_token: qrCsrfToken() });
+    const body = `params=${encodeURIComponent(encrypted.params)}&encSecKey=${encodeURIComponent(encrypted.encSecKey)}`;
+    return httpPost(`${WEAPI_BASE}${path}`, body, {
+        ...qrHeaders(),
+        'Content-Type': 'application/x-www-form-urlencoded'
+    });
 }
 const STORAGE_KEY = 'zx_netease_session_v1';
 
@@ -147,12 +167,17 @@ export async function fetchQrKey(): Promise<string> {
     } catch {
         // 忽略：取 key 那步仍会下发会话。
     }
-    const response = await httpGet(`${UNIKEY_URL}?type=1`, qrHeaders());
+    const response = await weapiQr('/login/qrcode/unikey', { type: '1' });
     if (response.status !== 200) {
         throw new Error('拿不到登录二维码，请稍后重试');
     }
     qrJarUpdate(response.setCookies);
-    const parsed = JSON.parse(response.body) as { code?: unknown; unikey?: unknown };
+    let parsed: { code?: unknown; unikey?: unknown };
+    try {
+        parsed = JSON.parse(response.body) as typeof parsed;
+    } catch {
+        throw new Error('拿不到登录二维码，请稍后重试');
+    }
     const key = typeof parsed.unikey === 'string' ? parsed.unikey : '';
     if (!key) {
         throw new Error('拿不到登录二维码，请稍后重试');
@@ -183,7 +208,7 @@ function cookieFromSetCookies(setCookies: string[] | undefined): string {
 }
 
 export async function checkQr(key: string): Promise<QrCheckResult> {
-    const response = await httpGet(`${QR_CHECK_URL}?key=${encodeURIComponent(key)}&type=1`, qrHeaders());
+    const response = await weapiQr('/login/qrcode/client/login', { key, type: '1' });
     if (response.status !== 200) {
         throw new Error(`扫码状态查询失败（HTTP ${response.status}）`);
     }
