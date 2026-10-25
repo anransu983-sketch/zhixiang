@@ -2,6 +2,7 @@
 // 本文件只做组装与界面接线，不放音源与播放逻辑。
 
 import { getCurrentState, next, onTrackChange, playQueue, previous, togglePlay } from './playback';
+import { openPlayerPage } from './player';
 import type { PlaybackState } from './playback';
 import { POSTER_SECTIONS } from './posters';
 import { renderShelf } from './shelf';
@@ -9,9 +10,8 @@ import { SOURCES } from './sources/index';
 import { getLocalNotice } from './sources/local';
 import type { AudioSource, Poster, Track } from './types';
 
-const UPCOMING = [
-    '歌词动态壁纸 · 雨滴玻璃 · 粒子舞台 · 节奏脉动 · 氛围星空'
-];
+// 第 8 块已接上：歌词动态壁纸与四项视觉都在播放页里，清单不再列它。
+const UPCOMING: string[] = [];
 
 function formatDuration(durationMs?: number): string {
     if (!durationMs || durationMs <= 0) {
@@ -97,6 +97,15 @@ export function renderHome(): HTMLElement {
     });
     controls.appendChild(nextButton);
 
+    const playerButton = document.createElement('button');
+    playerButton.type = 'button';
+    playerButton.className = 'now-playing-btn';
+    playerButton.textContent = '打开播放页';
+    playerButton.addEventListener('click', () => {
+        openPlayerPage();
+    });
+    controls.appendChild(playerButton);
+
     bar.appendChild(controls);
     section.appendChild(bar);
 
@@ -118,18 +127,20 @@ export function renderHome(): HTMLElement {
         section.appendChild(renderSourceSection(source, status));
     }
 
-    const upcomingTitle = document.createElement('h2');
-    upcomingTitle.textContent = '即将接上';
-    section.appendChild(upcomingTitle);
+    if (UPCOMING.length > 0) {
+        const upcomingTitle = document.createElement('h2');
+        upcomingTitle.textContent = '即将接上';
+        section.appendChild(upcomingTitle);
 
-    const list = document.createElement('ul');
-    list.className = 'feature-list';
-    for (const name of UPCOMING) {
-        const item = document.createElement('li');
-        item.textContent = name;
-        list.appendChild(item);
+        const list = document.createElement('ul');
+        list.className = 'feature-list';
+        for (const name of UPCOMING) {
+            const item = document.createElement('li');
+            item.textContent = name;
+            list.appendChild(item);
+        }
+        section.appendChild(list);
     }
-    section.appendChild(list);
 
     return section;
 }

@@ -13,6 +13,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(LocalMusicPlugin.class);
         registerPlugin(HttpBridgePlugin.class);
         registerPlugin(PlaybackPlugin.class);
+        registerPlugin(WallpaperPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }
