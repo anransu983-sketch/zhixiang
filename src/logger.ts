@@ -3,6 +3,8 @@
 // 不上传、不发往仓库或 VPS——远端存法以后想要再加。凭证类内容不打日志——
 // 各音源的失败提示只含状态与原因，不含 cookie 与 token。
 
+import { APP_VERSION } from './version';
+
 export type LogLevel = 'log' | 'info' | 'warn' | 'error';
 
 export interface LogEntry {
@@ -126,7 +128,7 @@ export function initLogger(): void {
         push('error', args);
         originals.error(...args);
     };
-    push('info', ['芷湘日志开始（已存本机，重启后保留）']);
+    push('info', [`芷湘日志开始（${APP_VERSION}，已存本机，重启后保留）`]);
 }
 
 export function getLogEntries(): LogEntry[] {
