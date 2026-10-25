@@ -252,13 +252,13 @@ class YtmSource implements AudioSource {
         });
         const response = await httpPost(`${SEARCH_URL}?key=${INNERTUBE_KEY}`, body, requestHeaders());
         if (response.status !== 200) {
-            throw new Error('YTM 搜索失败，请稍后重试');
+            throw new Error(`YTM 搜索失败（HTTP ${response.status}）`);
         }
         let parsed: unknown;
         try {
             parsed = JSON.parse(response.body);
         } catch {
-            throw new Error('YTM 搜索失败，请稍后重试');
+            throw new Error('YTM 搜索失败（返回异常）');
         }
         const visitorData = (parsed as { responseContext?: { visitorData?: unknown } } | null)
             ?.responseContext?.visitorData;
@@ -539,6 +539,11 @@ async function browseYtm(browseId: string): Promise<unknown> {
     const clients = PLAYER_CLIENTS.filter(
         (client) => client.name === 'ANDROID' || client.name === 'IOS'
     );
+    // 回落链上最后一次失败的原因：定位用，不再只抛通用话术。
+    let lastStatus: number | null = null;
+    let lastNetwork = false;
+    let lastTimeout = false;
+    let lastParse = false;
     for (const client of clients) {
         const contextClient: Record<string, unknown> = {
             clientName: client.name,
@@ -565,6 +570,7 @@ async function browseYtm(browseId: string): Promise<unknown> {
         try {
             const response = await httpPost(`${BROWSE_URL}?key=${INNERTUBE_KEY}`, body, requestHeaders());
             if (response.status !== 200) {
+                lastStatus = response.status;
                 continue;
             }
             const parsed = JSON.parse(response.body) as unknown;
@@ -574,9 +580,29 @@ async function browseYtm(browseId: string): Promise<unknown> {
                 cachedVisitorData = visitorData;
             }
             return parsed;
-        } catch {
+        } catch (error) {
+            const message = error instanceof Error ? error.message : '';
+            if (message.includes('超时')) {
+                lastTimeout = true;
+            } else if (message.includes('网络')) {
+                lastNetwork = true;
+            } else {
+                lastParse = true;
+            }
             continue;
         }
+    }
+    if (lastTimeout) {
+        throw new Error('YTM 榜单加载失败（请求超时）');
+    }
+    if (lastNetwork) {
+        throw new Error('YTM 榜单加载失败（网络异常）');
+    }
+    if (lastStatus !== null) {
+        throw new Error(`YTM 榜单加载失败（HTTP ${lastStatus}）`);
+    }
+    if (lastParse) {
+        throw new Error('YTM 榜单加载失败（返回异常）');
     }
     throw new Error('YTM 榜单加载失败，请稍后重试');
 }

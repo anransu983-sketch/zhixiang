@@ -4,7 +4,7 @@
 import { getCurrentState, next, onTrackChange, playQueue, previous, togglePlay } from './playback';
 import { openPlayerPage } from './player';
 import type { PlaybackState } from './playback';
-import { POSTER_SECTIONS } from './posters';
+import { POSTER_SECTIONS, friendlyPosterError } from './posters';
 import { renderShelf } from './shelf';
 import { SOURCES } from './sources/index';
 import { getLocalNotice } from './sources/local';
@@ -52,6 +52,29 @@ function friendlySearchError(error: unknown): string {
         return message;
     }
     return '搜索失败，请稍后重试。';
+}
+
+// 扫码轮询失败时把原因浓缩成一小段，贴在“正在重试”后面，下次截图就能定位。
+function qrFailureReason(error: unknown): string {
+    const message = error instanceof Error ? error.message : '';
+    const http = /HTTP (\d+)/.exec(message);
+    if (http) {
+        return `HTTP ${http[1]}`;
+    }
+    if (message.includes('超时')) {
+        return '请求超时';
+    }
+    if (message.includes('网络')) {
+        return '网络异常';
+    }
+    if (message.includes('返回异常')) {
+        return '返回异常';
+    }
+    const code = /code (\d+)/.exec(message);
+    if (code) {
+        return `状态码 ${code[1]}`;
+    }
+    return '未知原因';
 }
 
 export function renderHome(): HTMLElement {
@@ -296,13 +319,21 @@ function renderNeteaseLoginBlock(): HTMLElement {
             renderLoggedOut();
         });
         body.appendChild(cancel);
+        let polling = false;
         const tick = async (): Promise<void> => {
+            // 上一次轮询还没回来时跳过，避免 3 秒间隔下请求堆积。
+            if (polling) {
+                return;
+            }
+            polling = true;
             let result;
             try {
                 result = await checkQr(currentKey);
-            } catch {
-                status.textContent = '查询失败，正在重试…';
+            } catch (error) {
+                status.textContent = `查询失败（${qrFailureReason(error)}），正在重试…`;
                 return;
+            } finally {
+                polling = false;
             }
             if (result.code === 801) {
                 status.textContent = '等待扫码';
@@ -482,8 +513,8 @@ function renderPosterWall(): HTMLElement {
             let posters: Poster[];
             try {
                 posters = await definition.load();
-            } catch {
-                notice.textContent = definition.failureNotice;
+            } catch (error) {
+                notice.textContent = friendlyPosterError(definition, error);
                 return;
             }
             if (posters.length === 0) {

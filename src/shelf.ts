@@ -12,7 +12,7 @@
 
 import { getCurrentState, onTrackChange, playQueue } from './playback';
 import type { PlaybackState } from './playback';
-import { POSTER_SECTIONS } from './posters';
+import { POSTER_SECTIONS, friendlyPosterError } from './posters';
 import type { Poster } from './types';
 
 function friendlyPlayError(error: unknown): string {
@@ -93,8 +93,8 @@ export function renderShelf(): HTMLElement {
             let posters: Poster[];
             try {
                 posters = await definition.load();
-            } catch {
-                notice.textContent = definition.failureNotice;
+            } catch (error) {
+                notice.textContent = friendlyPosterError(definition, error);
                 return;
             }
             if (posters.length === 0) {

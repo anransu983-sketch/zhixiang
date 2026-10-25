@@ -19,6 +19,16 @@ export interface PosterSectionDefinition {
     failureNotice: string;
 }
 
+// 海报加载失败时：调用方抛出的中文原因直接展示（已含 HTTP 状态等定位信息），
+// 非中文异常（如解析错误）才回落到通用提示。
+export function friendlyPosterError(definition: PosterSectionDefinition, error: unknown): string {
+    const message = error instanceof Error ? error.message : '';
+    if (/[\u4e00-\u9fff]/.test(message)) {
+        return message;
+    }
+    return definition.failureNotice;
+}
+
 const LOCAL_ALBUM_LIMIT = 3;
 
 // 海报数据共享缓存：海报墙与 3D 歌单架用同一批海报数据，

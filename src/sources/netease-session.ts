@@ -139,15 +139,20 @@ function cookieFromSetCookies(setCookies: string[] | undefined): string {
 export async function checkQr(key: string): Promise<QrCheckResult> {
     const response = await httpGet(`${QR_CHECK_URL}?key=${encodeURIComponent(key)}&type=1`, HEADERS);
     if (response.status !== 200) {
-        throw new Error('扫码状态查询失败，请稍后重试');
+        throw new Error(`扫码状态查询失败（HTTP ${response.status}）`);
     }
-    const parsed = JSON.parse(response.body) as {
+    let parsed: {
         code?: unknown;
         message?: unknown;
         cookie?: unknown;
         profile?: { nickname?: unknown; avatarUrl?: unknown; userId?: unknown } | null;
         data?: { cookie?: unknown; profile?: { nickname?: unknown; avatarUrl?: unknown; userId?: unknown } | null } | null;
     };
+    try {
+        parsed = JSON.parse(response.body) as typeof parsed;
+    } catch {
+        throw new Error('扫码状态返回异常');
+    }
     const code = Number(parsed.code);
     const message = typeof parsed.message === 'string' && parsed.message ? parsed.message : '';
     if (code === 800) {
@@ -160,7 +165,7 @@ export async function checkQr(key: string): Promise<QrCheckResult> {
         return { code: 802, message: message || '已扫码，请在手机上确认' };
     }
     if (code !== 803) {
-        throw new Error('扫码状态查询失败，请稍后重试');
+        throw new Error(`扫码状态查询失败（code ${code}）`);
     }
     // 803：先取 body 里的凭证，拿不到再用 Set-Cookie 兜底；都没有则不算登录成功。
     let cookie = '';
