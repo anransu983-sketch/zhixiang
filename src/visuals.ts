@@ -117,6 +117,8 @@ export class VisualStage {
     private bokeh: Bokeh[] = [];
     private particles: Particle[] = [];
     private stars: Star[] = [];
+    private seededWidth = 0;
+    private seededHeight = 0;
     private freqData: Uint8Array<ArrayBuffer> | null = null;
     private onVisibilityChange = (): void => {
         if (!document.hidden) {
@@ -219,6 +221,25 @@ export class VisualStage {
     }
 
     private seed(width: number, height: number): void {
+        if (width <= 1 || height <= 1) {
+            // 页面隐藏时尺寸为 0，不播种，等可见时再播。
+            return;
+        }
+        if (
+            width === this.seededWidth &&
+            height === this.seededHeight &&
+            this.drops.length > 0
+        ) {
+            return;
+        }
+        // 尺寸变了就重播：构造时页面若还没挂上 DOM，尺寸是 0，
+        // 旧逻辑只播一次，会把全部粒子永远挤在 1px 角落里。
+        this.drops = [];
+        this.bokeh = [];
+        this.particles = [];
+        this.stars = [];
+        this.seededWidth = width;
+        this.seededHeight = height;
         if (this.drops.length === 0) {
             // 静止圆滴为主（玻璃上的水珠本来就不怎么动），少量下滑滴带拖尾。
             for (let i = 0; i < 110; i++) {

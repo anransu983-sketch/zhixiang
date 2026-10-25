@@ -96,6 +96,8 @@ export function openPlayerPage(): void {
     overlay = buildPlayerPage();
     document.body.appendChild(overlay);
     refreshFromState(getCurrentState());
+    stage?.resize();
+    stage?.resume();
 }
 
 function buildPlayerPage(): HTMLElement {
@@ -573,7 +575,15 @@ function buildPlayerPage(): HTMLElement {
             updateHeart(null);
             updateQualityBadge(null);
         }
-        playPauseButton.textContent = state.playing ? '⏸︎' : '▶︎';
+        if (state.playing) {
+            // 暂停不用 ⏸ 字符：三星会把它画成黄底 emoji，U+FE0E 也压不住，
+            // 改用 CSS 画两条白杠，字体再也插不了手。
+            playPauseButton.innerHTML = '<span class="player-pause-bars"><i></i><i></i></span>';
+            playPauseButton.classList.add('is-bars');
+        } else {
+            playPauseButton.textContent = '▶︎';
+            playPauseButton.classList.remove('is-bars');
+        }
         updateProgress(state);
         updateDegradedNote();
     };
