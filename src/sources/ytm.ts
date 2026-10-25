@@ -96,6 +96,10 @@ export interface YtmStream {
     mimeType: string;
     contentLength?: number;
     bitrate?: number;
+    // 铸链时实际发出的 UA：有会话时是会话 UA，无会话时桥（OkHttp）默认发
+    // okhttp/4.12.0。取流时代理必须复用它——googlevideo 按铸链时的请求形态
+    // 认人，UA 不对只回空包、元素 instant Format error（Folia 0.7.22.8 同款教训）。
+    userAgent?: string;
 }
 
 let lastYtmStream: YtmStream | null = null;
@@ -321,6 +325,8 @@ export async function resolveYtmStream(track: Track): Promise<YtmStream> {
     }
     const videoId = track.id.slice(prefix.length);
     console.log(`[Ytm] 取链 ${track.title}`);
+    // 铸链头一次算好、各客户端共用：成功那次实际发出的 UA 就是取流时要复用的 UA。
+    const sentHeaders = requestHeaders();
     let sawResponse = false;
     for (const client of PLAYER_CLIENTS) {
         let response;
@@ -331,7 +337,7 @@ export async function resolveYtmStream(track: Track): Promise<YtmStream> {
                 racyCheckOk: true,
                 contentCheckOk: true
             });
-            response = await httpPost(`${PLAYER_URL}?key=${INNERTUBE_KEY}`, body, requestHeaders());
+            response = await httpPost(`${PLAYER_URL}?key=${INNERTUBE_KEY}`, body, sentHeaders);
         } catch {
             // 单个客户端请求失败（断网、超时）不直接抛，落到下一客户端。
             console.log(`[Ytm] ${client.name} 不可用：请求失败`);
@@ -394,7 +400,9 @@ export async function resolveYtmStream(track: Track): Promise<YtmStream> {
                     contentLength:
                         contentLength !== undefined && Number.isFinite(contentLength)
                             ? contentLength
-                            : undefined
+                            : undefined,
+                    // 没显式 UA 时桥用 OkHttp 默认 UA 铸链，取流复用同一个串。
+                    userAgent: sentHeaders['User-Agent'] ?? 'okhttp/4.12.0'
                 };
             }
         }

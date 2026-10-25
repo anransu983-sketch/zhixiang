@@ -410,6 +410,9 @@ interface ResolvedPlay {
     url: string;
     needsGraph: boolean;
     viaProxy: boolean;
+    // 代理取流时要复用的铸链 UA（仅 YTM 有）；代理端口供失败时拉 /last 诊断用。
+    proxyUserAgent?: string;
+    proxyPort?: number;
 }
 
 async function resolvePlayUrl(track: Track): Promise<ResolvedPlay> {
@@ -426,8 +429,12 @@ async function resolvePlayUrl(track: Track): Promise<ResolvedPlay> {
         // 安卓目标路径：远程流一律走本机代理，代理起不来就抛错，绝不直连。
         const port = await ensureStreamProxy();
         let target: string;
+        let proxyUserAgent: string | undefined;
         if (track.source === 'ytm') {
-            target = (await resolveYtmStream(track)).url;
+            const stream = await resolveYtmStream(track);
+            target = stream.url;
+            // 铸链 UA 交给代理复用：代理上游 UA 与铸链时不一致会被 googlevideo 拒。
+            proxyUserAgent = stream.userAgent;
         } else {
             const source = getSource(track.source);
             if (!source) {
@@ -435,10 +442,13 @@ async function resolvePlayUrl(track: Track): Promise<ResolvedPlay> {
             }
             target = await source.resolveStream(track);
         }
+        const proxyUrl = `http://127.0.0.1:${port}/proxy?u=${encodeURIComponent(target)}`;
         return {
-            url: `http://127.0.0.1:${port}/proxy?u=${encodeURIComponent(target)}`,
+            url: proxyUserAgent ? `${proxyUrl}&ua=${encodeURIComponent(proxyUserAgent)}` : proxyUrl,
             needsGraph: true,
-            viaProxy: true
+            viaProxy: true,
+            proxyUserAgent,
+            proxyPort: port
         };
     }
     // 浏览器预览（非交付目标）：YTM 仍不直出 googlevideo，直接抛错；
@@ -474,6 +484,23 @@ async function startTrack(track: Track, crossfade: boolean): Promise<void> {
         console.log(
             `[Playback] audio.play 失败：${error instanceof Error ? `${error.name} ${error.message}` : String(error)}`
         );
+        // 代理取流失败时顺手拉代理的 /last 诊断（只含状态/类型/长度，不含地址），
+        // 下次看日志就能分流是代理没被打到、上游拒了，还是回包格式问题。
+        if (resolved.viaProxy && resolved.proxyPort) {
+            try {
+                const probe = new AbortController();
+                setTimeout(() => probe.abort(), 2000);
+                const res = await fetch(`http://127.0.0.1:${resolved.proxyPort}/last`, {
+                    signal: probe.signal
+                });
+                const text = (await res.text()).trim();
+                if (text) {
+                    console.log(`[Playback] 代理上次取流：${text}`);
+                }
+            } catch {
+                // 代理诊断端点不可达时不影响失败文案。
+            }
+        }
         throw new Error('播放失败，请换一首试试');
     }
     const previousTrack = currentTrack;
@@ -508,6 +535,8 @@ async function startTrack(track: Track, crossfade: boolean): Promise<void> {
 // 队列内跳过失败曲目：从 startIdx 沿 step 方向逐首试 startTrack，直到播出
 // 或走完队尾。成功时把 queueIndex 落到播出那首；全部失败时 queueIndex 不动
 // （调用方仍可重试），只返回失败数。淡入淡出语义由 startTrack 内部处理，不变。
+// 系统性失败（例如取流全被拒）时连跳整单只刷屏不解决问题：连续失败达上限即停。
+const MAX_CONSECUTIVE_SKIPS = 3;
 async function tryPlayFrom(
     startIdx: number,
     crossfade: boolean,
@@ -528,6 +557,10 @@ async function tryPlayFrom(
             console.log(
                 `[Playback] 跳过 ${track.title}：${error instanceof Error ? error.message : '未知原因'}`
             );
+            if (failed >= MAX_CONSECUTIVE_SKIPS) {
+                console.log(`[Playback] 连续失败 ${failed} 首，停止自动跳歌`);
+                break;
+            }
         }
     }
     return { played: false, failed };

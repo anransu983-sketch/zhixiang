@@ -1,11 +1,12 @@
 package com.suanran.zhixiang;
 
+import android.util.Log;
+
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
-import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -16,9 +17,15 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
+
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
+import okhttp3.ResponseBody;
 
 /**
- * 本机小 HTTP 代理：全新写，只用 ServerSocket，不引第三方库。
+ * 本机小 HTTP 代理：ServerSocket 接元素请求，上游走 OkHttp（与桥同栈）。
  *
  * 存在的唯一理由：googlevideo 自 2026-08 起拒绝无界 Range（会 403）。
  * audio 元素播流时常发 Range: bytes=0- 这类无界请求，直连必被拦；
@@ -28,8 +35,11 @@ import java.util.Map;
  * 约定：
  * - 只监听 127.0.0.1，不对外暴露；只接受 GET /proxy?u=<编码后目标>。
  * - 目标只放行 http / https；其它 scheme 一律 400，不做开放代理。
- * - 上游请求只带翻译后的 Range 与客户端 User-Agent（无则用默认串），
- *   不转发 Cookie / Authorization 等凭证头。
+ * - 上游请求只带翻译后的 Range 与一个 User-Agent，不转发 Cookie /
+ *   Authorization 等凭证头。UA 优先级：?ua= 参数（铸链时实际发出的 UA，
+ *   Web 层从取链处带来）> 元素发来的 UA > 默认串。googlevideo 按铸链时
+ *   的请求形态认人，UA 不对只回空包、元素 instant Format error
+ *   （Folia 0.7.22.8 同款教训），所以铸链 UA 必须复用，不能只转元素 UA。
  * - 响应一律带 Access-Control-Allow-Origin: *，且保留上游 Content-Type、
  *   Content-Range、Content-Length、Accept-Ranges，让 Web Audio 图读到
  *   的数据不被跨域污染（AnalyserNode 才能出频谱）。
@@ -38,7 +48,9 @@ import java.util.Map;
  *   格式非法 → 按无 Range 处理。206 按上游回的 Content-Range 原样转发。
  * - 上游不支持 Range 回 200 时，原样转发整段 200（不改写成 206）。
  * - 上游出错（4xx/5xx）时原样转发状态码与响应体，Web 层按播放失败处理。
- * - 绝不记录目标地址：它可能带时效签名，日志里只留状态与错误种类。
+ * - GET /last 返回最近一次上游取流的诊断（状态/类型/长度/Range/UA 来源），
+ *   供 Web 层失败时拉取记日志；绝不记录目标地址：它可能带时效签名，
+ *   日志里只留状态与错误种类。
  */
 public class StreamProxyServer {
 
@@ -47,6 +59,24 @@ public class StreamProxyServer {
     private static final int READ_TIMEOUT_MS = 30000;
     private static final int BUFFER_BYTES = 32 * 1024;
     private static final int MAX_HEADER_LINES = 64;
+
+    private static final String TAG = "ZxProxy";
+
+    // 上游与桥同栈：不设代理、跟设备网络栈走；跳转（含跨协议）全跟，
+    // 取链与取流同出口，链绑定的 IP 才不会在取流时变掉。
+    private static final OkHttpClient UPSTREAM = new OkHttpClient.Builder()
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .connectTimeout(CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .readTimeout(READ_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .build();
+
+    // 最近一次上游取流的诊断（/last 用；不含目标地址）。
+    private volatile int lastStatus = -1;
+    private volatile String lastType = "";
+    private volatile long lastLength = -1;
+    private volatile String lastRange = "";
+    private volatile String lastUaSrc = "";
 
     private ServerSocket serverSocket;
     private Thread acceptThread;
@@ -106,7 +136,7 @@ public class StreamProxyServer {
     }
 
     private void handle(Socket client) {
-        HttpURLConnection upstream = null;
+        Response upstream = null;
         boolean responseStarted = false;
         try {
             client.setSoTimeout(READ_TIMEOUT_MS);
@@ -119,6 +149,13 @@ public class StreamProxyServer {
             String[] parts = requestLine.split(" ");
             if (parts.length < 2 || !"GET".equalsIgnoreCase(parts[0])) {
                 writeSimple(client, 405, "Method Not Allowed");
+                return;
+            }
+            String rawPath = parts[1];
+            int qmark = rawPath.indexOf('?');
+            String pathOnly = qmark < 0 ? rawPath : rawPath.substring(0, qmark);
+            if ("/last".equals(pathOnly)) {
+                writeLast(client);
                 return;
             }
             Map<String, String> headers = new HashMap<>();
@@ -134,11 +171,13 @@ public class StreamProxyServer {
                             line.substring(colon + 1).trim());
                 }
             }
-            String rawTarget = parseQueryParam(parts[1]);
+            String rawTarget = queryParam(parts[1], "u");
             if (rawTarget == null || rawTarget.isEmpty()) {
                 writeSimple(client, 400, "Bad Request");
                 return;
             }
+            // 铸链 UA（Web 层从取链处带来）；没有时回落到元素 UA。
+            String uaParam = queryParam(parts[1], "ua");
             URL target;
             try {
                 target = new URL(rawTarget);
@@ -151,23 +190,38 @@ public class StreamProxyServer {
                 writeSimple(client, 400, "Bad Request");
                 return;
             }
-            upstream = (HttpURLConnection) target.openConnection();
-            upstream.setConnectTimeout(CONNECT_TIMEOUT_MS);
-            upstream.setReadTimeout(READ_TIMEOUT_MS);
-            upstream.setInstanceFollowRedirects(true);
-            upstream.setUseCaches(false);
-            upstream.setRequestProperty("Range", translateRange(headers.get("range")));
-            String userAgent = headers.get("user-agent");
-            upstream.setRequestProperty(
-                    "User-Agent",
-                    userAgent == null || userAgent.isEmpty()
-                            ? "Mozilla/5.0"
-                            : userAgent);
-
-            int status = upstream.getResponseCode();
-            String contentType = upstream.getContentType();
-            String contentRange = upstream.getHeaderField("Content-Range");
-            long contentLength = upstream.getContentLengthLong();
+            String sentRange = translateRange(headers.get("range"));
+            String elementUa = headers.get("user-agent");
+            String userAgent;
+            String uaSrc;
+            if (uaParam != null && !uaParam.isEmpty()) {
+                userAgent = uaParam;
+                uaSrc = "param";
+            } else if (elementUa != null && !elementUa.isEmpty()) {
+                userAgent = elementUa;
+                uaSrc = "element";
+            } else {
+                userAgent = "Mozilla/5.0";
+                uaSrc = "default";
+            }
+            Request request = new Request.Builder()
+                    .url(rawTarget)
+                    .header("Range", sentRange)
+                    .header("User-Agent", userAgent)
+                    .build();
+            upstream = UPSTREAM.newCall(request).execute();
+            int status = upstream.code();
+            String contentType = upstream.header("Content-Type");
+            String contentRange = upstream.header("Content-Range");
+            ResponseBody responseBody = upstream.body();
+            long contentLength = responseBody != null ? responseBody.contentLength() : -1;
+            lastStatus = status;
+            lastType = contentType != null ? contentType : "";
+            lastLength = contentLength;
+            lastRange = sentRange;
+            lastUaSrc = uaSrc;
+            Log.i(TAG, "fetch status=" + status + " type=" + lastType
+                    + " len=" + contentLength + " range=" + sentRange + " uaSrc=" + uaSrc);
 
             OutputStream out = client.getOutputStream();
             StringBuilder response = new StringBuilder();
@@ -190,9 +244,8 @@ public class StreamProxyServer {
             out.write(response.toString().getBytes(StandardCharsets.UTF_8));
             out.flush();
 
-            InputStream body = status >= 200 && status < 300
-                    ? upstream.getInputStream()
-                    : upstream.getErrorStream();
+            // OkHttp 不分输入/错误流：错误体也在 body 里，原样透传。
+            InputStream body = responseBody != null ? responseBody.byteStream() : null;
             if (body != null) {
                 byte[] buffer = new byte[BUFFER_BYTES];
                 int read;
@@ -213,7 +266,7 @@ public class StreamProxyServer {
             }
         } finally {
             if (upstream != null) {
-                upstream.disconnect();
+                upstream.close();
             }
             try {
                 client.close();
@@ -223,7 +276,7 @@ public class StreamProxyServer {
         }
     }
 
-    private String parseQueryParam(String rawPath) {
+    private String queryParam(String rawPath, String name) {
         int question = rawPath.indexOf('?');
         if (question < 0) {
             return null;
@@ -234,7 +287,7 @@ public class StreamProxyServer {
             if (equals <= 0) {
                 continue;
             }
-            if (!"u".equals(pair.substring(0, equals))) {
+            if (!name.equals(pair.substring(0, equals))) {
                 continue;
             }
             try {
@@ -244,6 +297,28 @@ public class StreamProxyServer {
             }
         }
         return null;
+    }
+
+    // /last：最近一次上游取流的诊断，不含目标地址；Web 层失败时拉取记日志。
+    private void writeLast(Socket client) throws IOException {
+        String text;
+        if (lastStatus < 0) {
+            text = "none";
+        } else {
+            text = "status=" + lastStatus + " type=" + lastType + " len=" + lastLength
+                    + " range=" + lastRange + " uaSrc=" + lastUaSrc;
+        }
+        byte[] body = text.getBytes(StandardCharsets.UTF_8);
+        String response = "HTTP/1.1 200 OK\r\n"
+                + "Access-Control-Allow-Origin: *\r\n"
+                + "Content-Type: text/plain\r\n"
+                + "Content-Length: " + body.length + "\r\n"
+                + "Connection: close\r\n"
+                + "\r\n";
+        OutputStream out = client.getOutputStream();
+        out.write(response.getBytes(StandardCharsets.UTF_8));
+        out.write(body);
+        out.flush();
     }
 
     private String translateRange(String clientRange) {
