@@ -10,6 +10,9 @@ export interface Track {
     durationMs?: number;
     coverUrl?: string;
     source: SourceId;
+    // 音质角标用：本地按文件扩展名（如 FLAC），YTM 按取链元数据；
+    // 未知时留空，角标隐藏，不猜。
+    format?: string;
     streamUrl?: string;
 }
 

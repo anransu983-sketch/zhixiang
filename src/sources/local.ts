@@ -17,6 +17,7 @@ interface LocalRawTrack {
 
 interface LocalMusicPlugin {
     scan(): Promise<{ tracks: LocalRawTrack[] }>;
+    coverArt(options: { albumId: number }): Promise<{ dataUrl: string }>;
 }
 
 const LocalMusic = registerPlugin<LocalMusicPlugin>('LocalMusic');
@@ -87,6 +88,9 @@ class LocalMusicSource implements AudioSource {
     private toTrack(raw: LocalRawTrack): Track {
         const id = `local:${raw.id}`;
         this.paths.set(id, raw.path);
+        // 音质角标用：只取文件扩展名（大写），拿不到或不像扩展名时留空不猜。
+        const dot = raw.path.lastIndexOf('.');
+        const ext = dot > 0 ? raw.path.slice(dot + 1).toUpperCase() : '';
         return {
             id,
             title: raw.title || '未知曲名',
@@ -94,8 +98,22 @@ class LocalMusicSource implements AudioSource {
             album: raw.album,
             durationMs: raw.durationMs,
             coverUrl: raw.coverUri,
-            source: 'local'
+            source: 'local',
+            format: /^[A-Z0-9]{2,5}$/.test(ext) ? ext : undefined
         };
+    }
+}
+
+// 播放页封面用：按专辑 id 向原生要一张专辑图（data URL）。
+// 只在播放页点开当前曲目时调一次，不批量扫库；失败返回 null，调用方隐藏封面。
+export async function getLocalCoverDataUrl(albumId: number): Promise<string | null> {
+    try {
+        const result = await LocalMusic.coverArt({ albumId });
+        return typeof result.dataUrl === 'string' && result.dataUrl.startsWith('data:image/')
+            ? result.dataUrl
+            : null;
+    } catch {
+        return null;
     }
 }
 

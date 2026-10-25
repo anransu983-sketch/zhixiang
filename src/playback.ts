@@ -77,6 +77,32 @@ export interface PlaybackState {
     error: string | null;
 }
 
+// 循环模式（播放页底排用，只影响自然播完与队尾手动下一首，不动淡入淡出）：
+// off = 不循环，queue = 列表循环，one = 单曲循环。存在 localStorage。
+export type RepeatMode = 'off' | 'queue' | 'one';
+
+const REPEAT_KEY = 'zx_repeat_mode_v1';
+
+export function getRepeatMode(): RepeatMode {
+    try {
+        const raw = localStorage.getItem(REPEAT_KEY);
+        if (raw === 'queue' || raw === 'one') {
+            return raw;
+        }
+    } catch {
+        // 存取失败时按默认。
+    }
+    return 'off';
+}
+
+export function setRepeatMode(mode: RepeatMode): void {
+    try {
+        localStorage.setItem(REPEAT_KEY, mode);
+    } catch {
+        // 存不下只影响下次打开的默认值。
+    }
+}
+
 type StateListener = (state: PlaybackState) => void;
 
 interface PlayerSlot {
@@ -490,8 +516,11 @@ async function tryPlayFrom(
             await startTrack(track, crossfade);
             queueIndex = i;
             return { played: true, failed };
-        } catch {
+        } catch (error) {
             failed += 1;
+            console.log(
+                `[Playback] 跳过 ${track.title}：${error instanceof Error ? error.message : '未知原因'}`
+            );
         }
     }
     return { played: false, failed };
@@ -499,6 +528,9 @@ async function tryPlayFrom(
 
 // 全部失败时的提示：单首失败保留旧文案，多首才注明跳过了几首。
 function skipAllMessage(failed: number): string {
+    if (failed > 0) {
+        console.log(`[Playback] 队列全部失败：跳过 ${failed} 首`);
+    }
     if (failed <= 1) {
         return '播放失败，请换一首试试';
     }
@@ -506,7 +538,38 @@ function skipAllMessage(failed: number): string {
 }
 
 async function advanceAfterEnded(): Promise<void> {
+    const mode = getRepeatMode();
+    // 单曲循环：重播当前这首（自然播完，无重叠，短淡入）；重播失败直接停，不往后跳。
+    if (mode === 'one' && currentTrack) {
+        try {
+            await startTrack(currentTrack, false);
+            return;
+        } catch {
+            playing = false;
+            lastError = '播放失败，请换一首试试';
+            emitTrackChange();
+            try {
+                await stopPlaybackService();
+            } catch {
+                // 忽略。
+            }
+            try {
+                await stopStreamProxy();
+            } catch {
+                // 忽略。
+            }
+            return;
+        }
+    }
     if (queueIndex >= queue.length - 1) {
+        // 列表循环：队尾播完回到队首；队首起全播不了时按播完处理并提示。
+        if (mode === 'queue' && queue.length > 0) {
+            const result = await tryPlayFrom(0, false, 1);
+            if (result.played) {
+                return;
+            }
+            lastError = skipAllMessage(result.failed);
+        }
         // 队列播完：停前台服务与代理，状态回到未播放。
         playing = false;
         emitTrackChange();
@@ -570,6 +633,27 @@ export async function next(): Promise<void> {
         return;
     }
     if (queueIndex >= queue.length - 1) {
+        // 队尾手动下一首：列表循环回队首，单曲循环重播当前，其它模式不动。
+        const mode = getRepeatMode();
+        if (mode === 'queue') {
+            const result = await tryPlayFrom(0, playing, 1);
+            if (!result.played) {
+                playing = false;
+                lastError = skipAllMessage(result.failed);
+                emitTrackChange();
+            }
+            return;
+        }
+        if (mode === 'one') {
+            try {
+                await startTrack(currentTrack, playing);
+            } catch {
+                playing = false;
+                lastError = '播放失败，请换一首试试';
+                emitTrackChange();
+            }
+            return;
+        }
         return;
     }
     const result = await tryPlayFrom(queueIndex + 1, playing, 1);

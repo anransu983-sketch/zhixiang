@@ -5,9 +5,15 @@ import android.content.ContentResolver;
 import android.content.ContentUris;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.net.Uri;
 import android.os.Build;
 import android.provider.MediaStore;
+import android.util.Base64;
+
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 
 import androidx.core.content.ContextCompat;
 
@@ -143,6 +149,69 @@ public class LocalMusicPlugin extends Plugin {
             call.reject("缺少读取音频文件的权限", "PERMISSION_DENIED", e);
         } catch (Exception e) {
             call.reject("扫描本地音乐失败", "SCAN_FAILED", e);
+        }
+    }
+
+    // 播放页封面：按专辑 id 读一张专辑图，转 data URL 回 Web 层。
+    // 只在播放页点开当前曲目时调一次，不批量扫库；读不到图时 reject，
+    // TS 侧按无封面处理（隐藏封面，不露破图）。
+    @PluginMethod
+    public void coverArt(PluginCall call) {
+        if (getContext() == null) {
+            call.reject("系统服务不可用", "NO_CONTEXT");
+            return;
+        }
+        long albumId = call.getData() != null ? call.getData().optLong("albumId", -1) : -1;
+        if (albumId <= 0) {
+            call.reject("缺少专辑 id", "NO_ALBUM_ID");
+            return;
+        }
+        ContentResolver resolver = getContext().getContentResolver();
+        if (resolver == null) {
+            call.reject("系统服务不可用", "NO_RESOLVER");
+            return;
+        }
+        Uri coverUri = ContentUris.withAppendedId(
+            Uri.parse("content://media/external/audio/albumart"),
+            albumId
+        );
+        try (InputStream input = resolver.openInputStream(coverUri)) {
+            if (input == null) {
+                call.reject("没有专辑图", "NO_COVER");
+                return;
+            }
+            Bitmap bitmap = BitmapFactory.decodeStream(input);
+            if (bitmap == null) {
+                call.reject("没有专辑图", "NO_COVER");
+                return;
+            }
+            int width = bitmap.getWidth();
+            int height = bitmap.getHeight();
+            Bitmap scaled = bitmap;
+            int maxSide = Math.max(width, height);
+            if (maxSide > 512) {
+                float scale = 512f / maxSide;
+                scaled = Bitmap.createScaledBitmap(
+                    bitmap,
+                    Math.max(1, Math.round(width * scale)),
+                    Math.max(1, Math.round(height * scale)),
+                    true
+                );
+            }
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            scaled.compress(Bitmap.CompressFormat.JPEG, 85, output);
+            if (scaled != bitmap) {
+                scaled.recycle();
+            }
+            bitmap.recycle();
+            String base64 = Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP);
+            JSObject result = new JSObject();
+            result.put("dataUrl", "data:image/jpeg;base64," + base64);
+            call.resolve(result);
+        } catch (SecurityException e) {
+            call.reject("缺少读取音频文件的权限", "PERMISSION_DENIED", e);
+        } catch (Exception e) {
+            call.reject("读专辑图失败", "COVER_FAILED", e);
         }
     }
 

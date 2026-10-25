@@ -280,8 +280,10 @@ export class VisualStage {
 
         ctx.clearRect(0, 0, width, height);
 
-        // 底：雨滴玻璃开时画封面模糊底，否则画深色底。
-        if (toggles.rain) {
+        // 底：有封面时一律画封面模糊底（雨滴开关只管雨滴本身）；
+        // 无封面时，雨滴开画渐变底、雨滴关画深色底（保持旧观感）。
+        const cover = this.options.getCoverImage();
+        if (cover || toggles.rain) {
             this.drawRainBackground(ctx, width, height);
         } else {
             ctx.fillStyle = '#14101c';

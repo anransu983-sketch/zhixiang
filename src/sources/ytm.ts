@@ -95,6 +95,15 @@ export interface YtmStream {
     url: string;
     mimeType: string;
     contentLength?: number;
+    bitrate?: number;
+}
+
+let lastYtmStream: YtmStream | null = null;
+
+// 播放页角标用：最近一次 YTM 取链的元数据（client 选择结果）。
+// 缓存直链时 mimeType 为空，角标隐藏，不猜。
+export function getLastYtmStreamMeta(): YtmStream | null {
+    return lastYtmStream;
 }
 
 interface RawRun {
@@ -303,13 +312,15 @@ class YtmSource implements AudioSource {
 export async function resolveYtmStream(track: Track): Promise<YtmStream> {
     if (track.streamUrl) {
         // 已有直链时不再取链；mimeType 与 contentLength 只有取链响应才给得出。
-        return { url: track.streamUrl, mimeType: '' };
+        lastYtmStream = { url: track.streamUrl, mimeType: '' };
+        return lastYtmStream;
     }
     const prefix = 'ytm:';
     if (!track.id.startsWith(prefix) || track.id.length === prefix.length) {
         throw new Error('这首歌不是 YTM 的曲目');
     }
     const videoId = track.id.slice(prefix.length);
+    console.log(`[Ytm] 取链 ${track.title}`);
     let sawResponse = false;
     for (const client of PLAYER_CLIENTS) {
         let response;
@@ -323,16 +334,19 @@ export async function resolveYtmStream(track: Track): Promise<YtmStream> {
             response = await httpPost(`${PLAYER_URL}?key=${INNERTUBE_KEY}`, body, requestHeaders());
         } catch {
             // 单个客户端请求失败（断网、超时）不直接抛，落到下一客户端。
+            console.log(`[Ytm] ${client.name} 不可用：请求失败`);
             continue;
         }
         sawResponse = true;
         if (response.status !== 200) {
+            console.log(`[Ytm] ${client.name} 不可用：状态 ${response.status}`);
             continue;
         }
         let parsed: unknown;
         try {
             parsed = JSON.parse(response.body);
         } catch {
+            console.log(`[Ytm] ${client.name} 不可用：解析失败`);
             continue;
         }
         const root = parsed as {
@@ -341,10 +355,14 @@ export async function resolveYtmStream(track: Track): Promise<YtmStream> {
         } | null;
         if (root?.playabilityStatus?.status !== 'OK') {
             // LOGIN_REQUIRED / UNPLAYABLE / ERROR 等都不是可用流，换下一客户端。
+            console.log(
+                `[Ytm] ${client.name} 不可用：playability=${String(root?.playabilityStatus?.status ?? '未知')}`
+            );
             continue;
         }
         const formats = root.streamingData?.adaptiveFormats;
         if (!Array.isArray(formats)) {
+            console.log(`[Ytm] ${client.name} 不可用：无 streamingData`);
             continue;
         }
         let best: YtmStream | null = null;
@@ -372,6 +390,7 @@ export async function resolveYtmStream(track: Track): Promise<YtmStream> {
                 best = {
                     url: raw.url,
                     mimeType: raw.mimeType,
+                    bitrate,
                     contentLength:
                         contentLength !== undefined && Number.isFinite(contentLength)
                             ? contentLength
@@ -380,9 +399,13 @@ export async function resolveYtmStream(track: Track): Promise<YtmStream> {
             }
         }
         if (best) {
+            lastYtmStream = best;
+            console.log(`[Ytm] 取链成功 ${client.name} ${best.mimeType} ${best.bitrate ?? 0}bps`);
             return best;
         }
+        console.log(`[Ytm] ${client.name} 不可用：无可用音频流`);
     }
+    console.log(`[Ytm] 全部客户端失败 ${track.title}`);
     if (!sawResponse) {
         throw new Error('YTM 请求失败，请检查网络后重试');
     }
