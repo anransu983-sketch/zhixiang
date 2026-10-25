@@ -20,7 +20,7 @@ import {
     type NeteaseSession
 } from './sources/netease-session';
 import { buildEapiCookieHeader, shortHash } from './sources/netease-eapi';
-import { httpGet, httpPost } from './native/http';
+import { httpGet } from './native/http';
 import {
     clearYtmSession,
     loadYtmSession,
@@ -231,7 +231,8 @@ async function runEchoTest(button: HTMLButtonElement): Promise<void> {
             );
         };
         const sent = buildEapiCookieHeader();
-        const first = await httpPost('https://httpbin.org/headers', undefined, {
+        // 注意：httpbin 的 /headers 只接受 GET，用 POST 会回 405（0.1.19 的 bug）。
+        const first = await httpGet('https://httpbin.org/headers', {
             'User-Agent': EAPI_UA,
             Cookie: sent
         });
@@ -242,7 +243,7 @@ async function runEchoTest(button: HTMLButtonElement): Promise<void> {
         // 让服务端种一个 cookie，再测一次：全局 handler 若存在，这次就会
         // 用存下的 cookie 覆盖我们设的头。
         await httpGet('https://httpbin.org/cookies/set?zx_probe=1');
-        const second = await httpPost('https://httpbin.org/headers', undefined, {
+        const second = await httpGet('https://httpbin.org/headers', {
             'User-Agent': EAPI_UA,
             Cookie: sent
         });

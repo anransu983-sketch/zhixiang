@@ -75,6 +75,10 @@ public class HttpBridgePlugin extends Plugin {
         String body = call.getString("body");
         JSObject headers = call.getObject("headers");
 
+        // 纵深防御：load() 里清过一次，但若有别的组件在其后又装了默认
+        // handler，每次请求前再清一次，确保本桥的头原样出网。
+        CookieHandler.setDefault(null);
+
         HttpURLConnection connection = null;
         try {
             URL url = new URL(urlText);
