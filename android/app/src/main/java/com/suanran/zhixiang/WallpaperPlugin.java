@@ -1,5 +1,7 @@
 package com.suanran.zhixiang;
 
+import android.app.WallpaperManager;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -8,7 +10,7 @@ import com.getcapacitor.JSArray;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.annotation.CapacitorPlugin;
-import com.getcapacitor.annotation.PluginMethod;
+import com.getcapacitor.PluginMethod;
 
 /**
  * 动态壁纸原生桥（第 8 块，全新写，不抄旧服务）。
@@ -57,7 +59,8 @@ public class WallpaperPlugin extends Plugin {
             call.reject("系统服务不可用", "NO_CONTEXT");
             return;
         }
-        Intent intent = new Intent(Intent.ACTION_CHANGE_LIVE_WALLPAPER);
+        Intent intent = new Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER);
+        intent.putExtra(WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT, new ComponentName(context, LyricWallpaperService.class));
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         try {
             context.startActivity(intent);
