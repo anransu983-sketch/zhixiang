@@ -7,7 +7,6 @@ import { getLocalNotice } from './sources/local';
 import type { AudioSource, Track } from './types';
 
 const UPCOMING = [
-    'YTM',
     '淡入淡出 · 后台保活',
     '首页海报墙',
     '3D 歌单架',

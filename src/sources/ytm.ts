@@ -1,0 +1,375 @@
+// YTM 音源：走 YouTube InnerTube 接口，不做登录体系，不存任何私人密钥与 cookie。
+// 请求一律走原生 HttpBridge，不用浏览器 fetch（WebView 跨域会被 CORS 拦）。
+//
+// 2026-10-25 沙箱 curl 实探结论（无登录、无 cookie；探到的行为记在这里，代码按它实现）：
+// - 搜索 POST https://music.youtube.com/youtubei/v1/search?key=<公开客户端标识>
+//   请求体 {context: {client: {clientName: 'WEB_REMIX', clientVersion: '1.20240111.01.00',
+//   hl, gl}}, query}，回 200 JSON。注意 www.youtube.com 配 WEB 客户端搜同一关键词
+//   只回一个“出了点问题”的占位块，拿不到结果，所以搜索必须走 music.youtube.com +
+//   WEB_REMIX。结果在 contents.tabbedSearchResultsRenderer.tabs[].tabRenderer.content
+//   .sectionListRenderer.contents[] 里，以 musicResponsiveListItemRenderer 出现；
+//   本模块递归收集这类节点，只留带 playlistItemData.videoId 的可播项（歌手、专辑、
+//   歌单行没有 videoId，直接跳过），按 videoId 去重，取前 20 条。
+//   行结构：flexColumns[0] 是标题 runs；flexColumns[1] 是“类型 • 歌手 • 专辑/播放量”
+//   这种 runs 串；thumbnail.musicThumbnailRenderer.thumbnail.thumbnails 是封面组。
+//   搜索行不带时长（后几列只给播放量/观看量），所以 Track.durationMs 留空；
+//   时长在取链响应的 videoDetails.lengthSeconds 里，第 5 块如需展示可从那里取。
+// - 取链 POST https://www.youtube.com/youtubei/v1/player?key=<公开客户端标识>
+//   请求体 {context: {client: {...}}, videoId, racyCheckOk: true, contentCheckOk: true}。
+//   关键一点：player 请求的 client 里必须带 visitorData（取自最近一次搜索响应的
+//   responseContext.visitorData）。沙箱实探：ANDROID 不带 visitorData 回
+//   playabilityStatus LOGIN_REQUIRED（“Sign in to confirm you're not a bot”），
+//   带上后回 OK 并给出 streamingData；IOS 同理。没有缓存的 visitorData 时仍按链
+//   顺序尝试，不为此多发一次搜索请求。
+// - 客户端回落顺序：VISIONOS → ANDROID → IOS → WEB_REMIX → WEB。
+//   VISIONOS 放首位是 2026-10-24 真机验过的行为，本块按该顺序重新实现，不抄旧代码。
+//   沙箱里 VISIONOS 1.0 无论带不带 visitorData 都回 404（Requested entity was not
+//   found），ANDROID 20.10.38 与 IOS 20.10.38 带 visitorData 实测回 OK；WEB_REMIX 与
+//   WEB 在沙箱里回 UNPLAYABLE，仍留作链尾兜底。哪一环在 S26 真机上真正出链，
+//   须由真机验收确认，见本块报告。
+// - 取链成功时 streamingData.adaptiveFormats 里有带直链 url 的纯音频项（实探 itag
+//   139/140 mp4 与 249/251 opus，url 直给、无需解签名串）；本模块只取带直链 url 的
+//   纯音频项，按 bitrate 取最高一条。带 signatureCipher 而无 url 的项直接跳过，
+//   本块不做签名解算；某客户端拿不到可用流就落到下一客户端，全链失败才抛中文错。
+// - key 说明：URL 上的 key 是 YouTube 各公开客户端共用的 InnerTube 客户端标识，
+//   不是私人密钥、不是账号 cookie，不要把它当成需要保密的东西，也不要换成任何
+//   私人凭证。取链地址带时效签名，拿到后应尽快播放，不要长期缓存。
+//
+// 重要约束（第 5 块播放引擎必须遵守，本块不实现播放逻辑）：
+// googlevideo 自 2026-08 起拒绝无界 Range 请求（会 403），这是 2026-10-24 真机验过
+// 的行为；已验证的应对是有界 Range（1MiB 窗口）。所以 resolveStream 只返回地址与
+// 元数据（mimeType、contentLength），绝不要在本块里用 plain audio 直接播这条地址
+// 来“验证出声”——无界 Range 会被 403 拦下，那不是地址本身不可用。有界 Range 加载
+// 由第 5 块的播放引擎实现（MSE 分块加载或本地 Range 代理均可，第 5 块定）。
+
+import { httpPost } from '../native/http';
+import type { AudioSource, SourceId, Track } from '../types';
+
+const SEARCH_URL = 'https://music.youtube.com/youtubei/v1/search';
+const PLAYER_URL = 'https://www.youtube.com/youtubei/v1/player';
+// 公开客户端标识（见文件头 key 说明），非私人密钥。
+const INNERTUBE_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
+const SEARCH_LIMIT = 20;
+
+const HEADERS: Record<string, string> = {
+    'Content-Type': 'application/json'
+};
+
+interface InnertubeClient {
+    name: string;
+    version: string;
+    deviceMake?: string;
+    deviceModel?: string;
+    osName?: string;
+    osVersion?: string;
+}
+
+const SEARCH_CLIENT: InnertubeClient = {
+    name: 'WEB_REMIX',
+    version: '1.20240111.01.00'
+};
+
+// 取链回落链：VISIONOS 首位（2026-10-24 真机验过的尝试顺序），依次回落。
+const PLAYER_CLIENTS: InnertubeClient[] = [
+    { name: 'VISIONOS', version: '1.0' },
+    { name: 'ANDROID', version: '20.10.38' },
+    {
+        name: 'IOS',
+        version: '20.10.38',
+        deviceMake: 'Apple',
+        deviceModel: 'iPhone16,2',
+        osName: 'iPhone',
+        osVersion: '18.0'
+    },
+    { name: 'WEB_REMIX', version: '1.20240111.01.00' },
+    { name: 'WEB', version: '2.20240111.09' }
+];
+
+export interface YtmStream {
+    url: string;
+    mimeType: string;
+    contentLength?: number;
+}
+
+interface RawRun {
+    text?: unknown;
+}
+
+interface RawThumbnail {
+    url?: unknown;
+    width?: unknown;
+}
+
+interface RawListItem {
+    playlistItemData?: { videoId?: unknown } | null;
+    thumbnail?: {
+        musicThumbnailRenderer?: {
+            thumbnail?: { thumbnails?: unknown } | null;
+        } | null;
+    } | null;
+    flexColumns?: unknown;
+}
+
+interface RawFormat {
+    mimeType?: unknown;
+    bitrate?: unknown;
+    contentLength?: unknown;
+    url?: unknown;
+    signatureCipher?: unknown;
+}
+
+// 最近一次搜索响应给的 visitorData；取链时带上它才能绕过“请登录确认不是机器人”
+// 的拦截（沙箱实探结论，见文件头）。没有它时也不阻塞取链，只是成功率会低。
+let cachedVisitorData: string | null = null;
+
+function clientContext(client: InnertubeClient, withVisitorData: boolean): Record<string, unknown> {
+    const context: Record<string, unknown> = {
+        clientName: client.name,
+        clientVersion: client.version,
+        hl: 'zh-CN',
+        gl: 'CN'
+    };
+    if (client.deviceMake) {
+        context.deviceMake = client.deviceMake;
+    }
+    if (client.deviceModel) {
+        context.deviceModel = client.deviceModel;
+    }
+    if (client.osName) {
+        context.osName = client.osName;
+    }
+    if (client.osVersion) {
+        context.osVersion = client.osVersion;
+    }
+    if (cachedVisitorData && withVisitorData) {
+        context.visitorData = cachedVisitorData;
+    }
+    return context;
+}
+
+function runText(run: RawRun): string {
+    return typeof run.text === 'string' ? run.text : '';
+}
+
+function columnText(item: RawListItem, index: number): string {
+    if (!Array.isArray(item.flexColumns) || item.flexColumns.length <= index) {
+        return '';
+    }
+    const column = item.flexColumns[index] as {
+        musicResponsiveListItemFlexColumnRenderer?: { text?: { runs?: unknown } } | null;
+    };
+    const runs = column.musicResponsiveListItemFlexColumnRenderer?.text?.runs;
+    if (!Array.isArray(runs)) {
+        return '';
+    }
+    return (runs as RawRun[]).map(runText).join('');
+}
+
+function largestCover(item: RawListItem): string | undefined {
+    const thumbnails = item.thumbnail?.musicThumbnailRenderer?.thumbnail?.thumbnails;
+    if (!Array.isArray(thumbnails)) {
+        return undefined;
+    }
+    let bestUrl: string | undefined;
+    let bestWidth = -1;
+    for (const raw of thumbnails as RawThumbnail[]) {
+        const width = typeof raw.width === 'number' ? raw.width : 0;
+        if (typeof raw.url === 'string' && raw.url && width >= bestWidth) {
+            bestUrl = raw.url;
+            bestWidth = width;
+        }
+    }
+    return bestUrl;
+}
+
+function collectListItems(node: unknown, out: RawListItem[]): void {
+    if (Array.isArray(node)) {
+        for (const child of node) {
+            collectListItems(child, out);
+        }
+        return;
+    }
+    if (node === null || typeof node !== 'object') {
+        return;
+    }
+    const record = node as Record<string, unknown>;
+    const item = record.musicResponsiveListItemRenderer;
+    if (item !== null && typeof item === 'object') {
+        out.push(item as RawListItem);
+    }
+    for (const child of Object.values(record)) {
+        collectListItems(child, out);
+    }
+}
+
+function toTrack(item: RawListItem): Track | null {
+    const videoId = item.playlistItemData?.videoId;
+    if (typeof videoId !== 'string' || !videoId) {
+        return null;
+    }
+    const title = columnText(item, 0) || '未知曲名';
+    // 第二列形如“Song • 歌手”或“Video • 歌手 • 播放量”：首段是类型，次段是歌手；
+    // 第三段若是播放量/观看量/订阅数一类计数则不是专辑，只有非计数文本才当专辑。
+    const parts = columnText(item, 1)
+        .split(' • ')
+        .map((part) => part.trim())
+        .filter((part) => part);
+    const artist = parts[1] ?? '未知歌手';
+    let album: string | undefined;
+    const third = parts[2];
+    if (third !== undefined && !/views|plays|subscribers|audience|followers/i.test(third)) {
+        album = third;
+    }
+    return {
+        id: `ytm:${videoId}`,
+        title,
+        artist,
+        album,
+        coverUrl: largestCover(item),
+        source: 'ytm'
+    };
+}
+
+class YtmSource implements AudioSource {
+    readonly id: SourceId = 'ytm';
+    readonly label = 'YTM';
+
+    async search(query: string): Promise<Track[]> {
+        const keyword = query.trim();
+        if (!keyword) {
+            // YTM 没有“全部歌曲”可列，空查询直接返回空列表，不发请求。
+            return [];
+        }
+        const body = JSON.stringify({
+            context: { client: clientContext(SEARCH_CLIENT, false) },
+            query: keyword
+        });
+        const response = await httpPost(`${SEARCH_URL}?key=${INNERTUBE_KEY}`, body, HEADERS);
+        if (response.status !== 200) {
+            throw new Error('YTM 搜索失败，请稍后重试');
+        }
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(response.body);
+        } catch {
+            throw new Error('YTM 搜索失败，请稍后重试');
+        }
+        const visitorData = (parsed as { responseContext?: { visitorData?: unknown } } | null)
+            ?.responseContext?.visitorData;
+        if (typeof visitorData === 'string' && visitorData) {
+            // 取链要靠它过机器人检查，搜到一次就缓存起来。
+            cachedVisitorData = visitorData;
+        }
+        const rawItems: RawListItem[] = [];
+        collectListItems(parsed, rawItems);
+        const seen = new Set<string>();
+        const tracks: Track[] = [];
+        for (const raw of rawItems) {
+            if (tracks.length >= SEARCH_LIMIT) {
+                break;
+            }
+            const track = toTrack(raw);
+            if (!track || seen.has(track.id)) {
+                continue;
+            }
+            seen.add(track.id);
+            tracks.push(track);
+        }
+        return tracks;
+    }
+
+    async resolveStream(track: Track): Promise<string> {
+        return (await resolveYtmStream(track)).url;
+    }
+}
+
+export async function resolveYtmStream(track: Track): Promise<YtmStream> {
+    if (track.streamUrl) {
+        // 已有直链时不再取链；mimeType 与 contentLength 只有取链响应才给得出。
+        return { url: track.streamUrl, mimeType: '' };
+    }
+    const prefix = 'ytm:';
+    if (!track.id.startsWith(prefix) || track.id.length === prefix.length) {
+        throw new Error('这首歌不是 YTM 的曲目');
+    }
+    const videoId = track.id.slice(prefix.length);
+    let sawResponse = false;
+    for (const client of PLAYER_CLIENTS) {
+        let response;
+        try {
+            const body = JSON.stringify({
+                context: { client: clientContext(client, true) },
+                videoId,
+                racyCheckOk: true,
+                contentCheckOk: true
+            });
+            response = await httpPost(`${PLAYER_URL}?key=${INNERTUBE_KEY}`, body, HEADERS);
+        } catch {
+            // 单个客户端请求失败（断网、超时）不直接抛，落到下一客户端。
+            continue;
+        }
+        sawResponse = true;
+        if (response.status !== 200) {
+            continue;
+        }
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(response.body);
+        } catch {
+            continue;
+        }
+        const root = parsed as {
+            playabilityStatus?: { status?: unknown } | null;
+            streamingData?: { adaptiveFormats?: unknown } | null;
+        } | null;
+        if (root?.playabilityStatus?.status !== 'OK') {
+            // LOGIN_REQUIRED / UNPLAYABLE / ERROR 等都不是可用流，换下一客户端。
+            continue;
+        }
+        const formats = root.streamingData?.adaptiveFormats;
+        if (!Array.isArray(formats)) {
+            continue;
+        }
+        let best: YtmStream | null = null;
+        let bestBitrate = -1;
+        for (const raw of formats as RawFormat[]) {
+            // 只要纯音频 adaptiveFormats，且必须带直链 url；带 signatureCipher 而无
+            // url 的项本块不解算，直接跳过。
+            if (
+                typeof raw.mimeType !== 'string' ||
+                !raw.mimeType.startsWith('audio') ||
+                typeof raw.url !== 'string' ||
+                !raw.url
+            ) {
+                continue;
+            }
+            const bitrate = typeof raw.bitrate === 'number' ? raw.bitrate : 0;
+            if (bitrate >= bestBitrate) {
+                bestBitrate = bitrate;
+                const contentLength =
+                    typeof raw.contentLength === 'string'
+                        ? Number(raw.contentLength)
+                        : typeof raw.contentLength === 'number'
+                          ? raw.contentLength
+                          : undefined;
+                best = {
+                    url: raw.url,
+                    mimeType: raw.mimeType,
+                    contentLength:
+                        contentLength !== undefined && Number.isFinite(contentLength)
+                            ? contentLength
+                            : undefined
+                };
+            }
+        }
+        if (best) {
+            return best;
+        }
+    }
+    if (!sawResponse) {
+        throw new Error('YTM 请求失败，请检查网络后重试');
+    }
+    throw new Error('这首歌在 YTM 上暂时播不了，请换一首试试');
+}
+
+export const ytmSource = new YtmSource();
