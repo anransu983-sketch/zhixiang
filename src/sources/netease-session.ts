@@ -165,7 +165,10 @@ export async function checkQr(key: string): Promise<QrCheckResult> {
         return { code: 802, message: message || '已扫码，请在手机上确认' };
     }
     if (code !== 803) {
-        throw new Error(`扫码状态查询失败（code ${code}）`);
+        // 服务端原话 message 一起带上：8821 这类非标准码的含义可能就写在里面。
+        const detail = `扫码状态查询失败（code ${code}${message ? `：${message}` : ''}）`;
+        console.error(detail);
+        throw new Error(detail);
     }
     // 803：先取 body 里的凭证，拿不到再用 Set-Cookie 兜底；都没有则不算登录成功。
     let cookie = '';

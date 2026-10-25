@@ -236,6 +236,12 @@ function toTrack(item: RawListItem): Track | null {
     };
 }
 
+// 诊断用：把非 JSON 响应体的前 200 字单行化展示。响应体里没有凭证，
+// 只看 YouTube 到底回了什么页（验证页／同意页／空响应），不贴完整 body。
+function bodySnippet(body: string): string {
+    return body.replace(/\s+/g, ' ').trim().slice(0, 200) || '空响应';
+}
+
 class YtmSource implements AudioSource {
     readonly id: SourceId = 'ytm';
     readonly label = 'YTM';
@@ -258,7 +264,9 @@ class YtmSource implements AudioSource {
         try {
             parsed = JSON.parse(response.body);
         } catch {
-            throw new Error('YTM 搜索失败（返回异常）');
+            const detail = `YTM 搜索失败（返回异常：${bodySnippet(response.body)}）`;
+            console.error(detail);
+            throw new Error(detail);
         }
         const visitorData = (parsed as { responseContext?: { visitorData?: unknown } } | null)
             ?.responseContext?.visitorData;
@@ -544,6 +552,7 @@ async function browseYtm(browseId: string): Promise<unknown> {
     let lastNetwork = false;
     let lastTimeout = false;
     let lastParse = false;
+    let lastBody = '';
     for (const client of clients) {
         const contextClient: Record<string, unknown> = {
             clientName: client.name,
@@ -567,12 +576,14 @@ async function browseYtm(browseId: string): Promise<unknown> {
             context: { client: contextClient },
             browseId
         });
+        lastBody = '';
         try {
             const response = await httpPost(`${BROWSE_URL}?key=${INNERTUBE_KEY}`, body, requestHeaders());
             if (response.status !== 200) {
                 lastStatus = response.status;
                 continue;
             }
+            lastBody = response.body;
             const parsed = JSON.parse(response.body) as unknown;
             const visitorData = (parsed as { responseContext?: { visitorData?: unknown } })
                 .responseContext?.visitorData;
@@ -602,7 +613,9 @@ async function browseYtm(browseId: string): Promise<unknown> {
         throw new Error(`YTM 榜单加载失败（HTTP ${lastStatus}）`);
     }
     if (lastParse) {
-        throw new Error('YTM 榜单加载失败（返回异常）');
+        const detail = `YTM 榜单加载失败（返回异常：${bodySnippet(lastBody)}）`;
+        console.error(detail);
+        throw new Error(detail);
     }
     throw new Error('YTM 榜单加载失败，请稍后重试');
 }
