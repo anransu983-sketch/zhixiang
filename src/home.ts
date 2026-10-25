@@ -1155,11 +1155,11 @@ function renderTracks(list: HTMLElement, tracks: Track[], status: HTMLElement): 
         info.appendChild(meta);
         item.appendChild(info);
 
-        const playButton = document.createElement('button');
-        playButton.type = 'button';
-        playButton.className = 'track-play';
-        playButton.textContent = '播放';
-        playButton.addEventListener('click', () => {
+        // 整行可点：此前只有右侧小按钮有点击，点行本身（封面/歌名/歌手）
+        // 全无反应——2026-10-26 用户在 YTM 搜索里点晴天那行正是这样哑火，
+        // 日志里连取链都没出现。行点击与按钮共用同一处理，按钮处阻止冒泡，
+        // 免得一次点触发两次（0.1.36 的同队列去重本已兜底，这里再挡一层）。
+        const playFromRow = (): void => {
             void (async () => {
                 try {
                     // 点一首即把该区当前列表作为队列，从点中的这首起播。
@@ -1169,6 +1169,16 @@ function renderTracks(list: HTMLElement, tracks: Track[], status: HTMLElement): 
                     status.textContent = friendlyPlayError(error);
                 }
             })();
+        };
+        item.addEventListener('click', playFromRow);
+
+        const playButton = document.createElement('button');
+        playButton.type = 'button';
+        playButton.className = 'track-play';
+        playButton.textContent = '播放';
+        playButton.addEventListener('click', (event) => {
+            event.stopPropagation();
+            playFromRow();
         });
         item.appendChild(playButton);
 
