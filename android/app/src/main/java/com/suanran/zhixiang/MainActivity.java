@@ -14,6 +14,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(HttpBridgePlugin.class);
         registerPlugin(PlaybackPlugin.class);
         registerPlugin(WallpaperPlugin.class);
+        registerPlugin(YtmSignInPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

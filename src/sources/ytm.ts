@@ -43,6 +43,7 @@
 // 由第 5 块的播放引擎实现（MSE 分块加载或本地 Range 代理均可，第 5 块定）。
 
 import { httpPost } from '../native/http';
+import { withYtmSession } from './ytm-session';
 import type { AudioSource, Poster, SourceId, Track } from '../types';
 
 const SEARCH_URL = 'https://music.youtube.com/youtubei/v1/search';
@@ -54,6 +55,11 @@ const SEARCH_LIMIT = 20;
 const HEADERS: Record<string, string> = {
     'Content-Type': 'application/json'
 };
+
+// 有会话时补 Cookie 与同源 UA、无会话时原样返回；URL、client 与参数一律不动。
+function requestHeaders(): Record<string, string> {
+    return withYtmSession(HEADERS);
+}
 
 interface InnertubeClient {
     name: string;
@@ -244,7 +250,7 @@ class YtmSource implements AudioSource {
             context: { client: clientContext(SEARCH_CLIENT, false) },
             query: keyword
         });
-        const response = await httpPost(`${SEARCH_URL}?key=${INNERTUBE_KEY}`, body, HEADERS);
+        const response = await httpPost(`${SEARCH_URL}?key=${INNERTUBE_KEY}`, body, requestHeaders());
         if (response.status !== 200) {
             throw new Error('YTM 搜索失败，请稍后重试');
         }
@@ -303,7 +309,7 @@ export async function resolveYtmStream(track: Track): Promise<YtmStream> {
                 racyCheckOk: true,
                 contentCheckOk: true
             });
-            response = await httpPost(`${PLAYER_URL}?key=${INNERTUBE_KEY}`, body, HEADERS);
+            response = await httpPost(`${PLAYER_URL}?key=${INNERTUBE_KEY}`, body, requestHeaders());
         } catch {
             // 单个客户端请求失败（断网、超时）不直接抛，落到下一客户端。
             continue;
@@ -557,7 +563,7 @@ async function browseYtm(browseId: string): Promise<unknown> {
             browseId
         });
         try {
-            const response = await httpPost(`${BROWSE_URL}?key=${INNERTUBE_KEY}`, body, HEADERS);
+            const response = await httpPost(`${BROWSE_URL}?key=${INNERTUBE_KEY}`, body, requestHeaders());
             if (response.status !== 200) {
                 continue;
             }
