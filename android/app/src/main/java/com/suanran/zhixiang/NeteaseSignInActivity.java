@@ -33,9 +33,12 @@ public class NeteaseSignInActivity extends Activity {
 
     public static final String EXTRA_COOKIE = "cookie";
 
-    private static final String START_URL = "https://music.163.com/";
+    // 直接开登录页：首页上登录入口藏得深，/login 会跳到 y.music.163.com/m/login
+    //（移动登录页），用户不用在首页翻登录入口。
+    private static final String START_URL = "https://music.163.com/login";
     private static final String[] COOKIE_URLS = {
-            "https://music.163.com/"
+            "https://music.163.com/",
+            "https://y.music.163.com/"
     };
     private static final String SIGNED_IN_MARKER = "MUSIC_U";
     private static final long POLL_INTERVAL_MS = 2000;
@@ -101,6 +104,16 @@ public class NeteaseSignInActivity extends Activity {
                     finishWithCookies();
                 }
             }
+
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                return upgradeCleartext(view, url);
+            }
+
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, android.webkit.WebResourceRequest request) {
+                return upgradeCleartext(view, request.getUrl().toString());
+            }
         });
         root.addView(webView);
 
@@ -132,7 +145,31 @@ public class NeteaseSignInActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        // 网页内能后退就先退（登录流程里常有跳转页、验证码页），退无可退才取消。
+        if (webView != null && webView.canGoBack()) {
+            webView.goBack();
+            return;
+        }
         cancel();
+    }
+
+    // 站内 http 链接（如“下载APP”跳到的 download-new 页）会被系统明文策略拦
+    // 掉（ERR_CLEARTEXT_NOT_PERMITTED）：网易云站内一律升 https 再加载，
+    // 不改应用的全局明文策略，登录凭证也只走 https。
+    private boolean upgradeCleartext(WebView view, String url) {
+        if (url == null) {
+            return false;
+        }
+        Uri uri = Uri.parse(url);
+        if (!"http".equals(uri.getScheme())) {
+            return false;
+        }
+        String host = uri.getHost();
+        if (host == null || !(host.equals("163.com") || host.endsWith(".163.com"))) {
+            return false;
+        }
+        view.loadUrl("https://" + url.substring("http://".length()));
+        return true;
     }
 
     @Override
