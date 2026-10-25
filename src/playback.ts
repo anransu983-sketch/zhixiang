@@ -258,6 +258,10 @@ function bindAudioEvents(slot: PlayerSlot, audio: HTMLAudioElement): void {
         if (activeSlot !== slot) {
             return;
         }
+        console.log(
+            `[Playback] audio 元素错误：code=${audio.error?.code ?? 'none'}` +
+                (audio.error?.message ? ` ${audio.error.message}` : '')
+        );
         playing = false;
         lastError = '播放失败，请换一首试试';
         emitTrackChange();
@@ -465,8 +469,11 @@ async function startTrack(track: Track, crossfade: boolean): Promise<void> {
     setSlotSilent(newSlot);
     try {
         await audio.play();
-    } catch {
+    } catch (error) {
         // 新歌起不来时旧歌不受影响：旧槽还没淡出，状态保持原样。
+        console.log(
+            `[Playback] audio.play 失败：${error instanceof Error ? `${error.name} ${error.message}` : String(error)}`
+        );
         throw new Error('播放失败，请换一首试试');
     }
     const previousTrack = currentTrack;

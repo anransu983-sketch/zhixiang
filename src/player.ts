@@ -86,6 +86,9 @@ function formatTime(totalSeconds: number): string {
 export function openPlayerPage(): void {
     if (overlay) {
         overlay.hidden = false;
+        // 重开也要刷新：页关着时切过歌，标题/收藏/角标/歌词都会 stale，
+        // 只 unhide 不刷新就是截图里那种标题还是旧文案的样子。
+        refreshFromState(getCurrentState());
         stage?.resize();
         stage?.resume();
         return;
@@ -542,6 +545,12 @@ function buildPlayerPage(): HTMLElement {
     updateDegradedNotePage = updateDegradedNote;
 
     const updateProgress = (state: PlaybackState): void => {
+        if (!state.track) {
+            progressFill.style.width = '0%';
+            timeCurrent.textContent = '0:00';
+            timeTotal.textContent = '0:00';
+            return;
+        }
         const totalMs = state.duration;
         const currentMs = state.currentTime * 1000;
         const percent = totalMs > 0 ? Math.min(100, (currentMs / totalMs) * 100) : 0;

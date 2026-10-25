@@ -1,7 +1,7 @@
 // 播放页视觉（第 8 块，全新写）：单块画布上的四项独立图层。
 //
 // 四项开关各自独立，互不依赖，存在 localStorage，键 zhixiang.visual.toggles：
-// - rain（雨滴玻璃，默认开）：封面模糊底 + 雨滴下落 + 落点涟漪。
+// - rain（雨滴玻璃，默认开）：封面模糊底 + 玻璃水滴（静止圆滴＋下滑拖尾＋大光斑）。
 // - particles（粒子舞台，默认关）：粒子随频谱能量律动。
 // - pulse（节奏脉动，默认关）：封面随频谱能量缩放发光。
 // - stars（氛围星空，默认关）：星空闪烁漂移。
@@ -63,14 +63,18 @@ export function saveVisualToggles(toggles: VisualToggles): void {
     }
 }
 
+// 玻璃水滴：静止圆滴（speed 0）＋下滑滴（带拖尾）；
+// 大光斑（bokeh）另起数组，只做柔光深度，不参与下落。
 interface Drop {
     x: number;
     y: number;
+    radius: number;
     speed: number;
-    length: number;
+    trail: number;
+    phase: number;
 }
 
-interface Ripple {
+interface Bokeh {
     x: number;
     y: number;
     radius: number;
@@ -110,7 +114,7 @@ export class VisualStage {
     private suspended = false;
     private staticDrawn = false;
     private drops: Drop[] = [];
-    private ripples: Ripple[] = [];
+    private bokeh: Bokeh[] = [];
     private particles: Particle[] = [];
     private stars: Star[] = [];
     private freqData: Uint8Array<ArrayBuffer> | null = null;
@@ -216,12 +220,35 @@ export class VisualStage {
 
     private seed(width: number, height: number): void {
         if (this.drops.length === 0) {
-            for (let i = 0; i < 60; i++) {
+            // 静止圆滴为主（玻璃上的水珠本来就不怎么动），少量下滑滴带拖尾。
+            for (let i = 0; i < 52; i++) {
                 this.drops.push({
                     x: Math.random() * width,
                     y: Math.random() * height,
-                    speed: 3 + Math.random() * 5,
-                    length: 10 + Math.random() * 18
+                    radius: 2 + Math.random() * 8,
+                    speed: 0,
+                    trail: 0,
+                    phase: Math.random() * Math.PI * 2
+                });
+            }
+            for (let i = 0; i < 12; i++) {
+                this.drops.push({
+                    x: Math.random() * width,
+                    y: Math.random() * height,
+                    radius: 6 + Math.random() * 10,
+                    speed: 0.2 + Math.random() * 0.4,
+                    trail: 20 + Math.random() * 40,
+                    phase: Math.random() * Math.PI * 2
+                });
+            }
+        }
+        if (this.bokeh.length === 0) {
+            for (let i = 0; i < 8; i++) {
+                this.bokeh.push({
+                    x: Math.random() * width,
+                    y: Math.random() * height,
+                    radius: 30 + Math.random() * 50,
+                    alpha: 0.05 + Math.random() * 0.07
                 });
             }
         }
@@ -335,7 +362,7 @@ export class VisualStage {
         ctx.save();
         try {
             if (cover && cover.complete && cover.naturalWidth > 0) {
-                ctx.filter = 'blur(18px) brightness(0.55)';
+                ctx.filter = 'blur(28px) brightness(0.85)';
                 const scale = Math.max(
                     width / cover.naturalWidth,
                     height / cover.naturalHeight
@@ -373,50 +400,51 @@ export class VisualStage {
     ): void {
         const cssWidth = this.canvas.clientWidth || width;
         const cssHeight = this.canvas.clientHeight || height;
+        const scaleX = width / cssWidth;
+        const scaleY = height / cssHeight;
+        const tick = animated ? performance.now() / 1000 : 0;
         ctx.save();
-        ctx.strokeStyle = 'rgba(200, 220, 255, 0.55)';
-        ctx.lineWidth = 1;
+        // 大光斑：失焦的光点，只做深度，不动。
+        for (const spot of this.bokeh) {
+            ctx.fillStyle = `rgba(255, 255, 255, ${spot.alpha.toFixed(3)})`;
+            ctx.beginPath();
+            ctx.arc(spot.x * scaleX, spot.y * scaleY, spot.radius * scaleX, 0, Math.PI * 2);
+            ctx.fill();
+        }
         for (const drop of this.drops) {
-            if (animated) {
+            if (animated && drop.speed > 0) {
                 drop.y += drop.speed;
-                if (drop.y > cssHeight) {
-                    drop.y = -drop.length;
+                if (drop.y - drop.trail > cssHeight) {
+                    drop.y = -drop.trail;
                     drop.x = Math.random() * cssWidth;
-                    this.ripples.push({ x: drop.x, y: cssHeight - 8, radius: 2, alpha: 0.5 });
-                    if (this.ripples.length > 24) {
-                        this.ripples.shift();
-                    }
                 }
             }
-            const scaleX = width / cssWidth;
-            const scaleY = height / cssHeight;
-            ctx.beginPath();
-            ctx.moveTo(drop.x * scaleX, drop.y * scaleY);
-            ctx.lineTo(drop.x * scaleX, (drop.y + drop.length) * scaleY);
-            ctx.stroke();
-        }
-        for (const ripple of this.ripples) {
-            if (animated) {
-                ripple.radius += 0.8;
-                ripple.alpha -= 0.02;
+            const x = drop.x * scaleX;
+            const y = drop.y * scaleY;
+            const r = drop.radius * scaleX;
+            // 下滑拖尾：从滴的上方渐淡到滴本身。
+            if (drop.trail > 0) {
+                ctx.strokeStyle = 'rgba(200, 220, 255, 0.28)';
+                ctx.lineWidth = Math.max(1, r * 0.25);
+                ctx.beginPath();
+                ctx.moveTo(x, y - drop.trail * scaleY);
+                ctx.lineTo(x, y);
+                ctx.stroke();
             }
-            if (ripple.alpha <= 0) {
-                continue;
-            }
-            ctx.strokeStyle = `rgba(200, 220, 255, ${ripple.alpha.toFixed(3)})`;
+            // 圆滴：淡白填充＋亮边＋左上高光点，读起来像玻璃上的水珠。
+            const shimmer = 0.4 + 0.25 * Math.sin(tick * 0.8 + drop.phase);
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.10)';
             ctx.beginPath();
-            ctx.ellipse(
-                ripple.x * (width / cssWidth),
-                ripple.y * (height / cssHeight),
-                ripple.radius * (width / cssWidth),
-                ripple.radius * 0.4 * (height / cssHeight),
-                0,
-                0,
-                Math.PI * 2
-            );
+            ctx.arc(x, y, r, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = `rgba(255, 255, 255, ${shimmer.toFixed(3)})`;
+            ctx.lineWidth = 1;
             ctx.stroke();
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+            ctx.beginPath();
+            ctx.arc(x - r * 0.3, y - r * 0.3, Math.max(0.8, r * 0.22), 0, Math.PI * 2);
+            ctx.fill();
         }
-        this.ripples = this.ripples.filter((ripple) => ripple.alpha > 0);
         ctx.restore();
     }
 
