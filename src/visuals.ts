@@ -119,6 +119,8 @@ export class VisualStage {
     private stars: Star[] = [];
     private seededWidth = 0;
     private seededHeight = 0;
+    private bgCanvas: HTMLCanvasElement | null = null;
+    private bgKey = '';
     private freqData: Uint8Array<ArrayBuffer> | null = null;
     private onVisibilityChange = (): void => {
         if (!document.hidden) {
@@ -242,17 +244,17 @@ export class VisualStage {
         this.seededHeight = height;
         if (this.drops.length === 0) {
             // 静止圆滴为主（玻璃上的水珠本来就不怎么动），少量下滑滴带拖尾。
-            for (let i = 0; i < 110; i++) {
+            for (let i = 0; i < 140; i++) {
                 this.drops.push({
                     x: Math.random() * width,
                     y: Math.random() * height,
-                    radius: 2 + Math.random() * 12,
+                    radius: 1.5 + Math.pow(Math.random(), 1.5) * 12.5,
                     speed: 0,
                     trail: 0,
                     phase: Math.random() * Math.PI * 2
                 });
             }
-            for (let i = 0; i < 14; i++) {
+            for (let i = 0; i < 16; i++) {
                 this.drops.push({
                     x: Math.random() * width,
                     y: Math.random() * height,
@@ -332,7 +334,10 @@ export class VisualStage {
         // 无封面时，雨滴开画渐变底、雨滴关画深色底（保持旧观感）。
         const cover = this.options.getCoverImage();
         if (cover || toggles.rain) {
-            this.drawRainBackground(ctx, width, height);
+            const bg = this.ensureBackground(width, height);
+            if (bg) {
+                ctx.drawImage(bg, 0, 0);
+            }
         } else {
             ctx.fillStyle = '#14101c';
             ctx.fillRect(0, 0, width, height);
@@ -374,23 +379,34 @@ export class VisualStage {
         void cssHeight;
     }
 
-    private drawRainBackground(
-        ctx: CanvasRenderingContext2D,
-        width: number,
-        height: number
-    ): void {
+    // 底图离屏缓存：封面或尺寸没变就复用，省掉每帧一次全屏模糊；
+    // 水滴的透镜采样也从这张底图里取（与主画布同尺寸同坐标）。
+    private ensureBackground(width: number, height: number): HTMLCanvasElement | null {
         const cover = this.options.getCoverImage();
-        ctx.save();
+        const key = `${width}x${height}|${
+            cover && cover.complete && cover.naturalWidth > 0 ? cover.src : 'none'
+        }`;
+        if (this.bgCanvas && this.bgKey === key) {
+            return this.bgCanvas;
+        }
+        const bg = document.createElement('canvas');
+        bg.width = width;
+        bg.height = height;
+        const bctx = bg.getContext('2d');
+        if (!bctx) {
+            return null;
+        }
+        bctx.save();
         try {
             if (cover && cover.complete && cover.naturalWidth > 0) {
-                ctx.filter = 'blur(28px) brightness(0.85) saturate(1.4)';
+                bctx.filter = 'blur(28px) brightness(0.85) saturate(1.4)';
                 const scale = Math.max(
                     width / cover.naturalWidth,
                     height / cover.naturalHeight
                 );
                 const drawWidth = cover.naturalWidth * scale;
                 const drawHeight = cover.naturalHeight * scale;
-                ctx.drawImage(
+                bctx.drawImage(
                     cover,
                     (width - drawWidth) / 2,
                     (height - drawHeight) / 2,
@@ -398,19 +414,22 @@ export class VisualStage {
                     drawHeight
                 );
             } else {
-                const gradient = ctx.createLinearGradient(0, 0, 0, height);
+                const gradient = bctx.createLinearGradient(0, 0, 0, height);
                 gradient.addColorStop(0, '#2a1a30');
                 gradient.addColorStop(1, '#14101c');
-                ctx.fillStyle = gradient;
-                ctx.fillRect(0, 0, width, height);
+                bctx.fillStyle = gradient;
+                bctx.fillRect(0, 0, width, height);
             }
         } catch {
-            ctx.fillStyle = '#1c1424';
-            ctx.fillRect(0, 0, width, height);
+            bctx.fillStyle = '#1c1424';
+            bctx.fillRect(0, 0, width, height);
         } finally {
-            ctx.filter = 'none';
-            ctx.restore();
+            bctx.filter = 'none';
+            bctx.restore();
         }
+        this.bgCanvas = bg;
+        this.bgKey = key;
+        return bg;
     }
 
     private drawRain(
@@ -452,15 +471,44 @@ export class VisualStage {
                 ctx.lineTo(x, y);
                 ctx.stroke();
             }
-            // 圆滴：淡白填充＋暗色外边＋亮色内边＋左上高光点。
-            // 暗边让水滴在亮底上也看得见，亮边＋高光让它在暗底上也看得见。
+            // 圆滴：大滴做透镜（把底图局部放大画进圆里，滴里能看到底色扭曲），
+            // 小滴和贴边滴用淡白填充；暗边＋亮边＋高光让它在亮底暗底都看得见。
             const shimmer = 0.4 + 0.25 * Math.sin(tick * 0.8 + drop.phase);
-            ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
-            ctx.beginPath();
-            ctx.arc(x, y, r, 0, Math.PI * 2);
-            ctx.fill();
+            const srcSize = (r * 2) / 1.3;
+            if (
+                this.bgCanvas &&
+                r >= 6 &&
+                x - srcSize / 2 >= 0 &&
+                y - srcSize / 2 >= 0 &&
+                x + srcSize / 2 <= width &&
+                y + srcSize / 2 <= height
+            ) {
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(x, y, r, 0, Math.PI * 2);
+                ctx.clip();
+                ctx.drawImage(
+                    this.bgCanvas,
+                    x - srcSize / 2,
+                    y - srcSize / 2,
+                    srcSize,
+                    srcSize,
+                    x - r,
+                    y - r,
+                    r * 2,
+                    r * 2
+                );
+                ctx.restore();
+            } else {
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+                ctx.beginPath();
+                ctx.arc(x, y, r, 0, Math.PI * 2);
+                ctx.fill();
+            }
             ctx.strokeStyle = 'rgba(0, 0, 0, 0.28)';
             ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(x, y, r, 0, Math.PI * 2);
             ctx.stroke();
             ctx.strokeStyle = `rgba(255, 255, 255, ${shimmer.toFixed(3)})`;
             ctx.lineWidth = 1;
