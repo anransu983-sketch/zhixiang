@@ -31,7 +31,9 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          # Capacitor 8.4.2 的 android 库要求 Java 21（sourceCompatibility VERSION_21），
+          # 用 JDK 17 编译会报 invalid source release: 21（CI 第二轮即因此失败）。
+          java-version: 21
 
       - name: Install dependencies
         run: npm ci
