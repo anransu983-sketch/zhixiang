@@ -221,21 +221,21 @@ export class VisualStage {
     private seed(width: number, height: number): void {
         if (this.drops.length === 0) {
             // 静止圆滴为主（玻璃上的水珠本来就不怎么动），少量下滑滴带拖尾。
-            for (let i = 0; i < 52; i++) {
+            for (let i = 0; i < 110; i++) {
                 this.drops.push({
                     x: Math.random() * width,
                     y: Math.random() * height,
-                    radius: 2 + Math.random() * 8,
+                    radius: 2 + Math.random() * 12,
                     speed: 0,
                     trail: 0,
                     phase: Math.random() * Math.PI * 2
                 });
             }
-            for (let i = 0; i < 12; i++) {
+            for (let i = 0; i < 14; i++) {
                 this.drops.push({
                     x: Math.random() * width,
                     y: Math.random() * height,
-                    radius: 6 + Math.random() * 10,
+                    radius: 8 + Math.random() * 10,
                     speed: 0.2 + Math.random() * 0.4,
                     trail: 20 + Math.random() * 40,
                     phase: Math.random() * Math.PI * 2
@@ -243,7 +243,7 @@ export class VisualStage {
             }
         }
         if (this.bokeh.length === 0) {
-            for (let i = 0; i < 8; i++) {
+            for (let i = 0; i < 10; i++) {
                 this.bokeh.push({
                     x: Math.random() * width,
                     y: Math.random() * height,
@@ -362,7 +362,7 @@ export class VisualStage {
         ctx.save();
         try {
             if (cover && cover.complete && cover.naturalWidth > 0) {
-                ctx.filter = 'blur(28px) brightness(0.85)';
+                ctx.filter = 'blur(28px) brightness(0.85) saturate(1.4)';
                 const scale = Math.max(
                     width / cover.naturalWidth,
                     height / cover.naturalHeight
@@ -431,16 +431,22 @@ export class VisualStage {
                 ctx.lineTo(x, y);
                 ctx.stroke();
             }
-            // 圆滴：淡白填充＋亮边＋左上高光点，读起来像玻璃上的水珠。
+            // 圆滴：淡白填充＋暗色外边＋亮色内边＋左上高光点。
+            // 暗边让水滴在亮底上也看得见，亮边＋高光让它在暗底上也看得见。
             const shimmer = 0.4 + 0.25 * Math.sin(tick * 0.8 + drop.phase);
-            ctx.fillStyle = 'rgba(255, 255, 255, 0.10)';
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
             ctx.beginPath();
             ctx.arc(x, y, r, 0, Math.PI * 2);
             ctx.fill();
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.28)';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
             ctx.strokeStyle = `rgba(255, 255, 255, ${shimmer.toFixed(3)})`;
             ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.arc(x, y, Math.max(0.5, r - 1), 0, Math.PI * 2);
             ctx.stroke();
-            ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
             ctx.beginPath();
             ctx.arc(x - r * 0.3, y - r * 0.3, Math.max(0.8, r * 0.22), 0, Math.PI * 2);
             ctx.fill();
