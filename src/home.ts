@@ -6,6 +6,7 @@ import { openPlayerPage } from './player';
 import type { PlaybackState } from './playback';
 import { POSTER_SECTIONS, friendlyPosterError } from './posters';
 import { renderShelf } from './shelf';
+import { clearLogs, copyLogText, getLogEntries, subscribeLogs } from './logger';
 import { SOURCES } from './sources/index';
 import { getLocalNotice } from './sources/local';
 import {
@@ -182,6 +183,78 @@ export function renderHome(): HTMLElement {
         }
         section.appendChild(list);
     }
+
+    section.appendChild(renderDeveloperSection());
+
+    return section;
+}
+
+// 开发者区（首页最底部）：应用内日志查看与复制，出问题不用截图，点复制直接发我。
+// 日志只存本机内存，重启后清空；各音源失败提示本就不含凭证，复制出去也是安全的。
+function renderDeveloperSection(): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'developer';
+
+    const title = document.createElement('h2');
+    title.textContent = '开发者';
+    section.appendChild(title);
+
+    const hint = document.createElement('p');
+    hint.className = 'developer-hint';
+    hint.textContent = '运行日志只存本机，重启后清空；点复制可把日志发出来定位问题。';
+    section.appendChild(hint);
+
+    const actions = document.createElement('div');
+    actions.className = 'developer-actions';
+
+    const copyButton = document.createElement('button');
+    copyButton.className = 'login-btn';
+    copyButton.textContent = '复制日志';
+    copyButton.addEventListener('click', async () => {
+        const ok = await copyLogText();
+        copyButton.textContent = ok ? '已复制' : '复制失败，请长按日志手动复制';
+        window.setTimeout(() => {
+            copyButton.textContent = '复制日志';
+        }, 2000);
+    });
+    actions.appendChild(copyButton);
+
+    const clearButton = document.createElement('button');
+    clearButton.className = 'login-btn';
+    clearButton.textContent = '清空';
+    clearButton.addEventListener('click', () => {
+        clearLogs();
+    });
+    actions.appendChild(clearButton);
+    section.appendChild(actions);
+
+    const box = document.createElement('pre');
+    box.className = 'developer-log';
+    section.appendChild(box);
+
+    let shown = 0;
+    const renderNew = (): void => {
+        const all = getLogEntries();
+        if (all.length === 0) {
+            box.textContent = '暂无日志';
+            shown = 0;
+            return;
+        }
+        if (shown === 0) {
+            box.textContent = '';
+        }
+        for (let i = shown; i < all.length; i++) {
+            const entry = all[i];
+            box.textContent += `[${entry.time}] ${entry.level.toUpperCase()} ${entry.text}\n`;
+        }
+        shown = all.length;
+        // 用户没往上翻时才跟到底，正在翻旧日志不抢滚动。
+        if (box.scrollHeight - box.scrollTop - box.clientHeight < 80) {
+            box.scrollTop = box.scrollHeight;
+        }
+    };
+    renderNew();
+    subscribeLogs(renderNew);
 
     return section;
 }

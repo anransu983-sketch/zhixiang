@@ -43,7 +43,9 @@ public class HttpBridgePlugin extends Plugin {
 
     private static final int CONNECT_TIMEOUT_MS = 15000;
     private static final int READ_TIMEOUT_MS = 20000;
-    private static final int MAX_BODY_CHARS = 2 * 1024 * 1024;
+    // YTM 榜单响应实测约 6.3MB 字符，旧 2MB 上限会把榜单主动中断；
+    // 提到 10MB 后榜单能完整回来，单次响应占内存约 20MB 尚可接受。
+    private static final int MAX_BODY_CHARS = 10 * 1024 * 1024;
 
     @PluginMethod
     public void request(PluginCall call) {

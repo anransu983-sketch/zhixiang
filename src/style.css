@@ -540,3 +540,30 @@ body {
     color: rgba(245, 240, 250, 0.6);
     font-size: 13px;
 }
+
+.developer-hint {
+    margin: 0 0 10px;
+    color: rgba(245, 240, 250, 0.6);
+    font-size: 13px;
+}
+
+.developer-actions {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.developer-log {
+    max-height: 320px;
+    overflow: auto;
+    margin: 0;
+    padding: 12px;
+    border-radius: 12px;
+    background: rgba(0, 0, 0, 0.35);
+    color: rgba(245, 240, 250, 0.85);
+    font-family: monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-all;
+}

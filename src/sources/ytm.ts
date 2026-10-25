@@ -552,6 +552,7 @@ async function browseYtm(browseId: string): Promise<unknown> {
     let lastNetwork = false;
     let lastTimeout = false;
     let lastParse = false;
+    let lastTooLarge = false;
     let lastBody = '';
     for (const client of clients) {
         const contextClient: Record<string, unknown> = {
@@ -597,6 +598,9 @@ async function browseYtm(browseId: string): Promise<unknown> {
                 lastTimeout = true;
             } else if (message.includes('网络')) {
                 lastNetwork = true;
+            } else if (message.includes('响应体过大')) {
+                // 桥主动中断的响应不要再冒充解析失败，否则诊断会误显示“空响应”。
+                lastTooLarge = true;
             } else {
                 lastParse = true;
             }
@@ -608,6 +612,9 @@ async function browseYtm(browseId: string): Promise<unknown> {
     }
     if (lastNetwork) {
         throw new Error('YTM 榜单加载失败（网络异常）');
+    }
+    if (lastTooLarge) {
+        throw new Error('YTM 榜单加载失败（响应过大，超过上限）');
     }
     if (lastStatus !== null) {
         throw new Error(`YTM 榜单加载失败（HTTP ${lastStatus}）`);
