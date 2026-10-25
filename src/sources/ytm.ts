@@ -68,6 +68,13 @@ interface InnertubeClient {
     deviceModel?: string;
     osName?: string;
     osVersion?: string;
+    // Folia 对照字段：客户端专属语言/地区、铸链 UA、数字客户端 id、
+    // 是否带完整上下文块（user/request/playbackContext）。
+    hl?: string;
+    gl?: string;
+    userAgent?: string;
+    clientNameId?: number;
+    fullContext?: boolean;
 }
 
 const SEARCH_CLIENT: InnertubeClient = {
@@ -76,8 +83,23 @@ const SEARCH_CLIENT: InnertubeClient = {
 };
 
 // 取链回落链：VISIONOS 首位（2026-10-24 真机验过的尝试顺序），依次回落。
+// VISIONOS 规格照搬 Folia 桥（2026-10-26 第四轮结论）：1.0 恒 404，
+// Folia 的 1.02＋101 头＋设备字段＋Safari UA 才能回 200；先整套照搬，
+// 跑通后再单独消 hl/gl 做消融， bisect 前不拆。
 const PLAYER_CLIENTS: InnertubeClient[] = [
-    { name: 'VISIONOS', version: '1.0' },
+    {
+        name: 'VISIONOS',
+        version: '1.02',
+        deviceMake: 'Apple',
+        deviceModel: 'RealityDevice17,1',
+        osName: 'visionOS',
+        osVersion: '26.5.23O471',
+        hl: 'en',
+        gl: 'US',
+        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15',
+        clientNameId: 101,
+        fullContext: true
+    },
     { name: 'ANDROID', version: '20.10.38' },
     {
         name: 'IOS',
@@ -145,8 +167,8 @@ function clientContext(client: InnertubeClient, withVisitorData: boolean, gl = '
     const context: Record<string, unknown> = {
         clientName: client.name,
         clientVersion: client.version,
-        hl: 'zh-CN',
-        gl
+        hl: client.hl ?? 'zh-CN',
+        gl: client.gl ?? gl
     };
     if (client.deviceMake) {
         context.deviceMake = client.deviceMake;
@@ -331,13 +353,35 @@ export async function resolveYtmStream(track: Track): Promise<YtmStream> {
     for (const client of PLAYER_CLIENTS) {
         let response;
         try {
-            const body = JSON.stringify({
-                context: { client: clientContext(client, true) },
+            // 客户端专属头：VISIONOS 用 Folia 同款 Safari UA（覆盖会话 UA）＋
+            // 数字客户端头；其它客户端沿用原有头，不动已跑通的 ANDROID 行为。
+            const headers: Record<string, string> = { ...sentHeaders };
+            if (client.userAgent) {
+                headers['User-Agent'] = client.userAgent;
+            }
+            if (client.clientNameId !== undefined) {
+                headers['X-YouTube-Client-Name'] = String(client.clientNameId);
+                headers['X-YouTube-Client-Version'] = client.version;
+            }
+            const context: Record<string, unknown> = { client: clientContext(client, true) };
+            if (client.fullContext) {
+                // Folia tryClient 同款上下文块：VISIONOS 整套照搬的一部分。
+                context.user = { lockedSafetyMode: false };
+                context.request = { useSsl: true };
+            }
+            const bodyObject: Record<string, unknown> = {
+                context,
                 videoId,
                 racyCheckOk: true,
                 contentCheckOk: true
-            });
-            response = await httpPost(`${PLAYER_URL}?key=${INNERTUBE_KEY}`, body, sentHeaders);
+            };
+            if (client.fullContext) {
+                bodyObject.playbackContext = {
+                    contentPlaybackContext: { vis: 0, splay: false, lactMilliseconds: '-1' }
+                };
+            }
+            const body = JSON.stringify(bodyObject);
+            response = await httpPost(`${PLAYER_URL}?key=${INNERTUBE_KEY}`, body, headers);
         } catch {
             // 单个客户端请求失败（断网、超时）不直接抛，落到下一客户端。
             console.log(`[Ytm] ${client.name} 不可用：请求失败`);
@@ -401,8 +445,9 @@ export async function resolveYtmStream(track: Track): Promise<YtmStream> {
                         contentLength !== undefined && Number.isFinite(contentLength)
                             ? contentLength
                             : undefined,
-                    // 没显式 UA 时桥用 OkHttp 默认 UA 铸链，取流复用同一个串。
-                    userAgent: sentHeaders['User-Agent'] ?? 'okhttp/4.12.0'
+                    // 没显式 UA 时桥用 OkHttp 默认 UA 铸链，取流复用同一个串；
+                    // 客户端专属 UA（如 VISIONOS 的 Safari 串）优先于会话 UA。
+                    userAgent: client.userAgent ?? sentHeaders['User-Agent'] ?? 'okhttp/4.12.0'
                 };
             }
         }
