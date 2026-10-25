@@ -1,7 +1,7 @@
 // 首页组装：按音源注册表渲染各音源的浏览区，尚未实现的块留在清单里。
 // 本文件只做组装与界面接线，不放音源与播放逻辑。
 
-import { getCurrentState, next, onTrackChange, playQueue, previous, togglePlay } from './playback';
+import { getCurrentState, next, onTrackChange, playQueue, previous, runYtmUpstreamExperiment, togglePlay } from './playback';
 import { openPlayerPage } from './player';
 import type { PlaybackState } from './playback';
 import { POSTER_SECTIONS, friendlyPosterError } from './posters';
@@ -352,6 +352,21 @@ function renderDeveloperSection(): HTMLElement {
         void runLogUpload(uploadButton);
     });
     actions.appendChild(uploadButton);
+
+    // 上游复现实验：同一 YTM 直链由代理原生取三段（0-1MiB、0-1MiB、
+    // 1MiB-2MiB），区分双载伪影、重放被拒与后续窗口被拒。结果记日志。
+    const experimentButton = document.createElement('button');
+    experimentButton.className = 'login-btn';
+    experimentButton.textContent = '上游复现实验';
+    experimentButton.addEventListener('click', () => {
+        experimentButton.disabled = true;
+        experimentButton.textContent = '实验中…';
+        void runYtmUpstreamExperiment().finally(() => {
+            experimentButton.disabled = false;
+            experimentButton.textContent = '上游复现实验';
+        });
+    });
+    actions.appendChild(experimentButton);
     section.appendChild(actions);
 
     const filters = document.createElement('div');

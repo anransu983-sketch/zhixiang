@@ -452,6 +452,7 @@ async function resolvePlayUrl(track: Track): Promise<ResolvedPlay> {
         if (track.source === 'ytm') {
             const stream = await resolveYtmStream(track);
             target = stream.url;
+            lastYtmStream = { url: target, userAgent: stream.userAgent };
             // 铸链 UA 交给代理复用：代理上游 UA 与铸链时不一致会被 googlevideo 拒。
             proxyUserAgent = stream.userAgent;
         } else {
@@ -482,10 +483,20 @@ async function resolvePlayUrl(track: Track): Promise<ResolvedPlay> {
     return { url: await source.resolveStream(track), needsGraph: false, viaProxy: false };
 }
 
+// 每次起歌的 load 编号：代理按 lid 记取流记录，失败时只认本 load 的行，
+// 连续/并发尝试互相覆盖的 /last 竞态才杀得掉。
+let loadCounter = 0;
+// 最近一次 YTM 取链结果（目标与铸链 UA），供开发者区原生复现实验用。
+let lastYtmStream: { url: string; userAgent?: string } | null = null;
+
 async function startTrack(track: Track, crossfade: boolean): Promise<void> {
+    const loadId = ++loadCounter;
     const oldSlot = activeSlot;
     const newSlot = otherSlot(oldSlot);
     const resolved = await resolvePlayUrl(track);
+    if (resolved.viaProxy) {
+        resolved.url += `&lid=${loadId}`;
+    }
     clearFadeTimers(newSlot);
     ensureSlotGraph(newSlot, resolved.needsGraph);
     const audio = newSlot.audio;
@@ -513,8 +524,17 @@ async function startTrack(track: Track, crossfade: boolean): Promise<void> {
                     signal: probe.signal
                 });
                 const text = (await res.text()).trim();
-                if (text) {
-                    console.log(`[Playback] 代理上次取流：${text}`);
+                // 只认本 load 的记录行；没有本 load 行时原样记下，供判断
+                // 是本 load 没打到代理、还是记录被后续尝试顶掉。
+                const matched = text
+                    .split('\n')
+                    .filter((line) => line.includes(`lid=${loadId}`));
+                if (matched.length > 0) {
+                    for (const line of matched) {
+                        console.log(`[Playback] 代理上次取流：${line}`);
+                    }
+                } else if (text) {
+                    console.log(`[Playback] 代理上次取流：无 lid=${loadId} 记录，原始：${text}`);
                 }
             } catch (probeError) {
                 // 0.1.33 曾静默吞掉这里，导致 15 次失败零诊断日志：
@@ -672,6 +692,11 @@ export async function playTrack(track: Track): Promise<void> {
     await playQueue([track], 0);
 }
 
+// 正在进行的点播键（同队列同起点）：移动端连点两次会同时起两个
+// playQueue，两个槽各载同一 URL，表现为一首歌两次探针＋两次取链，
+// 第二次取流还可能被上游当重放拒掉。同一键在途时后一次直接忽略。
+let inFlightPlayKey: string | null = null;
+
 export async function playQueue(tracks: Track[], startIndex: number): Promise<void> {
     if (tracks.length === 0) {
         throw new Error('歌单是空的，播不了');
@@ -681,13 +706,51 @@ export async function playQueue(tracks: Track[], startIndex: number): Promise<vo
     if (!target) {
         throw new Error('歌单是空的，播不了');
     }
-    const crossfade = playing && activeSlot !== null && currentTrack !== null;
-    queue = [...tracks];
-    queueIndex = clamped;
-    // 从起始下标向前逐首试：中途失败自动往后跳，全部失败才抛错。
-    const result = await tryPlayFrom(clamped, crossfade, 1);
-    if (!result.played) {
-        throw new Error(skipAllMessage(result.failed));
+    const playKey = tracks.map((t) => `${t.source}:${t.id}`).join(',') + '@' + clamped;
+    if (inFlightPlayKey === playKey) {
+        console.log('[Playback] 重复点播已忽略（同队列同起点在途）');
+        return;
+    }
+    inFlightPlayKey = playKey;
+    try {
+        const crossfade = playing && activeSlot !== null && currentTrack !== null;
+        queue = [...tracks];
+        queueIndex = clamped;
+        // 从起始下标向前逐首试：中途失败自动往后跳，全部失败才抛错。
+        const result = await tryPlayFrom(clamped, crossfade, 1);
+        if (!result.played) {
+            throw new Error(skipAllMessage(result.failed));
+        }
+    } finally {
+        if (inFlightPlayKey === playKey) {
+            inFlightPlayKey = null;
+        }
+    }
+}
+
+// 原生三段复现实验（开发者区按钮触发）：同一 YTM 直链，不经 WebView
+// 与 audio 元素，由代理原生依次取 0-1MiB、0-1MiB、1MiB-2MiB。
+// 206/206/206=双载伪影，206/403/x=重放被拒，206/206/403=后续窗口被拒。
+export async function runYtmUpstreamExperiment(): Promise<void> {
+    if (!lastYtmStream) {
+        console.log('[Playback] 上游复现实验：还没有 YTM 取链结果，先播一首 YTM 再试');
+        return;
+    }
+    try {
+        const port = await ensureStreamProxy();
+        const url = `http://127.0.0.1:${port}/experiment?u=${encodeURIComponent(lastYtmStream.url)}` +
+            (lastYtmStream.userAgent ? `&ua=${encodeURIComponent(lastYtmStream.userAgent)}` : '');
+        const res = await fetch(url);
+        const text = (await res.text()).trim();
+        for (const line of text.split('\n')) {
+            if (line) {
+                console.log(`[Playback] 上游复现实验：${line}`);
+            }
+        }
+    } catch (error) {
+        console.log(
+            `[Playback] 上游复现实验失败：${error instanceof Error ? `${error.name} ${error.message}` : String(error)}`
+        );
     }
 }
 

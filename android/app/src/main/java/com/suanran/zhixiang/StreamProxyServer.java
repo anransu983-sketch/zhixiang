@@ -14,6 +14,8 @@ import java.net.SocketException;
 import java.net.URL;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -67,16 +69,30 @@ public class StreamProxyServer {
     private static final OkHttpClient UPSTREAM = new OkHttpClient.Builder()
             .followRedirects(true)
             .followSslRedirects(true)
+            // 默认 retryOnConnectionFailure=true 会在连接层失败时静默重发一次，
+            // 表现为一次无故的重复取流；诊断与去重都要求一次请求只发一次。
+            .retryOnConnectionFailure(false)
             .connectTimeout(CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             .readTimeout(READ_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             .build();
 
-    // 最近一次上游取流的诊断（/last 用；不含目标地址）。
-    private volatile int lastStatus = -1;
-    private volatile String lastType = "";
-    private volatile long lastLength = -1;
-    private volatile String lastRange = "";
-    private volatile String lastUaSrc = "";
+    // 上游取流诊断记录（/last 用；不含目标地址）。单条 last 会被并发/连续
+    // 尝试互相覆盖，改记最近 16 条并按 Web 层给的 lid 分流，竞态才杀得掉。
+    private static final int MAX_RECORDS = 16;
+    private final Deque<String> lastRecords = new ArrayDeque<>();
+    private long recordSeq = 0;
+
+    private synchronized void addRecord(String lid, int status, String type, long len,
+            String range, long written, boolean aborted) {
+        recordSeq += 1;
+        lastRecords.addLast("lid=" + lid + " seq=" + recordSeq
+                + " status=" + status + " type=" + type + " len=" + len
+                + " range=" + range + " written=" + written
+                + " aborted=" + (aborted ? 1 : 0));
+        while (lastRecords.size() > MAX_RECORDS) {
+            lastRecords.removeFirst();
+        }
+    }
 
     private ServerSocket serverSocket;
     private Thread acceptThread;
@@ -141,6 +157,14 @@ public class StreamProxyServer {
     private void handle(Socket client) {
         Response upstream = null;
         boolean responseStarted = false;
+        // 本次取流的诊断字段：finally 里记一条记录，body 没写完即 aborted。
+        String fetchLid = "-";
+        int fetchStatus = -1;
+        String fetchType = "";
+        long fetchLen = -1;
+        String fetchRange = "";
+        long fetchWritten = 0;
+        boolean fetchAborted = false;
         try {
             client.setSoTimeout(READ_TIMEOUT_MS);
             BufferedReader reader = new BufferedReader(
@@ -150,16 +174,26 @@ public class StreamProxyServer {
                 return;
             }
             String[] parts = requestLine.split(" ");
-            if (parts.length < 2 || !"GET".equalsIgnoreCase(parts[0])) {
-                writeSimple(client, 405, "Method Not Allowed");
+            if (parts.length < 2) {
                 return;
             }
             String rawPath = parts[1];
             int qmark = rawPath.indexOf('?');
             String pathOnly = qmark < 0 ? rawPath : rawPath.substring(0, qmark);
+            // 预检必须自己答：跨源带 Range 的请求在某些 WebView 上会先发
+            // OPTIONS，不答即 CORS 失败（Folia 同款 204 答法）。
+            if ("OPTIONS".equalsIgnoreCase(parts[0])) {
+                writeOptions(client);
+                return;
+            }
+            if (!"GET".equalsIgnoreCase(parts[0])) {
+                writeSimple(client, 405, "Method Not Allowed");
+                return;
+            }
             // 只记路由标签，不记路径与查询串（查询串里有目标地址与 UA）。
             String route = "/ping".equals(pathOnly) ? "ping"
-                    : "/last".equals(pathOnly) ? "last" : "proxy";
+                    : "/last".equals(pathOnly) ? "last"
+                    : "/experiment".equals(pathOnly) ? "experiment" : "proxy";
             Log.i(TAG, "hit route=" + route);
             if ("/ping".equals(pathOnly)) {
                 writePing(client);
@@ -167,6 +201,10 @@ public class StreamProxyServer {
             }
             if ("/last".equals(pathOnly)) {
                 writeLast(client);
+                return;
+            }
+            if ("/experiment".equals(pathOnly)) {
+                writeExperiment(client, parts[1]);
                 return;
             }
             Map<String, String> headers = new HashMap<>();
@@ -220,18 +258,21 @@ public class StreamProxyServer {
                     .header("Range", sentRange)
                     .header("User-Agent", userAgent)
                     .build();
+            String lidParam = queryParam(parts[1], "lid");
+            if (lidParam != null && !lidParam.isEmpty()) {
+                fetchLid = lidParam;
+            }
             upstream = UPSTREAM.newCall(request).execute();
             int status = upstream.code();
             String contentType = upstream.header("Content-Type");
             String contentRange = upstream.header("Content-Range");
             ResponseBody responseBody = upstream.body();
             long contentLength = responseBody != null ? responseBody.contentLength() : -1;
-            lastStatus = status;
-            lastType = contentType != null ? contentType : "";
-            lastLength = contentLength;
-            lastRange = sentRange;
-            lastUaSrc = uaSrc;
-            Log.i(TAG, "fetch status=" + status + " type=" + lastType
+            fetchStatus = status;
+            fetchType = contentType != null ? contentType : "";
+            fetchLen = contentLength;
+            fetchRange = sentRange;
+            Log.i(TAG, "fetch lid=" + fetchLid + " status=" + status + " type=" + fetchType
                     + " len=" + contentLength + " range=" + sentRange + " uaSrc=" + uaSrc);
 
             OutputStream out = client.getOutputStream();
@@ -239,6 +280,9 @@ public class StreamProxyServer {
             response.append("HTTP/1.1 ").append(status).append(' ')
                     .append(statusText(status)).append("\r\n");
             response.append("Access-Control-Allow-Origin: *\r\n");
+            // Folia 同款：媒体管线与 fetch 都要这两行，缺了可能丢 Content-Range。
+            response.append("Access-Control-Allow-Headers: range, content-range, content-length\r\n");
+            response.append("Access-Control-Expose-Headers: range, content-range, content-length, accept-ranges\r\n");
             response.append("Accept-Ranges: bytes\r\n");
             if (contentType != null && !contentType.isEmpty()) {
                 response.append("Content-Type: ").append(contentType).append("\r\n");
@@ -256,19 +300,24 @@ public class StreamProxyServer {
             out.flush();
 
             // OkHttp 不分输入/错误流：错误体也在 body 里，原样透传。
+            // 实写字节数单独记：日志里的 len 只是上游报的头，写少了
+            // （元素中途断开、写失败）才是 demuxer 读错的真凭据。
             InputStream body = responseBody != null ? responseBody.byteStream() : null;
             if (body != null) {
                 byte[] buffer = new byte[BUFFER_BYTES];
                 int read;
                 while ((read = body.read(buffer)) != -1) {
                     out.write(buffer, 0, read);
+                    fetchWritten += read;
                 }
                 out.flush();
             }
         } catch (Exception e) {
             // 客户端断开、上游超时等：安静关闭连接，不记目标地址。
             // 响应头已发出时不再补写错误头，避免污染已开始的流。
-            if (!responseStarted) {
+            if (responseStarted) {
+                fetchAborted = true;
+            } else {
                 try {
                     writeSimple(client, 502, "Bad Gateway");
                 } catch (Exception ignored) {
@@ -276,6 +325,10 @@ public class StreamProxyServer {
                 }
             }
         } finally {
+            if (fetchStatus >= 0) {
+                addRecord(fetchLid, fetchStatus, fetchType, fetchLen,
+                        fetchRange, fetchWritten, fetchAborted);
+            }
             if (upstream != null) {
                 upstream.close();
             }
@@ -316,6 +369,8 @@ public class StreamProxyServer {
         byte[] body = "ok".getBytes(StandardCharsets.UTF_8);
         String response = "HTTP/1.1 200 OK\r\n"
                 + "Access-Control-Allow-Origin: *\r\n"
+                + "Access-Control-Allow-Headers: range, content-range, content-length\r\n"
+                + "Access-Control-Expose-Headers: range, content-range, content-length, accept-ranges\r\n"
                 + "Content-Type: text/plain\r\n"
                 + "Content-Length: " + body.length + "\r\n"
                 + "Connection: close\r\n"
@@ -326,18 +381,108 @@ public class StreamProxyServer {
         out.flush();
     }
 
-    // /last：最近一次上游取流的诊断，不含目标地址；Web 层失败时拉取记日志。
+    // 预检：Folia 同款 204 答法，放行 Range 等头。
+    private void writeOptions(Socket client) throws IOException {
+        String response = "HTTP/1.1 204 No Content\r\n"
+                + "Access-Control-Allow-Origin: *\r\n"
+                + "Access-Control-Allow-Methods: GET, HEAD, OPTIONS\r\n"
+                + "Access-Control-Allow-Headers: range, content-range, content-length, content-type\r\n"
+                + "Access-Control-Expose-Headers: range, content-range, content-length, accept-ranges\r\n"
+                + "Content-Length: 0\r\n"
+                + "Connection: close\r\n"
+                + "\r\n";
+        OutputStream out = client.getOutputStream();
+        out.write(response.getBytes(StandardCharsets.UTF_8));
+        out.flush();
+    }
+
+    // /last：最近 16 条上游取流诊断（不含目标地址），Web 层按 lid 过滤后记日志。
     private void writeLast(Socket client) throws IOException {
         String text;
-        if (lastStatus < 0) {
-            text = "none";
-        } else {
-            text = "status=" + lastStatus + " type=" + lastType + " len=" + lastLength
-                    + " range=" + lastRange + " uaSrc=" + lastUaSrc;
+        synchronized (this) {
+            text = lastRecords.isEmpty() ? "none" : String.join("\n", lastRecords);
         }
         byte[] body = text.getBytes(StandardCharsets.UTF_8);
         String response = "HTTP/1.1 200 OK\r\n"
                 + "Access-Control-Allow-Origin: *\r\n"
+                + "Access-Control-Allow-Headers: range, content-range, content-length\r\n"
+                + "Access-Control-Expose-Headers: range, content-range, content-length, accept-ranges\r\n"
+                + "Content-Type: text/plain\r\n"
+                + "Content-Length: " + body.length + "\r\n"
+                + "Connection: close\r\n"
+                + "\r\n";
+        OutputStream out = client.getOutputStream();
+        out.write(response.getBytes(StandardCharsets.UTF_8));
+        out.write(body);
+        out.flush();
+    }
+
+    // /experiment：原生三段复现实验（无 WebView、无 audio 元素）。
+    // 同一 URL 依次取 0-1MiB、隔约 1 秒再取 0-1MiB、再取 1MiB-2MiB，
+    // 逐段记状态/类型/头长度/实读字节。206/206/206=双载伪影，
+    // 206/403/x=重放被拒，206/206/403=后续窗口被拒。
+    private void writeExperiment(Socket client, String rawPath) throws IOException {
+        String target = queryParam(rawPath, "u");
+        String uaParam = queryParam(rawPath, "ua");
+        if (target == null || target.isEmpty()) {
+            writeSimple(client, 400, "Bad Request");
+            return;
+        }
+        String userAgent = (uaParam != null && !uaParam.isEmpty()) ? uaParam : "Mozilla/5.0";
+        String[] ranges = {
+                "bytes=0-" + (CHUNK_BYTES - 1),
+                "bytes=0-" + (CHUNK_BYTES - 1),
+                "bytes=" + CHUNK_BYTES + "-" + (2 * CHUNK_BYTES - 1)};
+        StringBuilder text = new StringBuilder();
+        for (int i = 0; i < ranges.length; i++) {
+            if (i > 0) {
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            Response upstream = null;
+            try {
+                Request request = new Request.Builder()
+                        .url(target)
+                        .header("Range", ranges[i])
+                        .header("User-Agent", userAgent)
+                        .build();
+                upstream = UPSTREAM.newCall(request).execute();
+                ResponseBody body = upstream.body();
+                long headerLen = body != null ? body.contentLength() : -1;
+                long bytes = 0;
+                if (body != null) {
+                    byte[] buffer = new byte[BUFFER_BYTES];
+                    int read;
+                    java.io.InputStream in = body.byteStream();
+                    while ((read = in.read(buffer)) != -1) {
+                        bytes += read;
+                    }
+                }
+                String type = upstream.header("Content-Type");
+                String line = "step" + (i + 1) + " status=" + upstream.code()
+                        + " type=" + (type != null ? type : "")
+                        + " len=" + headerLen + " bytes=" + bytes
+                        + " range=" + ranges[i];
+                Log.i(TAG, "experiment " + line);
+                text.append(line).append("\n");
+            } catch (Exception e) {
+                String line = "step" + (i + 1) + " error=" + e.getClass().getSimpleName();
+                Log.i(TAG, "experiment " + line);
+                text.append(line).append("\n");
+            } finally {
+                if (upstream != null) {
+                    upstream.close();
+                }
+            }
+        }
+        byte[] body = text.toString().getBytes(StandardCharsets.UTF_8);
+        String response = "HTTP/1.1 200 OK\r\n"
+                + "Access-Control-Allow-Origin: *\r\n"
+                + "Access-Control-Allow-Headers: range, content-range, content-length\r\n"
+                + "Access-Control-Expose-Headers: range, content-range, content-length, accept-ranges\r\n"
                 + "Content-Type: text/plain\r\n"
                 + "Content-Length: " + body.length + "\r\n"
                 + "Connection: close\r\n"
@@ -406,6 +551,8 @@ public class StreamProxyServer {
         byte[] body = text.getBytes(StandardCharsets.UTF_8);
         String response = "HTTP/1.1 " + status + " " + statusText(status) + "\r\n"
                 + "Access-Control-Allow-Origin: *\r\n"
+                + "Access-Control-Allow-Headers: range, content-range, content-length\r\n"
+                + "Access-Control-Expose-Headers: range, content-range, content-length, accept-ranges\r\n"
                 + "Content-Type: text/plain\r\n"
                 + "Content-Length: " + body.length + "\r\n"
                 + "Connection: close\r\n"
