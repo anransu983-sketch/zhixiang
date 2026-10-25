@@ -23,7 +23,7 @@
 //   服务的包装路径），不用。退出只清本地会话，不调未经证实的服务端登出端点。
 
 import { httpGet } from '../native/http';
-import { eapiRequest } from './netease-eapi';
+import { eapiRequest, getEapiIdentityHash } from './netease-eapi';
 
 const USER_LEVEL_URL = 'https://music.163.com/api/user/level';
 const STORAGE_KEY = 'zx_netease_session_v1';
@@ -136,6 +136,9 @@ export async function fetchQrKey(): Promise<string> {
     if (!key) {
         throw new Error('拿不到登录二维码，请稍后重试');
     }
+    // 诊断（Claude 2026-10-25）：每次取码都记 key 前 6 位与身份指纹——
+    // 一会话里取码次数、以及取码与轮询是否同一身份，凭这几行就能断。
+    console.log(`[Netease] 取码 ${key.slice(0, 6)} 身份=${getEapiIdentityHash()}`);
     return key;
 }
 
@@ -161,7 +164,19 @@ function cookieFromSetCookies(setCookies: string[] | undefined): string {
     return [...seen.values()].join('; ');
 }
 
+// 上一次检查的 key 前缀与身份指纹：变化才记一行（正常轮询 3 秒一次
+// 全记会刷满控制台）；key 或身份一变就说明有第二个轮询器或头被换了。
+let lastCheckKeyPrefix = '';
+let lastCheckIdentityHash = '';
+
 export async function checkQr(key: string): Promise<QrCheckResult> {
+    const keyPrefix = key.slice(0, 6);
+    const identityHash = getEapiIdentityHash();
+    if (keyPrefix !== lastCheckKeyPrefix || identityHash !== lastCheckIdentityHash) {
+        console.log(`[Netease] 检查码 ${keyPrefix} 身份=${identityHash}`);
+        lastCheckKeyPrefix = keyPrefix;
+        lastCheckIdentityHash = identityHash;
+    }
     const response = await eapiRequest('/api/login/qrcode/client/login', { key, type: 3 });
     if (response.status !== 200) {
         throw new Error(`扫码状态查询失败（HTTP ${response.status}）`);

@@ -276,6 +276,26 @@ function formatCookieHeader(header: Record<string, string>): string {
         .join('; ');
 }
 
+/** 短指纹（MD5 前 8 位）：日志里核对用，只认得出是否一致，看不出原始值。 */
+export function shortHash(text: string): string {
+    return md5Hex(text).slice(0, 8);
+}
+
+/**
+ * 稳定身份指纹：deviceId|nuid|osver 三项（取码与轮询必须同一身份；
+ * requestId/buildver 每次都变，不算身份）。取码与每次检查都记这个值，
+ * 身份漂移（比如被全局 CookieHandler 换了头）时一眼能看出来。
+ */
+export function getEapiIdentityHash(): string {
+    const state = loadDeviceState();
+    return shortHash(`${state.deviceId}|${state.nuid}|16.2`);
+}
+
+/** 当前一次请求的完整 Cookie 串（回显测试用；每次调用 requestId/buildver 都会变，属正常）。 */
+export function buildEapiCookieHeader(): string {
+    return formatCookieHeader(buildEapiHeader());
+}
+
 /**
  * 发一次 eapi 请求。path 可带或不带 /api/ 前缀；data 为业务参数，
  * header 块由本模块补。返回与 httpPost 一致的 {status, body, setCookies}。

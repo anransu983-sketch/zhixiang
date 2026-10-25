@@ -19,6 +19,8 @@ import {
     validateStoredSession,
     type NeteaseSession
 } from './sources/netease-session';
+import { buildEapiCookieHeader, shortHash } from './sources/netease-eapi';
+import { httpGet, httpPost } from './native/http';
 import {
     clearYtmSession,
     loadYtmSession,
@@ -193,6 +195,69 @@ export function renderHome(): HTMLElement {
 // COPY/CLEAR、搜索框、LEVEL 与 MODULE 过滤、时间戳＋模块标签的行。出问题
 // 不用截图，筛好后点 COPY 直接发我。日志只存本机内存，重启后清空；
 // 各音源失败提示本就不含凭证，复制出去也是安全的。
+const EAPI_UA = 'NeteaseMusic 9.0.90/5038 (iPhone; iOS 16.2; zh_CN)';
+
+// 回显测试：把 eapi 的原样请求头经桥发到 httpbin.org/headers，看服务端
+// 实际收到什么。测两次：第一次看原样头是否完整出网；第二次先让服务端
+// 种一个 cookie（模拟 eapi 首响应下发 Set-Cookie），再看头是否被全局
+// CookieHandler 覆盖。只记指纹与是否一致，不记 Cookie 原始值。
+async function runEchoTest(button: HTMLButtonElement): Promise<void> {
+    button.textContent = '回显中…';
+    button.disabled = true;
+    try {
+        const checkEcho = (label: string, sent: string, body: string): void => {
+            let echoedCookie = '';
+            let echoedUa = '';
+            try {
+                const parsed = JSON.parse(body) as { headers?: Record<string, unknown> };
+                const headers = parsed.headers ?? {};
+                for (const [name, value] of Object.entries(headers)) {
+                    if (name.toLowerCase() === 'cookie' && typeof value === 'string') {
+                        echoedCookie = value;
+                    }
+                    if (name.toLowerCase() === 'user-agent' && typeof value === 'string') {
+                        echoedUa = value;
+                    }
+                }
+            } catch {
+                // 解析失败也记一行，不中断第二次测试。
+            }
+            const cookieMatch = echoedCookie === sent;
+            console.log(
+                `[Netease] ${label}：Cookie${cookieMatch ? '一致' : '不一致'}（送出 ${shortHash(sent)}，回显 ${shortHash(echoedCookie)}），` +
+                    `UA${echoedUa === EAPI_UA ? '一致' : '不一致'}，` +
+                    `deviceId${echoedCookie.includes('deviceId=') ? '在' : '缺失'}，` +
+                    `_ntes_nuid${echoedCookie.includes('_ntes_nuid=') ? '在' : '缺失'}`
+            );
+        };
+        const sent = buildEapiCookieHeader();
+        const first = await httpPost('https://httpbin.org/headers', undefined, {
+            'User-Agent': EAPI_UA,
+            Cookie: sent
+        });
+        if (first.status !== 200) {
+            throw new Error(`回显服务 HTTP ${first.status}`);
+        }
+        checkEcho('回显1', sent, first.body);
+        // 让服务端种一个 cookie，再测一次：全局 handler 若存在，这次就会
+        // 用存下的 cookie 覆盖我们设的头。
+        await httpGet('https://httpbin.org/cookies/set?zx_probe=1');
+        const second = await httpPost('https://httpbin.org/headers', undefined, {
+            'User-Agent': EAPI_UA,
+            Cookie: sent
+        });
+        if (second.status !== 200) {
+            throw new Error(`回显服务 HTTP ${second.status}`);
+        }
+        checkEcho('回显2', sent, second.body);
+    } catch (error) {
+        console.error(`[Netease] 回显测试失败：${error instanceof Error ? error.message : '未知原因'}`);
+    } finally {
+        button.textContent = '回显测试';
+        button.disabled = false;
+    }
+}
+
 function renderDeveloperSection(): HTMLElement {
     const section = document.createElement('section');
     section.className = 'developer';
@@ -224,6 +289,18 @@ function renderDeveloperSection(): HTMLElement {
         clearLogs();
     });
     actions.appendChild(clearButton);
+
+    // 回显测试（Claude 2026-10-25 实验 1）：把 eapi 的原样请求头经桥发到
+    // httpbin.org/headers，看服务端实际收到的是什么——先测一次原样头，
+    // 再让服务端种一个 cookie 后测一次，看全局 CookieHandler 是否覆盖
+    // 了我们设的 Cookie 头。日志里只记指纹与是否一致，不记任何原始值。
+    const echoButton = document.createElement('button');
+    echoButton.className = 'login-btn';
+    echoButton.textContent = '回显测试';
+    echoButton.addEventListener('click', () => {
+        void runEchoTest(echoButton);
+    });
+    actions.appendChild(echoButton);
     section.appendChild(actions);
 
     const filters = document.createElement('div');
@@ -398,6 +475,10 @@ function renderNeteaseLoginBlock(): HTMLElement {
 
     let pollTimer: number | undefined;
     let currentKey = '';
+    // 轮询代次令牌：每次 startQr 换一个新对象；stopPoll 置空。
+    // 旧流程里已发出的请求回来时若令牌已换，一律丢弃——防止一次重复
+    // 触发产生两个取码、旧 tick 杀掉新轮询器这类竞态（Claude 实验 2 的一类）。
+    let qrToken: object | null = null;
     // 连续自动换码计数：健康码（801）会清零；只有“一拿就过期”的坏流程
     // 才会连涨，涨满 10 次停下来给手动按钮，不对坏流程无限刷码。
     let qrAutoRefreshes = 0;
@@ -411,6 +492,7 @@ function renderNeteaseLoginBlock(): HTMLElement {
             document.removeEventListener('visibilitychange', qrVisibilityHandler);
             qrVisibilityHandler = null;
         }
+        qrToken = null;
     };
 
     const renderLoggedOut = (notice?: string): void => {
@@ -461,6 +543,8 @@ function renderNeteaseLoginBlock(): HTMLElement {
 
     const startQr = async (auto = false): Promise<void> => {
         stopPoll();
+        const token = {};
+        qrToken = token;
         if (!auto) {
             qrAutoRefreshes = 0;
         }
@@ -473,6 +557,10 @@ function renderNeteaseLoginBlock(): HTMLElement {
         try {
             key = await fetchQrKey();
         } catch {
+            // 取码期间已有新流程开始时，旧流程不再碰界面（新流程已重建了 body）。
+            if (token !== qrToken) {
+                return;
+            }
             status.textContent = '拿不到登录二维码，请稍后重试';
             const retry = document.createElement('button');
             retry.type = 'button';
@@ -484,6 +572,9 @@ function renderNeteaseLoginBlock(): HTMLElement {
             body.appendChild(retry);
             return;
         }
+        if (token !== qrToken) {
+            return;
+        }
         currentKey = key;
         console.log('[Netease] 二维码已生成，等待扫码');
         status.textContent = '用网易云 App 扫码登录';
@@ -492,6 +583,9 @@ function renderNeteaseLoginBlock(): HTMLElement {
         qr.src = qrImageUrl(key);
         qr.alt = '网易云登录二维码';
         qr.addEventListener('error', () => {
+            if (token !== qrToken) {
+                return;
+            }
             stopPoll();
             status.textContent = '二维码图片加载失败，请检查网络后点刷新重试';
             const refresh = document.createElement('button');
@@ -519,6 +613,10 @@ function renderNeteaseLoginBlock(): HTMLElement {
             if (polling) {
                 return;
             }
+            // 旧流程的 tick（新流程已开始、或已停）直接丢弃，不碰状态。
+            if (token !== qrToken) {
+                return;
+            }
             polling = true;
             let result;
             try {
@@ -530,6 +628,11 @@ function renderNeteaseLoginBlock(): HTMLElement {
                 return;
             } finally {
                 polling = false;
+            }
+            // 请求回来时流程已换代时同样丢弃：旧 tick 的 800 分支绝不能
+            // 杀掉新轮询器、也不能再调度一次换码。
+            if (token !== qrToken) {
+                return;
             }
             // 状态变化才记一行：每 3 秒轮询都记会把控制台刷满。
             if (result.code !== lastPollCode) {
@@ -559,6 +662,11 @@ function renderNeteaseLoginBlock(): HTMLElement {
                     qrAutoRefreshes += 1;
                     console.log('[Netease] 二维码已过期，已自动换新码');
                     window.setTimeout(() => {
+                        // 800ms 内已有新流程开始时跳过（stopPoll 已置空令牌，
+                        // 新流程开始会把它换成新对象）；否则正常换新码。
+                        if (qrToken !== null) {
+                            return;
+                        }
                         void startQr(true);
                     }, 800);
                 } else {

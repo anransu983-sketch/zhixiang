@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.net.CookieHandler;
 import java.net.HttpURLConnection;
 import java.net.SocketTimeoutException;
 import java.net.URL;
@@ -40,6 +41,18 @@ import java.util.Map;
  */
 @CapacitorPlugin(name = "HttpBridge")
 public class HttpBridgePlugin extends Plugin {
+
+    @Override
+    public void load() {
+        super.load();
+        // 诊断结论（Claude 2026-10-25）：Android 的 HttpURLConnection 经 OkHttp
+        // 桥接时，若存在全局默认 CookieHandler，它会用存下的 cookie 覆盖调用方
+        // setRequestProperty 设的 Cookie 头（不合并）。本应用的 cookie 全由调用方
+        // 手动管理（YTM 的 webkit CookieManager 与 java.net 这套无关），任何默认
+        // handler 都是干扰项，直接清掉，保证 eapi 的 header 块原样出网。
+        // 即使当前根本没有默认 handler，这行也是无害的空操作。
+        CookieHandler.setDefault(null);
+    }
 
     private static final int CONNECT_TIMEOUT_MS = 15000;
     private static final int READ_TIMEOUT_MS = 20000;
