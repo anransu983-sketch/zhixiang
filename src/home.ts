@@ -4,12 +4,12 @@
 import { getCurrentState, next, onTrackChange, playQueue, previous, togglePlay } from './playback';
 import type { PlaybackState } from './playback';
 import { POSTER_SECTIONS } from './posters';
+import { renderShelf } from './shelf';
 import { SOURCES } from './sources/index';
 import { getLocalNotice } from './sources/local';
 import type { AudioSource, Poster, Track } from './types';
 
 const UPCOMING = [
-    '3D 歌单架',
     '歌词动态壁纸 · 雨滴玻璃 · 粒子舞台 · 节奏脉动 · 氛围星空'
 ];
 
@@ -53,6 +53,9 @@ export function renderHome(): HTMLElement {
 
     // 海报墙放最上：原有正在播放条与各音源浏览区顺序保持不动。
     section.appendChild(renderPosterWall());
+
+    // 3D 歌单架（第 7 块）：海报墙之后、正在播放条之前的一区。
+    section.appendChild(renderShelf());
 
     // 最小正在播放条：歌名、歌手、播放/暂停、上一首/下一首，样式与首页卡片一致。
     // 点一首即把该区当前列表作为队列，条上的上一首/下一首就在该队列里切。

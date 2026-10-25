@@ -21,6 +21,28 @@ export interface PosterSectionDefinition {
 
 const LOCAL_ALBUM_LIMIT = 3;
 
+// 海报数据共享缓存：海报墙与 3D 歌单架用同一批海报数据，
+// 两处调用同一路的 load 时只发一次请求，成功结果共用。
+// 失败不缓存（删掉失败的占位），之后再调用可以重新尝试。
+const posterCache = new Map<string, Promise<Poster[]>>();
+
+function withPosterCache(key: string, load: () => Promise<Poster[]>): () => Promise<Poster[]> {
+    return () => {
+        const cached = posterCache.get(key);
+        if (cached) {
+            return cached;
+        }
+        const promise = load();
+        posterCache.set(key, promise);
+        promise.catch(() => {
+            if (posterCache.get(key) === promise) {
+                posterCache.delete(key);
+            }
+        });
+        return promise;
+    };
+}
+
 export async function loadLocalAlbumPosters(): Promise<Poster[]> {
     const tracks = await localSource.search('');
     const groups = new Map<string, Track[]>();
@@ -47,21 +69,21 @@ export const POSTER_SECTIONS: PosterSectionDefinition[] = [
     {
         key: 'local',
         label: '本地专辑',
-        load: loadLocalAlbumPosters,
+        load: withPosterCache('local', loadLocalAlbumPosters),
         emptyNotice: '本地还没有专辑，导入歌曲后这里会按专辑出现。',
         failureNotice: '本地专辑暂时加载不出来，请确认已授予读取音频文件的权限后重试。'
     },
     {
         key: 'netease',
         label: '网易云榜单',
-        load: fetchNeteaseChartPosters,
+        load: withPosterCache('netease', fetchNeteaseChartPosters),
         emptyNotice: '网易云榜单暂时没有内容，请稍后重试。',
         failureNotice: '网易云榜单暂时加载不出来，请稍后重试。'
     },
     {
         key: 'ytm',
         label: 'YTM 热门专辑',
-        load: fetchYtmChartPosters,
+        load: withPosterCache('ytm', fetchYtmChartPosters),
         emptyNotice: 'YTM 热门专辑暂时没有内容，请稍后重试。',
         failureNotice: 'YTM 热门专辑暂时加载不出来，请稍后重试。'
     }
