@@ -1,13 +1,16 @@
-// 歌词（第 8 块，全新写）：LRC 解析 + 网易云公开歌词接口。
+// 歌词（第 8 块，全新写）：LRC 解析 + 网易云公开歌词接口 + YTM 字幕轨。
 //
 // 实探结论（2026-10-25 沙箱 curl，无登录、无 cookie）：
 // - 网易云 GET https://music.163.com/api/song/lyric?id=<歌曲 id>&lv=-1&kv=-1&tv=-1
 //   回 200 JSON，lrc.lyric 就是标准 LRC 文本（含 [00:40.66] 这类时间标签），
 //   无歌词的曲返回空串或缺 lrc 字段。本模块只读 lrc.lyric，不读翻译与逐字。
-// - YTM 简探：沙箱里不带 visitorData 的 player 请求回 LOGIN_REQUIRED，
-//   拿不到 captionTracks，timedtext 链路在沙箱里无法证实；且 timedtext
-//   本是视频字幕轨，并非音乐同步歌词，很多歌曲根本没有这条轨。
-//   所以 YTM 不硬接 timedtext，播放页只显示歌名与歌手，不编歌词。
+// - YTM（2026-10-26 起接）：取链那步的 player 返回里带
+//   captions.playerCaptionsTracklistRenderer.captionTracks，取链时已由
+//   ytm.ts 按 videoId 缓存，本模块不另发 player 请求。选轨偏好中文、
+//   其次英文、其余随缘，同语种内优先非自动生成轨；拉 baseUrl&fmt=json3，
+//   events 的 tStartMs＋segs 文本拼成歌词行。timedtext 本是视频字幕轨，
+//   并非音乐同步歌词，很多歌曲根本没有这条轨——无轨、无行、拉取失败时
+//   仍回说明，不编歌词。
 // - 本地歌曲没有歌词源，同样只显示歌名与歌手。
 //
 // 歌词行只展示、不做点击跳转：本模块不提供 seek 口子，播放页也不给
@@ -15,6 +18,7 @@
 
 import { httpGet } from './native/http';
 import { withSessionCookie } from './sources/netease-session';
+import { getYtmCaptions } from './sources/ytm';
 import type { Track } from './types';
 
 export interface LyricLine {
@@ -93,12 +97,104 @@ export function findCurrentLineIndex(lines: LyricLine[], positionMs: number): nu
     return current;
 }
 
+// YTM 字幕轨选轨：中文优先、英文其次、同语种内优先非自动生成轨。
+function pickYtmCaptionTrack(
+    tracks: Array<{ baseUrl: string; languageCode: string; kind?: string }>
+): { baseUrl: string; languageCode: string } | null {
+    let best: { baseUrl: string; languageCode: string } | null = null;
+    let bestScore = -1;
+    for (const track of tracks) {
+        const code = track.languageCode.toLowerCase();
+        let score = 1;
+        if (code.startsWith('zh')) {
+            score = 3;
+        } else if (code.startsWith('en')) {
+            score = 2;
+        }
+        if (track.kind !== 'asr') {
+            score += 1;
+        }
+        if (score > bestScore) {
+            bestScore = score;
+            best = { baseUrl: track.baseUrl, languageCode: track.languageCode };
+        }
+    }
+    return best;
+}
+
+// json3 字幕转歌词行：只要带文本的 event，起播时间即行时间；
+// 连续重复文本只留一行（自动字幕常有重复断句）。
+function parseTimedtextJson3(text: string): LyricLine[] {
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(text);
+    } catch {
+        return [];
+    }
+    const events = (parsed as { events?: unknown } | null)?.events;
+    if (!Array.isArray(events)) {
+        return [];
+    }
+    const lines: LyricLine[] = [];
+    for (const raw of events as Array<Record<string, unknown>>) {
+        if (typeof raw.tStartMs !== 'number' || !Array.isArray(raw.segs)) {
+            continue;
+        }
+        const lineText = (raw.segs as Array<Record<string, unknown>>)
+            .map((seg) => (typeof seg.utf8 === 'string' ? seg.utf8 : ''))
+            .join('')
+            .replace(/\n/g, ' ')
+            .trim();
+        if (!lineText) {
+            continue;
+        }
+        if (lines.length > 0 && lines[lines.length - 1]?.text === lineText) {
+            continue;
+        }
+        lines.push({ timeMs: raw.tStartMs, text: lineText });
+    }
+    lines.sort((a, b) => a.timeMs - b.timeMs);
+    return lines;
+}
+
+async function fetchYtmLyrics(track: Track): Promise<LyricResult> {
+    const prefix = 'ytm:';
+    const noLyricNote = '该音源暂无歌词，只显示歌名与歌手。';
+    if (!track.id.startsWith(prefix) || track.id.length === prefix.length) {
+        return { lines: [], note: noLyricNote };
+    }
+    const videoId = track.id.slice(prefix.length);
+    const tracks = getYtmCaptions(videoId);
+    if (!tracks || tracks.length === 0) {
+        return { lines: [], note: noLyricNote };
+    }
+    const picked = pickYtmCaptionTrack(tracks);
+    if (!picked) {
+        return { lines: [], note: noLyricNote };
+    }
+    try {
+        const separator = picked.baseUrl.includes('?') ? '&' : '?';
+        const response = await httpGet(`${picked.baseUrl}${separator}fmt=json3`);
+        if (response.status !== 200) {
+            return { lines: [], note: '歌词暂时拿不到，只显示歌名与歌手。' };
+        }
+        const lines = parseTimedtextJson3(response.body);
+        if (lines.length === 0) {
+            return { lines: [], note: '这首歌暂无歌词。' };
+        }
+        console.log(`[Lyrics] YTM 字幕 ${picked.languageCode} ${lines.length} 行`);
+        return { lines, note: null };
+    } catch {
+        return { lines: [], note: '歌词暂时拿不到，只显示歌名与歌手。' };
+    }
+}
+
 export async function fetchLyrics(track: Track): Promise<LyricResult> {
     if (track.source === 'local') {
         return { lines: [], note: '本地歌曲暂无歌词，只显示歌名与歌手。' };
     }
     if (track.source === 'ytm') {
-        return { lines: [], note: '该音源暂无歌词，只显示歌名与歌手。' };
+        return fetchYtmLyrics(track);
     }
     const prefix = 'netease:';
     if (!track.id.startsWith(prefix) || track.id.length === prefix.length) {

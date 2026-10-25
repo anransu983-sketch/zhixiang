@@ -126,6 +126,33 @@ export interface YtmStream {
 
 let lastYtmStream: YtmStream | null = null;
 
+// 取链时顺带记下的字幕轨（供歌词用，不另发 player 请求）：
+// player 返回的 captions.playerCaptionsTracklistRenderer.captionTracks，
+// 每条只有 baseUrl（已带签名参数）＋ languageCode＋kind，不记正文。
+export interface YtmCaptionTrack {
+    baseUrl: string;
+    languageCode: string;
+    kind?: string;
+}
+
+// 按 videoId 缓存，歌词在起播后才拉，此时取链早已跑完；只留最近 20 首。
+const captionCache = new Map<string, YtmCaptionTrack[]>();
+
+export function getYtmCaptions(videoId: string): YtmCaptionTrack[] | null {
+    return captionCache.get(videoId) ?? null;
+}
+
+function storeYtmCaptions(videoId: string, tracks: YtmCaptionTrack[]): void {
+    captionCache.set(videoId, tracks);
+    while (captionCache.size > 20) {
+        const oldest = captionCache.keys().next().value;
+        if (oldest === undefined) {
+            break;
+        }
+        captionCache.delete(oldest);
+    }
+}
+
 // 播放页角标用：最近一次 YTM 取链的元数据（client 选择结果）。
 // 缓存直链时 mimeType 为空，角标隐藏，不猜。
 export function getLastYtmStreamMeta(): YtmStream | null {
@@ -402,6 +429,9 @@ export async function resolveYtmStream(track: Track): Promise<YtmStream> {
         const root = parsed as {
             playabilityStatus?: { status?: unknown } | null;
             streamingData?: { adaptiveFormats?: unknown } | null;
+            captions?: {
+                playerCaptionsTracklistRenderer?: { captionTracks?: unknown } | null;
+            } | null;
         } | null;
         if (root?.playabilityStatus?.status !== 'OK') {
             // LOGIN_REQUIRED / UNPLAYABLE / ERROR 等都不是可用流，换下一客户端。
@@ -409,6 +439,25 @@ export async function resolveYtmStream(track: Track): Promise<YtmStream> {
                 `[Ytm] ${client.name} 不可用：playability=${String(root?.playabilityStatus?.status ?? '未知')}`
             );
             continue;
+        }
+        // 字幕轨与音频流同一次返回：只记条数与语种，不记地址与正文。
+        const rawCaptions = root.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+        if (Array.isArray(rawCaptions)) {
+            const tracks: YtmCaptionTrack[] = [];
+            for (const raw of rawCaptions as Array<Record<string, unknown>>) {
+                if (typeof raw.baseUrl === 'string' && raw.baseUrl &&
+                    typeof raw.languageCode === 'string' && raw.languageCode) {
+                    tracks.push({
+                        baseUrl: raw.baseUrl,
+                        languageCode: raw.languageCode,
+                        kind: typeof raw.kind === 'string' ? raw.kind : undefined
+                    });
+                }
+            }
+            storeYtmCaptions(videoId, tracks);
+            if (tracks.length > 0) {
+                console.log(`[Ytm] 字幕轨 ${tracks.length} 条：${tracks.map((t) => t.languageCode).join(',')}`);
+            }
         }
         const formats = root.streamingData?.adaptiveFormats;
         if (!Array.isArray(formats)) {
