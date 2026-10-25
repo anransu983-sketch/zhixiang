@@ -7,7 +7,6 @@ import { getLocalNotice } from './sources/local';
 import type { AudioSource, Track } from './types';
 
 const UPCOMING = [
-    '网易云',
     'YTM',
     '淡入淡出 · 后台保活',
     '首页海报墙',
@@ -31,6 +30,14 @@ function friendlyPlayError(error: unknown): string {
         return message;
     }
     return '播放失败，请确认文件仍在且已授予读取音频文件的权限。';
+}
+
+function friendlySearchError(error: unknown): string {
+    const message = error instanceof Error ? error.message : '';
+    if (/[\u4e00-\u9fff]/.test(message)) {
+        return message;
+    }
+    return '搜索失败，请稍后重试。';
 }
 
 export function renderHome(): HTMLElement {
@@ -96,7 +103,19 @@ function renderSourceSection(source: AudioSource, status: HTMLElement): HTMLElem
     let requestToken = 0;
     const refresh = async (query: string): Promise<void> => {
         const token = ++requestToken;
-        const tracks = await source.search(query);
+        let tracks: Track[];
+        try {
+            tracks = await source.search(query);
+        } catch (error) {
+            // 网络音源搜索可能失败（断网、接口限流等）：不让异常悬空，
+            // 用通用提示区展示中文原因，列表保持上一次的内容。
+            if (token !== requestToken) {
+                return;
+            }
+            notice.textContent = friendlySearchError(error);
+            notice.hidden = false;
+            return;
+        }
         if (token !== requestToken) {
             return;
         }

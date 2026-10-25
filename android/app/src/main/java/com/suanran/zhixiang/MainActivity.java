@@ -11,6 +11,7 @@ public class MainActivity extends BridgeActivity {
         // 本地插件在应用源码内，不进 cap sync 的插件清单，
         // 必须在桥接创建前注册，否则 Web 层调不到它。
         registerPlugin(LocalMusicPlugin.class);
+        registerPlugin(HttpBridgePlugin.class);
         super.onCreate(savedInstanceState);
     }
 }
