@@ -6,7 +6,7 @@ import { openPlayerPage } from './player';
 import type { PlaybackState } from './playback';
 import { POSTER_SECTIONS, friendlyPosterError } from './posters';
 import { renderShelf } from './shelf';
-import { clearLogs, copyPlainText, getLogEntries, getLogModules, subscribeLogs, type LogEntry } from './logger';
+import { clearLogs, copyPlainText, getLogEntries, getLogModules, getLogText, subscribeLogs, type LogEntry } from './logger';
 import { SOURCES } from './sources/index';
 import { getLocalNotice } from './sources/local';
 import {
@@ -20,7 +20,8 @@ import {
     type NeteaseSession
 } from './sources/netease-session';
 import { buildEapiCookieHeader, shortHash } from './sources/netease-eapi';
-import { httpGet } from './native/http';
+import { httpGet, httpPost } from './native/http';
+import { APP_VERSION } from './version';
 import {
     clearYtmSession,
     loadYtmSession,
@@ -259,6 +260,42 @@ async function runEchoTest(button: HTMLButtonElement): Promise<void> {
     }
 }
 
+const LOG_UPLOAD_URL = 'https://probe.suanran9527.com/zhixiang-logs/upload';
+const LOG_UPLOAD_TOKEN = import.meta.env.VITE_ZHIXIANG_LOG_TOKEN as string | undefined;
+
+async function runLogUpload(button: HTMLButtonElement): Promise<void> {
+    if (!LOG_UPLOAD_TOKEN) {
+        console.error('[app] 日志上传未配置（CI secret 未设），无法上传');
+        return;
+    }
+    button.textContent = '上传中…';
+    button.disabled = true;
+    try {
+        const text = getLogText();
+        if (!text) {
+            console.log('[app] 暂无日志可上传');
+            return;
+        }
+        const response = await httpPost(
+            LOG_UPLOAD_URL,
+            JSON.stringify({ version: APP_VERSION, device: 'phone', entries: text }),
+            {
+                'Content-Type': 'application/json',
+                'X-ZX-Token': LOG_UPLOAD_TOKEN
+            }
+        );
+        if (response.status !== 200) {
+            throw new Error(`服务端 HTTP ${response.status}`);
+        }
+        console.log(`[app] 日志已上传到 VPS（${text.split('\n').length} 行）`);
+    } catch (error) {
+        console.error(`[app] 日志上传失败：${error instanceof Error ? error.message : '未知原因'}`);
+    } finally {
+        button.textContent = '上传日志';
+        button.disabled = false;
+    }
+}
+
 function renderDeveloperSection(): HTMLElement {
     const section = document.createElement('section');
     section.className = 'developer';
@@ -302,6 +339,17 @@ function renderDeveloperSection(): HTMLElement {
         void runEchoTest(echoButton);
     });
     actions.appendChild(echoButton);
+
+    // 上传日志（VPS 直读）：把当前全部日志原文发到英国 9929 VPS 的接收服务，
+    // 以后不用再 COPY 粘贴。口令由 CI secret 在构建时注入，不进公开仓库源码；
+    // 本地构建（无 secret）时按钮只记一行提示，不发请求。
+    const uploadButton = document.createElement('button');
+    uploadButton.className = 'login-btn';
+    uploadButton.textContent = '上传日志';
+    uploadButton.addEventListener('click', () => {
+        void runLogUpload(uploadButton);
+    });
+    actions.appendChild(uploadButton);
     section.appendChild(actions);
 
     const filters = document.createElement('div');

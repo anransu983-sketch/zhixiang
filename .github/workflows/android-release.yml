@@ -79,6 +79,8 @@ jobs:
         run: npm run typecheck
 
       - name: Build web
+        env:
+          VITE_ZHIXIANG_LOG_TOKEN: ${{ secrets.ZHIXIANG_LOG_TOKEN }}
         run: npm run build
 
       - name: Sync Android
