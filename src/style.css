@@ -1,0 +1,46 @@
+:root {
+    color-scheme: dark;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: #14101c;
+    color: #f5f0fa;
+    font-family: system-ui, -apple-system, "PingFang SC", "Noto Sans SC", sans-serif;
+}
+
+#app {
+    min-height: 100%;
+    padding: 24px 16px calc(24px + env(safe-area-inset-bottom));
+}
+
+.home h1 {
+    margin: 0 0 8px;
+    font-size: 28px;
+}
+
+.home p {
+    margin: 0 0 24px;
+    color: #c9b8d8;
+}
+
+.feature-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 12px;
+}
+
+.feature-list li {
+    padding: 14px 16px;
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.07);
+}

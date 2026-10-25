@@ -1,0 +1,108 @@
+name: android-release
+
+# 手动触发。正式发版流程：先在本地提交里升 package.json 版本，再 dispatch（bump=none）。
+# bump 输入只影响本次构建的 versionName，不会把升版写回仓库。
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump for this build only (none = use package.json version)'
+        type: choice
+        options: [none, patch, minor, major]
+        default: none
+      build_bundle:
+        description: 'Also build AAB'
+        type: boolean
+        default: false
+      publish_release:
+        description: 'Publish GitHub Release'
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Resolve version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            let [major, minor, patch] = pkg.version.split('.').map(Number);
+            const bump = process.env.BUMP;
+            if (bump === 'major') { major += 1; minor = 0; patch = 0; }
+            else if (bump === 'minor') { minor += 1; patch = 0; }
+            else if (bump === 'patch') { patch += 1; }
+            const versionName = [major, minor, patch].join('.');
+            const versionCode = major * 1000000 + minor * 1000 + patch;
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'version_name=' + versionName + '\n');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'version_code=' + versionCode + '\n');
+          "
+
+      - name: Restore signing files from secrets
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/zhixiang-release.jks
+          printf 'storeFile=zhixiang-release.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$KEYSTORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > android/keystore.properties
+
+      - name: Scope gate
+        run: node scripts/check-scope.mjs
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build web
+        run: npm run build
+
+      - name: Sync Android
+        run: npx cap sync android
+
+      - name: Build release APK
+        env:
+          VERSION_CODE: ${{ steps.version.outputs.version_code }}
+          VERSION_NAME: ${{ steps.version.outputs.version_name }}
+        run: cd android && ./gradlew assembleRelease
+
+      - name: Build release AAB
+        if: ${{ inputs.build_bundle }}
+        env:
+          VERSION_CODE: ${{ steps.version.outputs.version_code }}
+          VERSION_NAME: ${{ steps.version.outputs.version_name }}
+        run: cd android && ./gradlew bundleRelease
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: zhixiang-${{ steps.version.outputs.version_name }}-release
+          path: android/app/build/outputs/apk/release/app-release.apk
+
+      - name: Publish release
+        if: ${{ inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ steps.version.outputs.version_name }}" \
+            --title "芷湘 ${{ steps.version.outputs.version_name }}" \
+            --notes "芷湘全新重做版 ${{ steps.version.outputs.version_name }}" \
+            android/app/build/outputs/apk/release/app-release.apk
