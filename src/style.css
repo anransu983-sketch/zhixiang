@@ -484,3 +484,59 @@ body {
 .player-wallpaper-btn {
     margin-top: 4px;
 }
+
+.login-block {
+    padding: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.05);
+    margin-bottom: 12px;
+}
+
+.login-block h3 {
+    margin: 0 0 10px;
+}
+
+.login-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.login-avatar {
+    width: 40px;
+    height: 40px;
+    flex: none;
+    border-radius: 50%;
+    object-fit: cover;
+}
+
+.login-qr {
+    display: block;
+    width: 220px;
+    height: 220px;
+    margin: 8px 0;
+    border-radius: 12px;
+    background: #fff;
+}
+
+.login-btn {
+    border: none;
+    border-radius: 999px;
+    padding: 10px 18px;
+    background: #e8a0bf;
+    color: #241522;
+    font-size: 14px;
+}
+
+.login-notice {
+    margin: 0 0 10px;
+    color: #e8c87a;
+    font-size: 13px;
+}
+
+.login-hint {
+    margin: 10px 0 0;
+    color: rgba(245, 240, 250, 0.6);
+    font-size: 13px;
+}

@@ -8,6 +8,21 @@ import { POSTER_SECTIONS } from './posters';
 import { renderShelf } from './shelf';
 import { SOURCES } from './sources/index';
 import { getLocalNotice } from './sources/local';
+import {
+    checkQr,
+    clearSession as clearNeteaseSession,
+    fetchQrKey,
+    loadSession as loadNeteaseSession,
+    qrImageUrl,
+    saveSession as saveNeteaseSession,
+    validateStoredSession,
+    type NeteaseSession
+} from './sources/netease-session';
+import {
+    clearYtmSession,
+    loadYtmSession,
+    signInYtm
+} from './sources/ytm-session';
 import type { AudioSource, Poster, Track } from './types';
 
 // 第 8 块已接上：歌词动态壁纸与四项视觉都在播放页里，清单不再列它。
@@ -50,6 +65,9 @@ export function renderHome(): HTMLElement {
     const hint = document.createElement('p');
     hint.textContent = '全新重做版，首版功能正在一块一块接上来。';
     section.appendChild(hint);
+
+    // 登录区放最上：网易云与 YTM 的登录入口都在这里，不藏进播放页深处。
+    section.appendChild(renderLoginArea());
 
     // 海报墙放最上：原有正在播放条与各音源浏览区顺序保持不动。
     section.appendChild(renderPosterWall());
@@ -147,6 +165,265 @@ export function renderHome(): HTMLElement {
 
 // 海报墙（第 6 块）：三路各自独立加载，任何一路失败或为空都只在该路
 // 留一句中文提示，不影响其余路与整墙；点海报即 playQueue(该海报曲目, 0)。
+
+// 登录区（网易云扫码 + YTM 原生登录）：两处入口放同一区，登录后显示账号标识
+// 与退出登录；未登录时一切如旧，登录只影响对应音源。
+function renderLoginArea(): HTMLElement {
+    const area = document.createElement('section');
+    area.className = 'login-area';
+
+    const heading = document.createElement('h2');
+    heading.textContent = '登录';
+    area.appendChild(heading);
+
+    area.appendChild(renderNeteaseLoginBlock());
+    area.appendChild(renderYtmLoginBlock());
+    return area;
+}
+
+function renderNeteaseLoginBlock(): HTMLElement {
+    const box = document.createElement('div');
+    box.className = 'login-block';
+
+    const title = document.createElement('h3');
+    title.textContent = '网易云';
+    box.appendChild(title);
+
+    const body = document.createElement('div');
+    box.appendChild(body);
+
+    let pollTimer: number | undefined;
+    let currentKey = '';
+    const stopPoll = (): void => {
+        if (pollTimer !== undefined) {
+            window.clearInterval(pollTimer);
+            pollTimer = undefined;
+        }
+    };
+
+    const renderLoggedOut = (notice?: string): void => {
+        stopPoll();
+        body.replaceChildren();
+        if (notice) {
+            const note = document.createElement('p');
+            note.className = 'login-notice';
+            note.textContent = notice;
+            body.appendChild(note);
+        }
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'login-btn';
+        button.textContent = '登录网易云';
+        button.addEventListener('click', () => {
+            void startQr();
+        });
+        body.appendChild(button);
+    };
+
+    const renderLoggedIn = (session: NeteaseSession): void => {
+        stopPoll();
+        body.replaceChildren();
+        const row = document.createElement('div');
+        row.className = 'login-row';
+        if (session.avatarUrl) {
+            const avatar = document.createElement('img');
+            avatar.className = 'login-avatar';
+            avatar.src = session.avatarUrl;
+            avatar.alt = '';
+            row.appendChild(avatar);
+        }
+        const name = document.createElement('span');
+        name.textContent = session.nickname;
+        row.appendChild(name);
+        const logout = document.createElement('button');
+        logout.type = 'button';
+        logout.className = 'login-btn';
+        logout.textContent = '退出登录';
+        logout.addEventListener('click', () => {
+            clearNeteaseSession();
+            renderLoggedOut();
+        });
+        row.appendChild(logout);
+        body.appendChild(row);
+    };
+
+    const startQr = async (): Promise<void> => {
+        stopPoll();
+        body.replaceChildren();
+        const status = document.createElement('p');
+        status.className = 'login-notice';
+        status.textContent = '正在获取二维码…';
+        body.appendChild(status);
+        let key: string;
+        try {
+            key = await fetchQrKey();
+        } catch {
+            status.textContent = '拿不到登录二维码，请稍后重试';
+            const retry = document.createElement('button');
+            retry.type = 'button';
+            retry.className = 'login-btn';
+            retry.textContent = '重新获取';
+            retry.addEventListener('click', () => {
+                void startQr();
+            });
+            body.appendChild(retry);
+            return;
+        }
+        currentKey = key;
+        status.textContent = '用网易云 App 扫码登录';
+        const qr = document.createElement('img');
+        qr.className = 'login-qr';
+        qr.src = qrImageUrl(key);
+        qr.alt = '网易云登录二维码';
+        qr.addEventListener('error', () => {
+            stopPoll();
+            status.textContent = '二维码图片加载失败，请检查网络后点刷新重试';
+        });
+        body.appendChild(qr);
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.className = 'login-btn';
+        cancel.textContent = '取消';
+        cancel.addEventListener('click', () => {
+            renderLoggedOut();
+        });
+        body.appendChild(cancel);
+        const tick = async (): Promise<void> => {
+            let result;
+            try {
+                result = await checkQr(currentKey);
+            } catch {
+                status.textContent = '查询失败，正在重试…';
+                return;
+            }
+            if (result.code === 801) {
+                status.textContent = '等待扫码';
+            } else if (result.code === 802) {
+                status.textContent = '已扫码，请在手机上确认';
+            } else if (result.code === 800) {
+                stopPoll();
+                status.textContent = '二维码已过期';
+                const refresh = document.createElement('button');
+                refresh.type = 'button';
+                refresh.className = 'login-btn';
+                refresh.textContent = '刷新二维码';
+                refresh.addEventListener('click', () => {
+                    void startQr();
+                });
+                body.appendChild(refresh);
+            } else if (result.code === 803) {
+                stopPoll();
+                if (result.session) {
+                    saveNeteaseSession(result.session);
+                    renderLoggedIn(result.session);
+                } else {
+                    status.textContent = '登录凭证不完整，请重新扫码';
+                    const refresh = document.createElement('button');
+                    refresh.type = 'button';
+                    refresh.className = 'login-btn';
+                    refresh.textContent = '刷新二维码';
+                    refresh.addEventListener('click', () => {
+                        void startQr();
+                    });
+                    body.appendChild(refresh);
+                }
+            }
+        };
+        pollTimer = window.setInterval(() => {
+            void tick();
+        }, 3000);
+    };
+
+    const stored = loadNeteaseSession();
+    if (stored) {
+        // 先按已登录渲染，后台再校验；校验过期才清掉并提示重新登录，
+        // 网络异常不断言，保留已登录视图。
+        renderLoggedIn(stored);
+        void validateStoredSession().then((validity) => {
+            if (validity === 'expired' && loadNeteaseSession()?.cookie === stored.cookie) {
+                renderLoggedOut('登录已过期，请重新登录');
+            }
+        });
+    } else {
+        renderLoggedOut();
+    }
+    return box;
+}
+
+function renderYtmLoginBlock(): HTMLElement {
+    const box = document.createElement('div');
+    box.className = 'login-block';
+
+    const title = document.createElement('h3');
+    title.textContent = 'YouTube Music';
+    box.appendChild(title);
+
+    const body = document.createElement('div');
+    box.appendChild(body);
+
+    const renderLoggedOut = (notice?: string): void => {
+        body.replaceChildren();
+        if (notice) {
+            const note = document.createElement('p');
+            note.className = 'login-notice';
+            note.textContent = notice;
+            body.appendChild(note);
+        }
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'login-btn';
+        button.textContent = '登录 YouTube Music';
+        button.addEventListener('click', () => {
+            body.replaceChildren();
+            const waiting = document.createElement('p');
+            waiting.className = 'login-notice';
+            waiting.textContent = '登录页已打开，完成或取消后自动返回…';
+            body.appendChild(waiting);
+            void signInYtm().then((result) => {
+                if (result.ok) {
+                    renderLoggedIn();
+                } else if (result.cancelled) {
+                    renderLoggedOut();
+                } else {
+                    renderLoggedOut(result.message ?? 'YTM 登录失败');
+                }
+            });
+        });
+        body.appendChild(button);
+        const hint = document.createElement('p');
+        hint.className = 'login-hint';
+        hint.textContent = '用 YouTube 账号登录；不登录也能搜歌听歌。';
+        body.appendChild(hint);
+    };
+
+    const renderLoggedIn = (): void => {
+        body.replaceChildren();
+        const row = document.createElement('div');
+        row.className = 'login-row';
+        const name = document.createElement('span');
+        // 账号名没有可验证的直连端点，不编名字，只标已登录态。
+        name.textContent = '已登录 YouTube Music';
+        row.appendChild(name);
+        const logout = document.createElement('button');
+        logout.type = 'button';
+        logout.className = 'login-btn';
+        logout.textContent = '退出登录';
+        logout.addEventListener('click', () => {
+            clearYtmSession();
+            renderLoggedOut();
+        });
+        row.appendChild(logout);
+        body.appendChild(row);
+    };
+
+    if (loadYtmSession()) {
+        renderLoggedIn();
+    } else {
+        renderLoggedOut();
+    }
+    return box;
+}
+
 function renderPosterWall(): HTMLElement {
     const wall = document.createElement('section');
     wall.className = 'poster-wall';
