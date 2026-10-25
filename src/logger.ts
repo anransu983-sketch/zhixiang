@@ -1,9 +1,12 @@
 // 应用内日志：拦截 console 输出存一份环形缓冲，供首页底部的开发者区展示与复制。
 // 日志存本机 localStorage，重启 App 后保留（用户要求：不要重启就没了）；
-// 不上传、不发往仓库或 VPS——远端存法以后想要再加。凭证类内容不打日志——
-// 各音源的失败提示只含状态与原因，不含 cookie 与 token。
+// 同时自动传到用户自己的英国 VPS 接收服务（0.1.23 起，不用再手动点上传）：
+// 每条新日志后防抖 3 秒发一次全量原文，发送本身不记日志（否则会自触发循环），
+// 成败都不写日志；口令由 CI secret 在构建时注入，不进公开仓库源码。
+// 凭证类内容不打日志——各音源的失败提示只含状态与原因，不含 cookie 与 token。
 
 import { APP_VERSION } from './version';
+import { httpPost } from './native/http';
 
 export type LogLevel = 'log' | 'info' | 'warn' | 'error';
 
@@ -18,6 +21,43 @@ export interface LogEntry {
 
 const MAX_ENTRIES = 500;
 const STORAGE_KEY = 'zx_dev_log_v1';
+
+// 自动上传（用户自己的 VPS，手动按钮的同一地址与口令）：防抖 3 秒，
+// 连续日志只发最后一次；发送静默，成败都不记日志，避免自触发循环。
+const LOG_UPLOAD_URL = 'https://probe.suanran9527.com/zhixiang-logs/upload';
+const LOG_UPLOAD_TOKEN = import.meta.env.VITE_ZHIXIANG_LOG_TOKEN as string | undefined;
+let uploadTimer: ReturnType<typeof setTimeout> | undefined;
+
+function scheduleAutoUpload(): void {
+    if (!LOG_UPLOAD_TOKEN) {
+        return;
+    }
+    if (uploadTimer !== undefined) {
+        clearTimeout(uploadTimer);
+    }
+    uploadTimer = setTimeout(() => {
+        void sendLogsSilently();
+    }, 3000);
+}
+
+async function sendLogsSilently(): Promise<void> {
+    try {
+        const text = getLogText();
+        if (!text || !LOG_UPLOAD_TOKEN) {
+            return;
+        }
+        await httpPost(
+            LOG_UPLOAD_URL,
+            JSON.stringify({ version: APP_VERSION, device: 'phone', entries: text }),
+            {
+                'Content-Type': 'application/json',
+                'X-ZX-Token': LOG_UPLOAD_TOKEN
+            }
+        );
+    } catch {
+        // 静默：自动上传失败不记日志（记了又会触发下一次上传）。
+    }
+}
 
 const entries: LogEntry[] = [];
 const listeners = new Set<() => void>();
@@ -98,6 +138,7 @@ function push(level: LogLevel, args: unknown[]): void {
     for (const listener of listeners) {
         listener();
     }
+    scheduleAutoUpload();
 }
 
 export function initLogger(): void {

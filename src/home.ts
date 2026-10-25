@@ -306,7 +306,7 @@ function renderDeveloperSection(): HTMLElement {
 
     const hint = document.createElement('p');
     hint.className = 'developer-hint';
-    hint.textContent = '运行日志只存本机，重启后保留；筛好后点 COPY 可把当前看到的日志发出来定位问题。';
+    hint.textContent = '运行日志存本机（重启后保留），并自动传到 VPS，不用再手动上传；筛好后点 COPY 可把当前看到的日志发出来定位问题。';
     section.appendChild(hint);
 
     const actions = document.createElement('div');
