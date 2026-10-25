@@ -164,21 +164,21 @@ function buildPlayerPage(): HTMLElement {
     const prevButton = document.createElement('button');
     prevButton.type = 'button';
     prevButton.className = 'player-icon-btn';
-    prevButton.textContent = '⏮';
+    prevButton.textContent = '⏮︎';
     prevButton.addEventListener('click', () => {
         void previous();
     });
     const playPauseButton = document.createElement('button');
     playPauseButton.type = 'button';
     playPauseButton.className = 'player-icon-btn is-main';
-    playPauseButton.textContent = '▶';
+    playPauseButton.textContent = '▶︎';
     playPauseButton.addEventListener('click', () => {
         void togglePlay();
     });
     const nextButton = document.createElement('button');
     nextButton.type = 'button';
     nextButton.className = 'player-icon-btn';
-    nextButton.textContent = '⏭';
+    nextButton.textContent = '⏭︎';
     nextButton.addEventListener('click', () => {
         void next();
     });
@@ -194,7 +194,7 @@ function buildPlayerPage(): HTMLElement {
     repeatButton.className = 'player-bottom-btn';
     const repeatGlyph = document.createElement('span');
     repeatGlyph.className = 'player-bottom-glyph';
-    repeatGlyph.textContent = '↻';
+    repeatGlyph.textContent = '↻︎';
     const repeatLabel = document.createElement('span');
     repeatLabel.className = 'player-bottom-label';
     repeatLabel.textContent = '关';
@@ -573,7 +573,7 @@ function buildPlayerPage(): HTMLElement {
             updateHeart(null);
             updateQualityBadge(null);
         }
-        playPauseButton.textContent = state.playing ? '⏸' : '▶';
+        playPauseButton.textContent = state.playing ? '⏸︎' : '▶︎';
         updateProgress(state);
         updateDegradedNote();
     };
