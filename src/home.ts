@@ -1,13 +1,13 @@
 // 首页组装：按音源注册表渲染各音源的浏览区，尚未实现的块留在清单里。
 // 本文件只做组装与界面接线，不放音源与播放逻辑。
 
-import { playTrack } from './playback';
+import { getCurrentState, next, onTrackChange, playQueue, previous, togglePlay } from './playback';
+import type { PlaybackState } from './playback';
 import { SOURCES } from './sources/index';
 import { getLocalNotice } from './sources/local';
 import type { AudioSource, Track } from './types';
 
 const UPCOMING = [
-    '淡入淡出 · 后台保活',
     '首页海报墙',
     '3D 歌单架',
     '歌词动态壁纸 · 雨滴玻璃 · 粒子舞台 · 节奏脉动 · 氛围星空'
@@ -51,10 +51,62 @@ export function renderHome(): HTMLElement {
     hint.textContent = '全新重做版，首版功能正在一块一块接上来。';
     section.appendChild(hint);
 
-    const status = document.createElement('p');
-    status.className = 'now-playing';
+    // 最小正在播放条：歌名、歌手、播放/暂停、上一首/下一首，样式与首页卡片一致。
+    // 点一首即把该区当前列表作为队列，条上的上一首/下一首就在该队列里切。
+    const bar = document.createElement('div');
+    bar.className = 'now-playing-bar';
+
+    const status = document.createElement('span');
+    status.className = 'now-playing-info';
     status.textContent = '还没播放任何歌曲。';
-    section.appendChild(status);
+    bar.appendChild(status);
+
+    const controls = document.createElement('div');
+    controls.className = 'now-playing-controls';
+
+    const prevButton = document.createElement('button');
+    prevButton.type = 'button';
+    prevButton.className = 'now-playing-btn';
+    prevButton.textContent = '上一首';
+    prevButton.addEventListener('click', () => {
+        void previous();
+    });
+    controls.appendChild(prevButton);
+
+    const playPauseButton = document.createElement('button');
+    playPauseButton.type = 'button';
+    playPauseButton.className = 'now-playing-btn';
+    playPauseButton.textContent = '播放';
+    playPauseButton.addEventListener('click', () => {
+        void togglePlay();
+    });
+    controls.appendChild(playPauseButton);
+
+    const nextButton = document.createElement('button');
+    nextButton.type = 'button';
+    nextButton.className = 'now-playing-btn';
+    nextButton.textContent = '下一首';
+    nextButton.addEventListener('click', () => {
+        void next();
+    });
+    controls.appendChild(nextButton);
+
+    bar.appendChild(controls);
+    section.appendChild(bar);
+
+    const refreshBar = (state: PlaybackState): void => {
+        if (state.error) {
+            status.textContent = state.error;
+        } else if (state.track) {
+            const verb = state.playing ? '正在播放' : '已暂停';
+            status.textContent = `${verb}：${state.track.title} — ${state.track.artist}`;
+        } else {
+            status.textContent = '还没播放任何歌曲。';
+        }
+        playPauseButton.textContent = state.playing ? '暂停' : '播放';
+    };
+    onTrackChange(refreshBar);
+    refreshBar(getCurrentState());
 
     for (const source of SOURCES) {
         section.appendChild(renderSourceSection(source, status));
@@ -141,7 +193,7 @@ function renderSourceSection(source: AudioSource, status: HTMLElement): HTMLElem
 
 function renderTracks(list: HTMLElement, tracks: Track[], status: HTMLElement): void {
     list.replaceChildren();
-    for (const track of tracks) {
+    for (const [index, track] of tracks.entries()) {
         const item = document.createElement('li');
         item.className = 'track-row';
 
@@ -179,7 +231,8 @@ function renderTracks(list: HTMLElement, tracks: Track[], status: HTMLElement): 
         playButton.addEventListener('click', () => {
             void (async () => {
                 try {
-                    await playTrack(track);
+                    // 点一首即把该区当前列表作为队列，从点中的这首起播。
+                    await playQueue(tracks, index);
                     status.textContent = `正在播放：${track.title} — ${track.artist}`;
                 } catch (error) {
                     status.textContent = friendlyPlayError(error);

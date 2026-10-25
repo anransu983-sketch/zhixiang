@@ -56,6 +56,38 @@ body {
     background: rgba(255, 255, 255, 0.07);
 }
 
+.now-playing-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.07);
+}
+
+.now-playing-info {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.now-playing-controls {
+    flex: none;
+    display: flex;
+    gap: 8px;
+}
+
+.now-playing-btn {
+    padding: 8px 12px;
+    border: 0;
+    border-radius: 999px;
+    background: #e8a0bf;
+    color: #241522;
+    font-size: 13px;
+}
+
 .source-search {
     width: 100%;
     padding: 12px 14px;
