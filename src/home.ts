@@ -398,10 +398,18 @@ function renderNeteaseLoginBlock(): HTMLElement {
 
     let pollTimer: number | undefined;
     let currentKey = '';
+    // 连续自动换码计数：健康码（801）会清零；只有“一拿就过期”的坏流程
+    // 才会连涨，涨满 10 次停下来给手动按钮，不对坏流程无限刷码。
+    let qrAutoRefreshes = 0;
+    let qrVisibilityHandler: (() => void) | null = null;
     const stopPoll = (): void => {
         if (pollTimer !== undefined) {
             window.clearInterval(pollTimer);
             pollTimer = undefined;
+        }
+        if (qrVisibilityHandler) {
+            document.removeEventListener('visibilitychange', qrVisibilityHandler);
+            qrVisibilityHandler = null;
         }
     };
 
@@ -451,8 +459,11 @@ function renderNeteaseLoginBlock(): HTMLElement {
         body.appendChild(row);
     };
 
-    const startQr = async (): Promise<void> => {
+    const startQr = async (auto = false): Promise<void> => {
         stopPoll();
+        if (!auto) {
+            qrAutoRefreshes = 0;
+        }
         body.replaceChildren();
         const status = document.createElement('p');
         status.className = 'login-notice';
@@ -524,6 +535,7 @@ function renderNeteaseLoginBlock(): HTMLElement {
             if (result.code !== lastPollCode) {
                 lastPollCode = result.code;
                 if (result.code === 801) {
+                    qrAutoRefreshes = 0;
                     console.log('[Netease] 扫码等待中');
                 } else if (result.code === 802) {
                     console.log('[Netease] 已扫码，等待手机确认');
@@ -540,16 +552,26 @@ function renderNeteaseLoginBlock(): HTMLElement {
             } else if (result.code === 802) {
                 status.textContent = '已扫码，请在手机上确认';
             } else if (result.code === 800) {
+                // 码过期就自动换新码：用户切去网易云 App 扫码再回来时，
+                // 旧码可能已过期，屏幕上永远有新鲜码可扫，不用手动点刷新。
                 stopPoll();
-                status.textContent = '二维码已过期';
-                const refresh = document.createElement('button');
-                refresh.type = 'button';
-                refresh.className = 'login-btn';
-                refresh.textContent = '刷新二维码';
-                refresh.addEventListener('click', () => {
-                    void startQr();
-                });
-                body.appendChild(refresh);
+                if (qrAutoRefreshes < 10) {
+                    qrAutoRefreshes += 1;
+                    console.log('[Netease] 二维码已过期，已自动换新码');
+                    window.setTimeout(() => {
+                        void startQr(true);
+                    }, 800);
+                } else {
+                    status.textContent = '二维码已过期';
+                    const refresh = document.createElement('button');
+                    refresh.type = 'button';
+                    refresh.className = 'login-btn';
+                    refresh.textContent = '刷新二维码';
+                    refresh.addEventListener('click', () => {
+                        void startQr();
+                    });
+                    body.appendChild(refresh);
+                }
             } else if (result.code === 8821) {
                 // 这个码已被拒绝：停掉轮询（继续轮同一码只会一直 8821），
                 // 给换新码按钮，不自动刷码以免无意义循环。
@@ -585,6 +607,14 @@ function renderNeteaseLoginBlock(): HTMLElement {
                 }
             }
         };
+        // 从网易云 App 切回来时立刻查一次，不等 3 秒间隔：切出去期间
+        // 计时器可能被系统节流，回来不补查就会错过 803、只剩过期。
+        qrVisibilityHandler = () => {
+            if (document.visibilityState === 'visible') {
+                void tick();
+            }
+        };
+        document.addEventListener('visibilitychange', qrVisibilityHandler);
         pollTimer = window.setInterval(() => {
             void tick();
         }, 3000);
