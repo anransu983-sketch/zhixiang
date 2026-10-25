@@ -128,12 +128,12 @@ interface RawFormat {
 // 的拦截（沙箱实探结论，见文件头）。没有它时也不阻塞取链，只是成功率会低。
 let cachedVisitorData: string | null = null;
 
-function clientContext(client: InnertubeClient, withVisitorData: boolean): Record<string, unknown> {
+function clientContext(client: InnertubeClient, withVisitorData: boolean, gl = 'CN'): Record<string, unknown> {
     const context: Record<string, unknown> = {
         clientName: client.name,
         clientVersion: client.version,
         hl: 'zh-CN',
-        gl: 'CN'
+        gl
     };
     if (client.deviceMake) {
         context.deviceMake = client.deviceMake;
@@ -253,7 +253,10 @@ class YtmSource implements AudioSource {
             return [];
         }
         const body = JSON.stringify({
-            context: { client: clientContext(SEARCH_CLIENT, false) },
+            // YouTube 对 WEB_REMIX 搜索不接受 gl=CN（直接 400 INVALID_ARGUMENT，
+            // 沙箱逐项缩减验证：只改 gl 为 US 即回 200；榜单与取链走 ANDROID/IOS
+            // 且 gl=CN 本就通，不动它们）。
+            context: { client: clientContext(SEARCH_CLIENT, false, 'US') },
             query: keyword
         });
         const response = await httpPost(`${SEARCH_URL}?key=${INNERTUBE_KEY}`, body, requestHeaders());
