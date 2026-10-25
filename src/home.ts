@@ -278,6 +278,14 @@ function renderNeteaseLoginBlock(): HTMLElement {
         qr.addEventListener('error', () => {
             stopPoll();
             status.textContent = '二维码图片加载失败，请检查网络后点刷新重试';
+            const refresh = document.createElement('button');
+            refresh.type = 'button';
+            refresh.className = 'login-btn';
+            refresh.textContent = '刷新二维码';
+            refresh.addEventListener('click', () => {
+                void startQr();
+            });
+            body.appendChild(refresh);
         });
         body.appendChild(qr);
         const cancel = document.createElement('button');
