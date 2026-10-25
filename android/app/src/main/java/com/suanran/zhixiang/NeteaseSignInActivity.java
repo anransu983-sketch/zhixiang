@@ -98,6 +98,12 @@ public class NeteaseSignInActivity extends Activity {
         webView.getSettings().setJavaScriptEnabled(true);
         webView.getSettings().setDomStorageEnabled(true);
         webView.getSettings().setUserAgentString(DESKTOP_USER_AGENT);
+        // 桌面版页宽超出手机屏：先按宽度自适应铺满全屏，右上角“登录”不用左右
+        // 翻找就能看到；再开双指缩放，登录弹窗出来后可放大看清二维码。
+        webView.getSettings().setUseWideViewPort(true);
+        webView.getSettings().setLoadWithOverviewMode(true);
+        webView.getSettings().setBuiltInZoomControls(true);
+        webView.getSettings().setDisplayZoomControls(false);
         CookieManager cookieManager = CookieManager.getInstance();
         cookieManager.setAcceptCookie(true);
         cookieManager.setAcceptThirdPartyCookies(webView, true);
