@@ -1,4 +1,5 @@
-// 网易云音源：只走无需登录的公开接口，不做登录体系。
+// 网易云音源：公开接口直连；登录后搜索／取链／榜单／歌词自动带上会话 Cookie
+//（见 netease-session.ts 的扫码登录），未登录时一切如旧。
 // 请求一律走原生 HttpBridge，不用浏览器 fetch（WebView 跨域会被 CORS 拦）。
 //
 // 实测探到的端点与返回结构（2026-10-25 沙箱 curl 实测，无登录、无 cookie）：
@@ -15,12 +16,18 @@
 // 注意：取链地址带时效签名，拿到后应尽快播放，不要长期缓存。
 
 import { httpGet } from '../native/http';
+import { withSessionCookie } from './netease-session';
 import type { AudioSource, Poster, SourceId, Track } from '../types';
 
 const SEARCH_URL = 'https://music.163.com/api/cloudsearch/pc';
 const STREAM_URL = 'https://music.163.com/api/song/enhance/player/url';
 const SEARCH_LIMIT = 20;
 const STREAM_BITRATE = 128000;
+
+// 有会话时补 Cookie、无会话时原样返回；URL 与参数一律不动。
+function requestHeaders(): Record<string, string> {
+    return withSessionCookie(HEADERS);
+}
 
 const HEADERS: Record<string, string> = {
     Referer: 'https://music.163.com/',
@@ -58,7 +65,7 @@ class NeteaseSource implements AudioSource {
             limit: String(SEARCH_LIMIT),
             offset: '0'
         });
-        const response = await httpGet(`${SEARCH_URL}?${params.toString()}`, HEADERS);
+        const response = await httpGet(`${SEARCH_URL}?${params.toString()}`, requestHeaders());
         if (response.status !== 200) {
             throw new Error('网易云搜索失败，请稍后重试');
         }
@@ -84,7 +91,7 @@ class NeteaseSource implements AudioSource {
             ids: `[${songId}]`,
             br: String(STREAM_BITRATE)
         });
-        const response = await httpGet(`${STREAM_URL}?${params.toString()}`, HEADERS);
+        const response = await httpGet(`${STREAM_URL}?${params.toString()}`, requestHeaders());
         if (response.status !== 200) {
             throw new Error('拿不到这首歌的播放地址，请稍后重试');
         }
@@ -181,7 +188,7 @@ export async function fetchNeteaseChartPosters(): Promise<Poster[]> {
         try {
             const response = await httpGet(
                 `https://music.163.com/api/playlist/detail?id=${playlistId}`,
-                HEADERS
+                requestHeaders()
             );
             if (response.status !== 200) {
                 continue;

@@ -14,6 +14,7 @@
 // 歌词行绑任何点击处理。
 
 import { httpGet } from './native/http';
+import { withSessionCookie } from './sources/netease-session';
 import type { Track } from './types';
 
 export interface LyricLine {
@@ -111,7 +112,7 @@ export async function fetchLyrics(track: Track): Promise<LyricResult> {
             kv: '-1',
             tv: '-1'
         });
-        const response = await httpGet(`${LYRIC_URL}?${params.toString()}`, HEADERS);
+        const response = await httpGet(`${LYRIC_URL}?${params.toString()}`, withSessionCookie(HEADERS));
         if (response.status !== 200) {
             return { lines: [], note: '歌词暂时拿不到，只显示歌名与歌手。' };
         }
