@@ -236,6 +236,36 @@ export async function checkQr(key: string): Promise<QrCheckResult> {
         cookie = cookieFromSetCookies(response.setCookies);
     }
     if (!cookie || !hasMusicU(cookie)) {
+        // 803 已确认却拿不到 MUSIC_U：只记凭证“形状”定位，不记任何凭证值——
+        // body.cookie 有无与类型、data.cookie 有无、Set-Cookie 里出现的
+        // cookie 名、响应体里是否含 MUSIC_U 子串。用户在开发者区 COPY 发回
+        // 即可定位是服务端没发、还是桥没回传、还是解析漏了字段。
+        const cookieNames = (value: unknown): string => {
+            if (typeof value === 'string') {
+                return value
+                    .split(';')
+                    .map((part) => part.split('=', 1)[0]?.trim())
+                    .filter(Boolean)
+                    .join(',');
+            }
+            if (Array.isArray(value)) {
+                return value
+                    .filter((item) => typeof item === 'string')
+                    .map((item) => (item as string).split(';', 1)[0]?.split('=', 1)[0]?.trim())
+                    .filter(Boolean)
+                    .join(',');
+            }
+            return '';
+        };
+        const setCookieNames = (response.setCookies ?? [])
+            .map((entry) => entry.split(';', 1)[0]?.split('=', 1)[0]?.trim())
+            .filter(Boolean)
+            .join(',');
+        console.error(
+            `[Netease] 803 凭证缺失：body.cookie=${typeof parsed.cookie}(${cookieNames(parsed.cookie) || '空'})，` +
+                `data.cookie=${parsed.data ? typeof parsed.data.cookie : '无data'}(${cookieNames(parsed.data?.cookie) || '空'})，` +
+                `setCookies名=[${setCookieNames || '空'}]，body含MUSIC_U=${response.body.includes('MUSIC_U') ? '是' : '否'}`
+        );
         return { code: 803, message: '登录凭证不完整，请重新扫码', session: null };
     }
     const profile = parsed.profile ?? parsed.data?.profile ?? null;

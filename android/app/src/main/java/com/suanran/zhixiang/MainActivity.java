@@ -15,7 +15,6 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(PlaybackPlugin.class);
         registerPlugin(WallpaperPlugin.class);
         registerPlugin(YtmSignInPlugin.class);
-        registerPlugin(NeteaseSignInPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

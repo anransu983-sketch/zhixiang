@@ -1,5 +1,6 @@
 // 应用内日志：拦截 console 输出存一份环形缓冲，供首页底部的开发者区展示与复制。
-// 日志只存本机内存，不上传、不落盘；重启 App 即清空。凭证类内容不打日志——
+// 日志存本机 localStorage，重启 App 后保留（用户要求：不要重启就没了）；
+// 不上传、不发往仓库或 VPS——远端存法以后想要再加。凭证类内容不打日志——
 // 各音源的失败提示只含状态与原因，不含 cookie 与 token。
 
 export type LogLevel = 'log' | 'info' | 'warn' | 'error';
@@ -14,10 +15,57 @@ export interface LogEntry {
 }
 
 const MAX_ENTRIES = 500;
+const STORAGE_KEY = 'zx_dev_log_v1';
 
 const entries: LogEntry[] = [];
 const listeners = new Set<() => void>();
 let installed = false;
+
+// 本机持久化：每条新日志都写回 localStorage，App 重启后先读回，
+// 再接新日志；写不下（配额满）时砍半重试一次，再失败就只留内存。
+function persist(): void {
+    try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+    } catch {
+        try {
+            entries.splice(0, Math.floor(entries.length / 2));
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+        } catch {
+            // 存不下也不中断：本运行内内存日志仍可用。
+        }
+    }
+}
+
+function restore(): void {
+    try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) {
+            return;
+        }
+        const parsed = JSON.parse(raw) as Partial<LogEntry>[] | null;
+        if (!Array.isArray(parsed)) {
+            return;
+        }
+        for (const item of parsed.slice(-MAX_ENTRIES)) {
+            if (
+                item &&
+                typeof item.time === 'string' &&
+                typeof item.level === 'string' &&
+                typeof item.text === 'string'
+            ) {
+                entries.push({
+                    time: item.time,
+                    level: item.level as LogLevel,
+                    module: typeof item.module === 'string' && item.module ? item.module : 'app',
+                    text: item.text
+                });
+            }
+        }
+    } catch {
+        // 旧存档损坏就丢弃，从空开始。
+        entries.length = 0;
+    }
+}
 
 function formatArg(arg: unknown): string {
     if (typeof arg === 'string') {
@@ -44,6 +92,7 @@ function push(level: LogLevel, args: unknown[]): void {
     while (entries.length > MAX_ENTRIES) {
         entries.shift();
     }
+    persist();
     for (const listener of listeners) {
         listener();
     }
@@ -54,6 +103,7 @@ export function initLogger(): void {
         return;
     }
     installed = true;
+    restore();
     const originals = {
         log: console.log.bind(console),
         info: console.info.bind(console),
@@ -76,7 +126,7 @@ export function initLogger(): void {
         push('error', args);
         originals.error(...args);
     };
-    push('info', ['芷湘日志开始（仅存本机，重启后清空）']);
+    push('info', ['芷湘日志开始（已存本机，重启后保留）']);
 }
 
 export function getLogEntries(): LogEntry[] {
@@ -97,6 +147,11 @@ export function getLogText(): string {
 
 export function clearLogs(): void {
     entries.length = 0;
+    try {
+        localStorage.removeItem(STORAGE_KEY);
+    } catch {
+        // 清不掉也不中断：下次启动读回的仍是清空前的存档时再清一次。
+    }
     for (const listener of listeners) {
         listener();
     }

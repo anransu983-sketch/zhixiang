@@ -24,7 +24,6 @@ import {
     loadYtmSession,
     signInYtm
 } from './sources/ytm-session';
-import { signInNeteaseWeb } from './sources/netease-web-login';
 import type { AudioSource, Poster, Track } from './types';
 
 // 第 8 块已接上：歌词动态壁纸与四项视觉都在播放页里，清单不再列它。
@@ -204,7 +203,7 @@ function renderDeveloperSection(): HTMLElement {
 
     const hint = document.createElement('p');
     hint.className = 'developer-hint';
-    hint.textContent = '运行日志只存本机，重启后清空；筛好后点 COPY 可把当前看到的日志发出来定位问题。';
+    hint.textContent = '运行日志只存本机，重启后保留；筛好后点 COPY 可把当前看到的日志发出来定位问题。';
     section.appendChild(hint);
 
     const actions = document.createElement('div');
@@ -423,49 +422,6 @@ function renderNeteaseLoginBlock(): HTMLElement {
             void startQr();
         });
         body.appendChild(button);
-        const webButton = document.createElement('button');
-        webButton.type = 'button';
-        webButton.className = 'login-btn netease-web-login-btn';
-        webButton.textContent = '网页登录';
-        webButton.addEventListener('click', () => {
-            void startWebLogin();
-        });
-        body.appendChild(webButton);
-        const hint = document.createElement('p');
-        hint.className = 'login-hint';
-        hint.textContent = '扫码遇到问题时，网页登录可作备用。';
-        body.appendChild(hint);
-    };
-
-    // 网页登录：原生 Activity 里打开网易云官网，用户真的登录一次，
-    // 拿到 MUSIC_U 后与扫码路共用同一套会话存储；昵称头像拿不到时用兜底文案。
-    const startWebLogin = async (): Promise<void> => {
-        stopPoll();
-        body.replaceChildren();
-        const waiting = document.createElement('p');
-        waiting.className = 'login-notice';
-        waiting.textContent = '登录页已打开，完成或取消后自动返回…';
-        body.appendChild(waiting);
-        const result = await signInNeteaseWeb();
-        if (result.ok) {
-            const session: NeteaseSession = {
-                cookie: result.cookie,
-                nickname: '已登录网易云',
-                avatarUrl: '',
-                savedAt: Date.now()
-            };
-            saveNeteaseSession(session);
-            renderLoggedIn(session);
-            void validateStoredSession().then((validity) => {
-                if (validity === 'expired' && loadNeteaseSession()?.cookie === session.cookie) {
-                    renderLoggedOut('登录已过期，请重新登录');
-                }
-            });
-        } else if (result.cancelled) {
-            renderLoggedOut();
-        } else {
-            renderLoggedOut(result.message ?? '网易云网页登录失败');
-        }
     };
 
     const renderLoggedIn = (session: NeteaseSession): void => {
@@ -518,6 +474,7 @@ function renderNeteaseLoginBlock(): HTMLElement {
             return;
         }
         currentKey = key;
+        console.log('[Netease] 二维码已生成，等待扫码');
         status.textContent = '用网易云 App 扫码登录';
         const qr = document.createElement('img');
         qr.className = 'login-qr';
@@ -545,6 +502,7 @@ function renderNeteaseLoginBlock(): HTMLElement {
         });
         body.appendChild(cancel);
         let polling = false;
+        let lastPollCode = 0;
         const tick = async (): Promise<void> => {
             // 上一次轮询还没回来时跳过，避免 3 秒间隔下请求堆积。
             if (polling) {
@@ -561,6 +519,21 @@ function renderNeteaseLoginBlock(): HTMLElement {
                 return;
             } finally {
                 polling = false;
+            }
+            // 状态变化才记一行：每 3 秒轮询都记会把控制台刷满。
+            if (result.code !== lastPollCode) {
+                lastPollCode = result.code;
+                if (result.code === 801) {
+                    console.log('[Netease] 扫码等待中');
+                } else if (result.code === 802) {
+                    console.log('[Netease] 已扫码，等待手机确认');
+                } else if (result.code === 800) {
+                    console.log('[Netease] 二维码已过期');
+                } else if (result.code === 8821) {
+                    console.warn('[Netease] 扫码被拒绝（8821）');
+                } else if (result.code === 803) {
+                    console.log('[Netease] 扫码已确认');
+                }
             }
             if (result.code === 801) {
                 status.textContent = '等待扫码';
@@ -579,12 +552,12 @@ function renderNeteaseLoginBlock(): HTMLElement {
                 body.appendChild(refresh);
             } else if (result.code === 8821) {
                 // 这个码已被拒绝：停掉轮询（继续轮同一码只会一直 8821），
-                // 给换新码按钮与网页登录备用，不自动刷码以免无意义循环。
+                // 给换新码按钮，不自动刷码以免无意义循环。
                 stopPoll();
                 status.textContent = '扫码被拒绝';
                 const hint = document.createElement('p');
                 hint.className = 'login-hint';
-                hint.textContent = '这次扫码被网易云拒绝了，换个新码再扫一次，或用网页登录作备用。';
+                hint.textContent = '这次扫码被网易云拒绝了，换个新码再扫一次。';
                 body.appendChild(hint);
                 const refresh = document.createElement('button');
                 refresh.type = 'button';
@@ -594,14 +567,6 @@ function renderNeteaseLoginBlock(): HTMLElement {
                     void startQr();
                 });
                 body.appendChild(refresh);
-                const webButton = document.createElement('button');
-                webButton.type = 'button';
-                webButton.className = 'login-btn netease-web-login-btn';
-                webButton.textContent = '网页登录';
-                webButton.addEventListener('click', () => {
-                    void startWebLogin();
-                });
-                body.appendChild(webButton);
             } else if (result.code === 803) {
                 stopPoll();
                 if (result.session) {
@@ -631,6 +596,9 @@ function renderNeteaseLoginBlock(): HTMLElement {
         // 网络异常不断言，保留已登录视图。
         renderLoggedIn(stored);
         void validateStoredSession().then((validity) => {
+            console.log(
+                `[Netease] 会话校验：${validity === 'valid' ? '有效' : validity === 'expired' ? '已过期' : validity === 'none' ? '无会话' : '状态未知'}`
+            );
             if (validity === 'expired' && loadNeteaseSession()?.cookie === stored.cookie) {
                 renderLoggedOut('登录已过期，请重新登录');
             }
@@ -766,7 +734,9 @@ function renderPosterWall(): HTMLElement {
             try {
                 posters = await definition.load();
             } catch (error) {
-                notice.textContent = friendlyPosterError(definition, error);
+                const reason = friendlyPosterError(definition, error);
+                console.warn(`[Poster] ${definition.label} 加载失败：${reason}`);
+                notice.textContent = reason;
                 return;
             }
             if (posters.length === 0) {
