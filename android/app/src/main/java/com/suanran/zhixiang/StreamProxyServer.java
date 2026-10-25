@@ -87,7 +87,10 @@ public class StreamProxyServer {
             return serverSocket.getLocalPort();
         }
         stopLocked();
-        serverSocket = new ServerSocket(0, 50, InetAddress.getLoopbackAddress());
+        // 必须字面绑 127.0.0.1：getLoopbackAddress() 在双栈设备上可能落到 ::1，
+        // 而 Web 层连的是 127.0.0.1，地址族一错即拒连，fetch 只给 TypeError。
+        // Folia 的 LocalAudioServer 同样字面绑 127.0.0.1。
+        serverSocket = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"));
         running = true;
         final ServerSocket socket = serverSocket;
         acceptThread = new Thread(() -> acceptLoop(socket), "zhixiang-proxy");
