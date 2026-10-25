@@ -33,9 +33,13 @@ public class NeteaseSignInActivity extends Activity {
 
     public static final String EXTRA_COOKIE = "cookie";
 
-    // 直接开登录页：首页上登录入口藏得深，/login 会跳到 y.music.163.com/m/login
-    //（移动登录页），用户不用在首页翻登录入口。
-    private static final String START_URL = "https://music.163.com/login";
+    // 桌面版站：移动登录页只有手机号登录，没有扫码入口；桌面首页右上角
+    // “登录”弹窗里有扫码登录，用网易云 App 扫官方二维码即可登录（官网自己的
+    // 扫码流，不走被 8821 拒绝的那条 API 扫码路）。故用桌面 UA 开桌面首页，
+    // 用户点登录 → 切到扫码登录 → 扫码确认，MUSIC_U 一到即自动交接。
+    private static final String START_URL = "https://music.163.com/";
+    private static final String DESKTOP_USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
     private static final String[] COOKIE_URLS = {
             "https://music.163.com/",
             "https://y.music.163.com/"
@@ -93,6 +97,7 @@ public class NeteaseSignInActivity extends Activity {
                 0, 1f));
         webView.getSettings().setJavaScriptEnabled(true);
         webView.getSettings().setDomStorageEnabled(true);
+        webView.getSettings().setUserAgentString(DESKTOP_USER_AGENT);
         CookieManager cookieManager = CookieManager.getInstance();
         cookieManager.setAcceptCookie(true);
         cookieManager.setAcceptThirdPartyCookies(webView, true);
