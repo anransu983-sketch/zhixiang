@@ -27,6 +27,9 @@ body {
     margin: 0;
     padding: 0;
     height: 100%;
+    /* 手机适配：任何子元素都不许把整页撑宽、左右乱滚；
+       歌单架自己的横向滑动不受影响（它在 .shelf-scroll 内部滚）。 */
+    overflow-x: hidden;
     background: var(--bg);
     color: var(--text);
     font-family: var(--font-sans);
@@ -35,7 +38,7 @@ body {
 /* 底部留出悬浮迷你播放条的位置，避免盖住最后一区。 */
 #app {
     min-height: 100%;
-    padding: 24px 16px calc(112px + env(safe-area-inset-bottom));
+    padding: calc(24px + env(safe-area-inset-top)) 16px calc(112px + env(safe-area-inset-bottom));
 }
 
 /* 区块间距统一：首页直接子元素之间一律 var(--section-gap)。 */
@@ -307,11 +310,20 @@ body {
 }
 
 .poster-badge {
+    flex: none;
     padding: 2px 10px;
     border-radius: 999px;
     background: rgba(232, 160, 191, 0.18);
     color: var(--text);
     font-size: 12px;
+}
+
+/* 海报卡片里的曲目数没有 class：窄卡片上必须能缩，不许撑出卡片。 */
+.poster-meta span:not(.poster-badge) {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .poster-notice {
@@ -467,7 +479,7 @@ body {
 
 .player-content {
     position: relative;
-    padding: 24px 16px calc(24px + env(safe-area-inset-bottom));
+    padding: calc(24px + env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom));
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -579,6 +591,15 @@ body {
     gap: 12px;
 }
 
+/* 登录行的昵称没有 class：长昵称必须能缩、不许把卡片和整页撑宽。 */
+.login-row > span {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .login-avatar {
     width: 40px;
     height: 40px;
@@ -627,6 +648,7 @@ body {
 
 .developer-actions {
     display: flex;
+    flex-wrap: wrap;
     gap: 10px;
     align-items: center;
     margin-bottom: 10px;
@@ -642,6 +664,7 @@ body {
 
 .dev-filters {
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
     margin-bottom: 10px;
 }
@@ -659,6 +682,7 @@ body {
 }
 
 .dev-select {
+    min-width: 0;
     padding: 8px 10px;
     border: 1px solid var(--border);
     border-radius: 999px;
