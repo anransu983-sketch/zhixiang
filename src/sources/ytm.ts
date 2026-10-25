@@ -43,7 +43,7 @@
 // 由第 5 块的播放引擎实现（MSE 分块加载或本地 Range 代理均可，第 5 块定）。
 
 import { httpPost } from '../native/http';
-import type { AudioSource, SourceId, Track } from '../types';
+import type { AudioSource, Poster, SourceId, Track } from '../types';
 
 const SEARCH_URL = 'https://music.youtube.com/youtubei/v1/search';
 const PLAYER_URL = 'https://www.youtube.com/youtubei/v1/player';
@@ -373,3 +373,225 @@ export async function resolveYtmStream(track: Track): Promise<YtmStream> {
 }
 
 export const ytmSource = new YtmSource();
+
+// 海报墙用 YTM 榜单页热门专辑（第 6 块新增，全新写）：
+// 实测（2026-10-25 沙箱 curl，无登录、无 cookie）：
+// - 榜单页 POST https://music.youtube.com/youtubei/v1/browse，browseId
+//   FEmusic_charts：WEB_REMIX 客户端回 400，ANDROID 20.10.38 回 200；
+//   关键是 context.client 里不要带 visitorData 字段——带空字符串反而回 404，
+//   不带字段直接回 200 且自带新的 visitorData。本函数按不带字段实现。
+// - 该页回的轮播是新式 musicListItemCarouselModel（不是旧 renderer 树）：
+//   本次实探只有「热门专辑」与「热门播客节目每周排行榜」两个轮播，没有
+//   歌曲榜单轮播；所以本路取热门专辑轮播（其单项菜单里带 OLAK 开头的
+//   watchPlaylistEndpoint.playlistId），播客轮播（PL 开头）直接跳过。
+// - 专辑曲目 POST 同一 browse 端点，browseId 为 VL + 专辑 playlistId，
+//   回 playlistVideoRenderer 数组（videoId、标题 runs、shortBylineText runs、
+//   缩略图组），与搜索行的解析方式同源，可直接转 Track。
+// 单张专辑取曲失败只跳过该张；榜单页本身失败则抛错，由调用方给中文提示。
+const BROWSE_URL = 'https://music.youtube.com/youtubei/v1/browse';
+const CHART_BROWSE_ID = 'FEmusic_charts';
+const CHART_ALBUM_LIMIT = 3;
+const CHART_ALBUM_TRACK_LIMIT = 20;
+
+interface YtmCarouselItem {
+    title?: unknown;
+    subtitle?: unknown;
+    thumbnail?: {
+        image?: { sources?: unknown } | null;
+    } | null;
+}
+
+interface YtmCarousel {
+    header?: { title?: unknown } | null;
+    items?: unknown;
+}
+
+interface YtmPlaylistVideo {
+    videoId?: unknown;
+    title?: { runs?: unknown } | null;
+    shortBylineText?: { runs?: unknown } | null;
+    thumbnail?: { thumbnails?: unknown } | null;
+}
+
+function collectCarousels(node: unknown, out: YtmCarousel[]): void {
+    if (Array.isArray(node)) {
+        for (const child of node) {
+            collectCarousels(child, out);
+        }
+        return;
+    }
+    if (node === null || typeof node !== 'object') {
+        return;
+    }
+    const record = node as Record<string, unknown>;
+    const carousel = record.musicListItemCarouselModel;
+    if (carousel !== null && typeof carousel === 'object') {
+        out.push(carousel as YtmCarousel);
+    }
+    for (const child of Object.values(record)) {
+        collectCarousels(child, out);
+    }
+}
+
+function findAlbumPlaylistId(node: unknown): string | null {
+    if (Array.isArray(node)) {
+        for (const child of node) {
+            const found = findAlbumPlaylistId(child);
+            if (found) {
+                return found;
+            }
+        }
+        return null;
+    }
+    if (node === null || typeof node !== 'object') {
+        return null;
+    }
+    const record = node as Record<string, unknown>;
+    const endpoint = record.watchPlaylistEndpoint as { playlistId?: unknown } | null;
+    if (
+        endpoint !== null &&
+        typeof endpoint === 'object' &&
+        typeof endpoint.playlistId === 'string' &&
+        endpoint.playlistId.startsWith('OLAK')
+    ) {
+        return endpoint.playlistId;
+    }
+    for (const child of Object.values(record)) {
+        const found = findAlbumPlaylistId(child);
+        if (found) {
+            return found;
+        }
+    }
+    return null;
+}
+
+function largestThumbnailSource(sources: unknown): string | undefined {
+    if (!Array.isArray(sources)) {
+        return undefined;
+    }
+    let bestUrl: string | undefined;
+    let bestWidth = -1;
+    for (const raw of sources as RawThumbnail[]) {
+        const width = typeof raw.width === 'number' ? raw.width : 0;
+        if (typeof raw.url === 'string' && raw.url && width >= bestWidth) {
+            bestUrl = raw.url;
+            bestWidth = width;
+        }
+    }
+    return bestUrl;
+}
+
+function collectPlaylistVideos(node: unknown, out: YtmPlaylistVideo[]): void {
+    if (Array.isArray(node)) {
+        for (const child of node) {
+            collectPlaylistVideos(child, out);
+        }
+        return;
+    }
+    if (node === null || typeof node !== 'object') {
+        return;
+    }
+    const record = node as Record<string, unknown>;
+    const video = record.playlistVideoRenderer;
+    if (video !== null && typeof video === 'object') {
+        out.push(video as YtmPlaylistVideo);
+    }
+    for (const child of Object.values(record)) {
+        collectPlaylistVideos(child, out);
+    }
+}
+
+function playlistVideoToTrack(raw: YtmPlaylistVideo): Track | null {
+    if (typeof raw.videoId !== 'string' || !raw.videoId) {
+        return null;
+    }
+    const titleRuns = raw.title?.runs;
+    const title = Array.isArray(titleRuns)
+        ? (titleRuns as RawRun[]).map(runText).join('')
+        : '';
+    const artistRuns = raw.shortBylineText?.runs;
+    const artist = Array.isArray(artistRuns)
+        ? (artistRuns as RawRun[]).map(runText).filter((text) => text).join('、')
+        : '';
+    return {
+        id: `ytm:${raw.videoId}`,
+        title: title || '未知曲名',
+        artist: artist || '未知歌手',
+        coverUrl: largestThumbnailSource(raw.thumbnail?.thumbnails),
+        source: 'ytm'
+    };
+}
+
+async function browseYtm(clientName: string, clientVersion: string, browseId: string): Promise<unknown> {
+    // 注意：这里故意不带 visitorData（见文件头实测结论）。
+    const body = JSON.stringify({
+        context: {
+            client: { clientName, clientVersion, hl: 'zh-CN', gl: 'CN' }
+        },
+        browseId
+    });
+    const response = await httpPost(`${BROWSE_URL}?key=${INNERTUBE_KEY}`, body, HEADERS);
+    if (response.status !== 200) {
+        throw new Error('YTM 榜单加载失败，请稍后重试');
+    }
+    return JSON.parse(response.body) as unknown;
+}
+
+export async function fetchYtmChartPosters(): Promise<Poster[]> {
+    const charts = await browseYtm('ANDROID', '20.10.38', CHART_BROWSE_ID);
+    const carousels: YtmCarousel[] = [];
+    collectCarousels(charts, carousels);
+    const posters: Poster[] = [];
+    for (const carousel of carousels) {
+        if (posters.length >= CHART_ALBUM_LIMIT) {
+            break;
+        }
+        if (!Array.isArray(carousel.items)) {
+            continue;
+        }
+        for (const raw of carousel.items as YtmCarouselItem[]) {
+            if (posters.length >= CHART_ALBUM_LIMIT) {
+                break;
+            }
+            const playlistId = findAlbumPlaylistId(raw);
+            if (!playlistId) {
+                // 没有 OLAK 专辑歌单（如播客轮播项）直接跳过。
+                continue;
+            }
+            try {
+                const playlist = await browseYtm('ANDROID', '20.10.38', `VL${playlistId}`);
+                const videos: YtmPlaylistVideo[] = [];
+                collectPlaylistVideos(playlist, videos);
+                const tracks: Track[] = [];
+                for (const video of videos) {
+                    if (tracks.length >= CHART_ALBUM_TRACK_LIMIT) {
+                        break;
+                    }
+                    const track = playlistVideoToTrack(video);
+                    if (track) {
+                        tracks.push(track);
+                    }
+                }
+                if (tracks.length === 0) {
+                    continue;
+                }
+                const title = typeof raw.title === 'string' && raw.title ? raw.title : 'YTM 热门专辑';
+                const subtitle = typeof raw.subtitle === 'string' ? raw.subtitle : undefined;
+                posters.push({
+                    id: `ytm-chart:${playlistId}`,
+                    title,
+                    subtitle: subtitle || undefined,
+                    coverUrl:
+                        largestThumbnailSource(raw.thumbnail?.image?.sources) ??
+                        tracks.find((track) => track.coverUrl)?.coverUrl,
+                    source: 'ytm',
+                    tracks
+                });
+            } catch {
+                // 单张专辑失败跳过，不拖垮整路。
+                continue;
+            }
+        }
+    }
+    return posters;
+}

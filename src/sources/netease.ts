@@ -15,7 +15,7 @@
 // 注意：取链地址带时效签名，拿到后应尽快播放，不要长期缓存。
 
 import { httpGet } from '../native/http';
-import type { AudioSource, SourceId, Track } from '../types';
+import type { AudioSource, Poster, SourceId, Track } from '../types';
 
 const SEARCH_URL = 'https://music.163.com/api/cloudsearch/pc';
 const STREAM_URL = 'https://music.163.com/api/song/enhance/player/url';
@@ -134,3 +134,90 @@ class NeteaseSource implements AudioSource {
 }
 
 export const neteaseSource = new NeteaseSource();
+
+// 海报墙用网易云榜单（第 6 块新增，全新写）：
+// 实测（2026-10-25 沙箱 curl，无登录、无 cookie）：
+// - GET https://music.163.com/api/toplist 回 200，list 里有官方榜单的 id 与封面；
+//   下面 3 个 id 就是从该返回里取的公开榜单，不是编的。
+// - GET https://music.163.com/api/playlist/detail?id=<榜单 id> 回 200，
+//   result.tracks 是完整歌曲数组（字段与搜索不同：artists 而非 ar、duration
+//   而非 dt），result.name 是榜单名、result.coverImgUrl 是榜单封面。
+// 单个榜单失败只跳过该榜，不影响其余榜；全部失败时返回空数组，由调用方
+// 给一句中文提示，不抛错到整墙。
+const CHART_PLAYLIST_IDS = [19723756, 3779629, 3778678];
+const CHART_TRACK_LIMIT = 20;
+
+interface NeteaseChartSong {
+    id?: unknown;
+    name?: unknown;
+    artists?: unknown;
+    album?: unknown;
+    duration?: unknown;
+}
+
+function chartSongToTrack(raw: NeteaseChartSong): Track {
+    const id = typeof raw.id === 'number' ? raw.id : Number(raw.id);
+    const artists = Array.isArray(raw.artists)
+        ? (raw.artists as { name?: unknown }[])
+            .map((artist) => (typeof artist.name === 'string' ? artist.name : ''))
+            .filter((name) => name)
+        : [];
+    const album = raw.album as { name?: unknown; picUrl?: unknown } | null;
+    const duration = typeof raw.duration === 'number' ? raw.duration : undefined;
+    return {
+        id: `netease:${Number.isFinite(id) ? id : 0}`,
+        title: typeof raw.name === 'string' && raw.name ? raw.name : '未知曲名',
+        artist: artists.length > 0 ? artists.join('、') : '未知歌手',
+        album: typeof album?.name === 'string' && album.name ? album.name : undefined,
+        durationMs: duration !== undefined && duration > 0 ? duration : undefined,
+        coverUrl: typeof album?.picUrl === 'string' && album.picUrl ? album.picUrl : undefined,
+        source: 'netease'
+    };
+}
+
+export async function fetchNeteaseChartPosters(): Promise<Poster[]> {
+    const posters: Poster[] = [];
+    for (const playlistId of CHART_PLAYLIST_IDS) {
+        try {
+            const response = await httpGet(
+                `https://music.163.com/api/playlist/detail?id=${playlistId}`,
+                HEADERS
+            );
+            if (response.status !== 200) {
+                continue;
+            }
+            const parsed = JSON.parse(response.body) as {
+                result?: {
+                    name?: unknown;
+                    coverImgUrl?: unknown;
+                    tracks?: unknown;
+                } | null;
+            };
+            const result = parsed.result;
+            const songs = result?.tracks;
+            if (!Array.isArray(songs) || songs.length === 0) {
+                continue;
+            }
+            const tracks = (songs as NeteaseChartSong[])
+                .slice(0, CHART_TRACK_LIMIT)
+                .map(chartSongToTrack);
+            posters.push({
+                id: `netease-chart:${playlistId}`,
+                title:
+                    typeof result?.name === 'string' && result.name
+                        ? result.name
+                        : '网易云榜单',
+                coverUrl:
+                    typeof result?.coverImgUrl === 'string' && result.coverImgUrl
+                        ? result.coverImgUrl
+                        : undefined,
+                source: 'netease',
+                tracks
+            });
+        } catch {
+            // 单榜失败跳过，不让一个榜拖垮整路。
+            continue;
+        }
+    }
+    return posters;
+}

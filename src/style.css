@@ -156,3 +156,93 @@ body {
     color: #241522;
     font-size: 14px;
 }
+
+/* 海报墙（第 6 块）：首页顶部大封面卡片，CSS grid 排布。 */
+.poster-wall h2 {
+    margin-top: 0;
+}
+
+.poster-section h3 {
+    margin: 20px 0 12px;
+    font-size: 16px;
+    color: #c9b8d8;
+}
+
+.poster-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 12px;
+}
+
+.poster-card {
+    padding: 10px;
+    border: 0;
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.07);
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.poster-card.is-playing {
+    box-shadow: 0 0 0 2px #e8a0bf;
+}
+
+.poster-cover-wrap {
+    position: relative;
+    aspect-ratio: 1 / 1;
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.poster-cover-placeholder {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, #3a2440, #6b3a5e);
+}
+
+.poster-cover {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.poster-title {
+    margin-top: 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.poster-subtitle {
+    margin-top: 4px;
+    color: #c9b8d8;
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.poster-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    color: #c9b8d8;
+    font-size: 13px;
+}
+
+.poster-badge {
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(232, 160, 191, 0.25);
+    color: #f5f0fa;
+    font-size: 12px;
+}
+
+.poster-notice {
+    color: #e8c87a;
+}

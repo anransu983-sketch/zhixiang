@@ -13,6 +13,16 @@ export interface Track {
     streamUrl?: string;
 }
 
+// 海报墙上的一张海报：封面 + 可播曲目列表，点海报即播整个列表。
+export interface Poster {
+    id: string;
+    title: string;
+    subtitle?: string;
+    coverUrl?: string;
+    source: SourceId;
+    tracks: Track[];
+}
+
 export interface AudioSource {
     id: SourceId;
     label: string;
