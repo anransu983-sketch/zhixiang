@@ -287,6 +287,22 @@ body {
     color: var(--err);
 }
 
+.track-list-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 12px;
+}
+
+.track-list-toggle {
+    padding: 4px 8px;
+    border: 0;
+    background: transparent;
+    color: var(--text-2);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+}
+
 .track-list {
     list-style: none;
     margin: 12px 0 0;
@@ -672,20 +688,6 @@ body {
 
 .tab-page-head h2 {
     margin: 0;
-}
-
-.tab-login-chip {
-    flex: none;
-    height: 36px;
-    padding: 0 16px;
-    border: 0;
-    border-radius: 999px;
-    background: var(--accent-soft);
-    color: var(--accent);
-    font: inherit;
-    font-size: 13px;
-    font-weight: 500;
-    cursor: pointer;
 }
 
 .tab-bar {
@@ -1407,7 +1409,6 @@ body {
 .login-btn,
 .np-btn,
 .np-info,
-.tab-login-chip,
 .shelf-record {
     transition: transform 130ms ease-out;
 }
@@ -1419,7 +1420,6 @@ body {
 .login-btn:active,
 .np-btn:active,
 .np-info:active,
-.tab-login-chip:active,
 .shelf-record:active {
     transform: scale(0.98);
 }
@@ -1432,7 +1432,6 @@ body {
     .login-btn,
     .np-btn,
     .np-info,
-    .tab-login-chip,
     .shelf-record {
         transition: none;
     }

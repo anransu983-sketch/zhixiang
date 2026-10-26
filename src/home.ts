@@ -93,8 +93,6 @@ type HomeTabId = 'local' | 'netease' | 'ytm' | 'me';
 interface TabPage {
     page: HTMLElement;
     search?: HTMLInputElement;
-    loginChip?: HTMLButtonElement;
-    loginKind?: 'netease' | 'ytm';
 }
 
 export function renderHome(): HTMLElement {
@@ -217,14 +215,6 @@ export function renderHome(): HTMLElement {
     const tabButtons = new Map<HomeTabId, HTMLButtonElement>();
     let currentTab: HomeTabId = 'local';
 
-    function refreshLoginChip(record: TabPage): void {
-        if (!record.loginChip || !record.loginKind) {
-            return;
-        }
-        const loggedIn = record.loginKind === 'netease' ? loadNeteaseSession() !== null : loadYtmSession() !== null;
-        record.loginChip.hidden = loggedIn;
-    }
-
     function mountPage(tabId: HomeTabId): TabPage {
         if (tabId === 'me') {
             const page = document.createElement('div');
@@ -252,19 +242,6 @@ export function renderHome(): HTMLElement {
         const heading = document.createElement('h2');
         heading.textContent = source.label;
         head.appendChild(heading);
-        let loginChip: HTMLButtonElement | undefined;
-        let loginKind: 'netease' | 'ytm' | undefined;
-        if (tabId === 'netease' || tabId === 'ytm') {
-            loginKind = tabId;
-            loginChip = document.createElement('button');
-            loginChip.type = 'button';
-            loginChip.className = 'tab-login-chip';
-            loginChip.textContent = '登录';
-            loginChip.addEventListener('click', () => {
-                switchTab('me');
-            });
-            head.appendChild(loginChip);
-        }
         page.appendChild(head);
 
         page.appendChild(renderPosterModule(definition));
@@ -275,7 +252,7 @@ export function renderHome(): HTMLElement {
         });
         page.appendChild(block);
 
-        const record: TabPage = { page, search, loginChip, loginKind };
+        const record: TabPage = { page, search };
         pages.set(tabId, record);
         pagesWrap.appendChild(page);
         return record;
@@ -292,7 +269,6 @@ export function renderHome(): HTMLElement {
         for (const [id, other] of pages) {
             other.page.hidden = id !== tabId;
         }
-        refreshLoginChip(record);
         for (const [id, button] of tabButtons) {
             button.classList.toggle('is-active', id === tabId);
         }
@@ -1321,6 +1297,39 @@ function renderSourceSection(
     searchWrap.appendChild(searchIcon);
     block.appendChild(searchWrap);
 
+    // 本地页歌曲列表默认隐藏（Folia 墙面模式：墙上只放海报，歌曲在海报里和搜索里）；
+    // 开关持久化，默认藏；有查询时结果照常出现，不受开关影响。
+    const tracksHiddenKey = 'zx_local_tracks_hidden_v1';
+    const isLocalPage = source.id === 'local';
+    const tracksHidden = (): boolean => isLocalPage && localStorage.getItem(tracksHiddenKey) !== '0';
+    let toggleButton: HTMLButtonElement | undefined;
+    if (isLocalPage) {
+        const toolbar = document.createElement('div');
+        toolbar.className = 'track-list-toolbar';
+        toggleButton = document.createElement('button');
+        toggleButton.type = 'button';
+        toggleButton.className = 'track-list-toggle';
+        toggleButton.textContent = tracksHidden() ? '显示歌曲' : '隐藏歌曲';
+        toggleButton.addEventListener('click', () => {
+            const next = !tracksHidden();
+            localStorage.setItem(tracksHiddenKey, next ? '1' : '0');
+            toggleButton!.textContent = next ? '显示歌曲' : '隐藏歌曲';
+            // 正在搜的时候先清查询、回默认视图，开关立即生效；否则只翻列表显隐。
+            if (search.value.trim()) {
+                search.value = '';
+                onQuery('');
+                void refresh('');
+            } else {
+                trackList.hidden = next;
+                if (next) {
+                    notice.hidden = true;
+                }
+            }
+        });
+        toolbar.appendChild(toggleButton);
+        block.appendChild(toolbar);
+    }
+
     const notice = document.createElement('p');
     notice.className = 'source-notice';
     notice.hidden = true;
@@ -1352,6 +1361,12 @@ function renderSourceSection(
         }
         notice.classList.remove('is-error');
         renderTracks(trackList, tracks, status);
+        // 本地默认藏歌：无查询且开关开时列表与空态提示都不出；有查询时结果照常。
+        const hideLocalList = isLocalPage && query.trim() === '' && tracksHidden();
+        trackList.hidden = hideLocalList;
+        if (hideLocalList) {
+            notice.hidden = true;
+        }
         const localNotice = source.id === 'local' ? getLocalNotice() : null;
         if (tracks.length === 0 && localNotice) {
             notice.textContent = localNotice;
