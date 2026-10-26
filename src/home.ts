@@ -807,6 +807,14 @@ function renderLoginArea(): HTMLElement {
     return area;
 }
 
+// 网易云扫码轮询诊断（Claude 第十七轮）：在途检查全局只许一个；
+// run 全局递增，日志里两个 run 交错出现即双链并跑；上次结算时刻
+// 用来算检查间隔，盖住后台冻结造成的空档。
+let neteaseQrRunCounter = 0;
+let neteaseQrChecksInFlight = 0;
+let neteaseQrCatchUpPending = false;
+let neteaseQrLastCheckSettledAt = 0;
+
 function renderNeteaseLoginBlock(): HTMLElement {
     const box = document.createElement('div');
     box.className = 'login-block';
@@ -842,6 +850,8 @@ function renderNeteaseLoginBlock(): HTMLElement {
     // 上次轮询完成时刻（毫秒）：回前台时若离上次轮询已久，说明切出
     // 去期间计时器被冻结，再约一次补查，盖住网络未恢复的空查。
     let lastPollDoneAt = 0;
+    // 本次取码流程的编号（全局递增）：日志里两个 run 交错出现即双链并跑。
+    let qrRunId = 0;
     let qrVisibilityHandler: (() => void) | null = null;
     const stopPoll = (): void => {
         if (pollTimer !== undefined) {
@@ -908,6 +918,7 @@ function renderNeteaseLoginBlock(): HTMLElement {
         stopPoll();
         const token = {};
         qrToken = token;
+        qrRunId = ++neteaseQrRunCounter;
         if (!auto) {
             qrAutoRefreshes = 0;
         }
@@ -917,6 +928,9 @@ function renderNeteaseLoginBlock(): HTMLElement {
         status.textContent = expiredNotice ? '二维码已过期，正在换新码…' : '正在获取二维码…';
         body.appendChild(status);
         let key: string;
+        // 取码原因记下来：短命码死时若对得上另一次取码时间，就是被顶掉；
+        // 对不上，顶掉说就不成立。
+        console.log(`[Netease] 取码 run=${qrRunId} 原因=${auto ? (expiredNotice ? '过期自动' : '自动') : '手动'}`);
         try {
             key = await fetchQrKey();
         } catch {
@@ -990,6 +1004,12 @@ function renderNeteaseLoginBlock(): HTMLElement {
             });
             body.appendChild(refresh);
         });
+        qr.addEventListener('load', () => {
+            if (token !== qrToken) {
+                return;
+            }
+            console.log(`[Netease] 二维码图已载入 图=${key.slice(0, 6)} 轮询=${currentKey.slice(0, 6)}`);
+        });
         body.appendChild(qr);
         body.appendChild(makeOpenInAppButton());
         const cancel = document.createElement('button');
@@ -1000,49 +1020,64 @@ function renderNeteaseLoginBlock(): HTMLElement {
             renderLoggedOut();
         });
         body.appendChild(cancel);
-        let polling = false;
         let lastPollCode = 0;
-        const tick = async (): Promise<void> => {
-            // 上一次轮询还没回来时跳过，避免 3 秒间隔下请求堆积。
-            if (polling) {
-                return;
-            }
-            // 旧流程的 tick（新流程已开始、或已停）直接丢弃，不碰状态。
+        const tick = async (source: string): Promise<void> => {
+            // 旧流程的 tick（新流程已开始、或已停）直接丢弃，不碰状态；
+            // 丢弃也要记一行，否则 802/803 被静默丢掉永远看不出来。
             if (token !== qrToken) {
+                console.log(`[Netease] 检查 run=${qrRunId} 码=${currentKey.slice(0, 6)} 源=${source} 结果=未发 处理=丢弃`);
                 return;
             }
-            polling = true;
+            // 全局只许一个检查在途：回前台补查不跟定时检查抢跑，排队等。
+            if (neteaseQrChecksInFlight > 0) {
+                if (source !== '定时') {
+                    neteaseQrCatchUpPending = true;
+                }
+                return;
+            }
+            const checkedKey = currentKey;
+            const sentAt = Date.now();
+            const gapMs = neteaseQrLastCheckSettledAt > 0 ? sentAt - neteaseQrLastCheckSettledAt : 0;
+            const inFlightAtSend = neteaseQrChecksInFlight + 1;
+            neteaseQrChecksInFlight += 1;
             let result;
             try {
-                result = await checkQr(currentKey);
+                result = await checkQr(checkedKey);
             } catch (error) {
                 // 网络/HTTP 失败才重试；8821 已是 checkQr 返回的终态，不走这里。
                 const reason = qrFailureReason(error);
-                status.textContent = `查询失败（${reason}），正在重试…`;
+                console.log(`[Netease] 检查 run=${qrRunId} 码=${checkedKey.slice(0, 6)} 源=${source} 耗时=${Date.now() - sentAt}ms 距上次=${gapMs}ms 结果=异常(${reason}) 在途=${inFlightAtSend} 处理=${token !== qrToken ? '丢弃' : '正常'}`);
+                if (token === qrToken) {
+                    status.textContent = `查询失败（${reason}），正在重试…`;
+                }
                 return;
             } finally {
-                polling = false;
+                neteaseQrChecksInFlight -= 1;
+                neteaseQrLastCheckSettledAt = Date.now();
                 lastPollDoneAt = Date.now();
-            }
-            // 请求回来时流程已换代时同样丢弃：旧 tick 的 800 分支绝不能
-            // 杀掉新轮询器、也不能再调度一次换码。
-            if (token !== qrToken) {
-                return;
-            }
-            // 状态变化才记一行：每 3 秒轮询都记会把控制台刷满。
-            if (result.code !== lastPollCode) {
-                lastPollCode = result.code;
-                if (result.code === 801) {
-                    console.log('[Netease] 扫码等待中');
-                } else if (result.code === 802) {
-                    console.log('[Netease] 已扫码，等待手机确认');
-                } else if (result.code === 800) {
-                    console.log('[Netease] 二维码已过期');
-                } else if (result.code === 8821) {
-                    console.warn('[Netease] 扫码被拒绝（8821）');
-                } else if (result.code === 803) {
-                    console.log('[Netease] 扫码已确认');
+                if (neteaseQrCatchUpPending) {
+                    neteaseQrCatchUpPending = false;
+                    void tick('补查');
                 }
+            }
+            lastPollCode = result.code;
+            // 每查必记一行：801 不记、丢弃不记，H1/H2/H3 根本分不出来。
+            // 处理：正常；丢弃（过期/等待/拒绝且流程已换代）；旧已扫/旧确认
+            // （802/803 永不丢：哪怕流程已换代，确认也不能丢）。
+            const stale = token !== qrToken;
+            let handling = '正常';
+            if (stale) {
+                if (result.code === 802) {
+                    handling = '旧已扫';
+                } else if (result.code === 803) {
+                    handling = '旧确认';
+                } else {
+                    handling = '丢弃';
+                }
+            }
+            console.log(`[Netease] 检查 run=${qrRunId} 码=${checkedKey.slice(0, 6)} 源=${source} 耗时=${Date.now() - sentAt}ms 距上次=${gapMs}ms 结果=${result.code} 在途=${inFlightAtSend} 处理=${handling}`);
+            if (stale && result.code !== 802 && result.code !== 803) {
+                return;
             }
             if (result.code === 801) {
                 status.textContent = keyBornAt
@@ -1117,14 +1152,14 @@ function renderNeteaseLoginBlock(): HTMLElement {
         // 计时器可能被系统节流，回来不补查就会错过 803、只剩过期。
         qrVisibilityHandler = () => {
             if (document.visibilityState === 'visible') {
-                void tick();
+                void tick('回前台');
                 // 切出去期间计时器可能被系统冻结（00:54 授权成功却没
                 // 拿到 803 就是这么错过的）：上次轮询是很久以前时，
                 // 再约一次补查，盖住回前台瞬间网络还没恢复的那次空查。
                 if (Date.now() - lastPollDoneAt > 20000) {
                     window.setTimeout(() => {
                         if (qrToken === token) {
-                            void tick();
+                            void tick('补查');
                         }
                     }, 2000);
                 }
@@ -1137,7 +1172,7 @@ function renderNeteaseLoginBlock(): HTMLElement {
         // 已换就不再续约，不会双链并跑。
         const armPoll = (): void => {
             pollTimer = window.setTimeout(() => {
-                void tick().finally(() => {
+                void tick('定时').finally(() => {
                     if (qrToken === token) {
                         armPoll();
                     }
