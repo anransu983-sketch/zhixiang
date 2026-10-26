@@ -1,7 +1,7 @@
 // 首页组装：按音源注册表渲染各音源的浏览区，尚未实现的块留在清单里。
 // 本文件只做组装与界面接线，不放音源与播放逻辑。
 
-import { getCurrentState, next, onTrackChange, playQueue, previous, runYtmUpstreamExperiment, togglePlay } from './playback';
+import { getCurrentState, next, onTimeUpdate, onTrackChange, playQueue, previous, runYtmUpstreamExperiment, togglePlay } from './playback';
 import { openPlayerPage } from './player';
 import type { PlaybackState } from './playback';
 import { POSTER_SECTIONS, friendlyPosterError, posterFallbackBackground } from './posters';
@@ -105,70 +105,110 @@ export function renderHome(): HTMLElement {
     pagesWrap.className = 'tab-pages';
     section.appendChild(pagesWrap);
 
-    // 最小正在播放条：歌名、歌手、播放/暂停、上一首/下一首，样式与首页卡片一致。
-    // 点一首即把该区当前列表作为队列，条上的上一首/下一首就在该队列里切。
+    // 迷你播放条（0.1.44 单坞设计）：60px 一行，封面＋两行标题＋幽灵上一首／
+    // 粉色播放圆＋幽灵下一首，顶部一条 2px 进度线（onTimeUpdate 驱动）；
+    // 点标题区打开播放页，不再另放“打开播放页”按钮。空闲时 48px，只留文字＋禁用播放圆。
     const bar = document.createElement('div');
     bar.className = 'now-playing-bar';
 
-    const status = document.createElement('span');
-    status.className = 'now-playing-info';
-    status.textContent = '还没播放任何歌曲。';
-    bar.appendChild(status);
+    const progress = document.createElement('div');
+    progress.className = 'np-progress';
+    const progressFill = document.createElement('div');
+    progressFill.className = 'np-progress-fill';
+    progress.appendChild(progressFill);
+    bar.appendChild(progress);
 
-    const controls = document.createElement('div');
-    controls.className = 'now-playing-controls';
+    const cover = document.createElement('img');
+    cover.className = 'np-cover';
+    cover.alt = '';
+    cover.onerror = () => {
+        cover.hidden = true;
+        coverPlaceholder.hidden = false;
+    };
+    bar.appendChild(cover);
+    const coverPlaceholder = document.createElement('span');
+    coverPlaceholder.className = 'np-cover-placeholder';
+    coverPlaceholder.textContent = '♪';
+    bar.appendChild(coverPlaceholder);
+
+    const info = document.createElement('button');
+    info.type = 'button';
+    info.className = 'np-info';
+    const infoTitle = document.createElement('div');
+    infoTitle.className = 'np-title';
+    infoTitle.textContent = '还没播放任何歌曲。';
+    // 副标题同时是播放消息的落点：播歌失败时这里显示原因，下次切歌即恢复歌手名。
+    const status = document.createElement('div');
+    status.className = 'np-artist';
+    info.append(infoTitle, status);
+    info.addEventListener('click', () => {
+        openPlayerPage();
+    });
+    bar.appendChild(info);
 
     const prevButton = document.createElement('button');
     prevButton.type = 'button';
-    prevButton.className = 'now-playing-btn';
-    prevButton.textContent = '上一首';
+    prevButton.className = 'np-btn';
+    prevButton.textContent = '◀';
     prevButton.addEventListener('click', () => {
         void previous();
     });
-    controls.appendChild(prevButton);
+    bar.appendChild(prevButton);
 
     const playPauseButton = document.createElement('button');
     playPauseButton.type = 'button';
-    playPauseButton.className = 'now-playing-btn';
-    playPauseButton.textContent = '播放';
+    playPauseButton.className = 'np-btn np-play';
+    playPauseButton.textContent = '▶';
     playPauseButton.addEventListener('click', () => {
         void togglePlay();
     });
-    controls.appendChild(playPauseButton);
+    bar.appendChild(playPauseButton);
 
     const nextButton = document.createElement('button');
     nextButton.type = 'button';
-    nextButton.className = 'now-playing-btn';
-    nextButton.textContent = '下一首';
+    nextButton.className = 'np-btn';
+    nextButton.textContent = '▶';
     nextButton.addEventListener('click', () => {
         void next();
     });
-    controls.appendChild(nextButton);
-
-    const playerButton = document.createElement('button');
-    playerButton.type = 'button';
-    playerButton.className = 'now-playing-btn';
-    playerButton.textContent = '打开播放页';
-    playerButton.addEventListener('click', () => {
-        openPlayerPage();
-    });
-    controls.appendChild(playerButton);
-
-    bar.appendChild(controls);
+    bar.appendChild(nextButton);
     section.appendChild(bar);
 
+    const updateProgress = (state: PlaybackState): void => {
+        // duration 是毫秒（audio.duration 秒 ×1000 或 durationMs），currentTime 是秒。
+        const totalSeconds = state.duration > 0 ? state.duration / 1000 : 0;
+        const percent = totalSeconds > 0 ? Math.min(100, (state.currentTime / totalSeconds) * 100) : 0;
+        progressFill.style.width = `${percent}%`;
+    };
+
     const refreshBar = (state: PlaybackState): void => {
-        if (state.error) {
-            status.textContent = state.error;
-        } else if (state.track) {
-            const verb = state.playing ? '正在播放' : '已暂停';
-            status.textContent = `${verb}：${state.track.title} — ${state.track.artist}`;
+        if (state.track) {
+            infoTitle.textContent = state.track.title;
+            status.textContent = state.error ?? state.track.artist;
+            if (state.track.coverUrl) {
+                cover.src = state.track.coverUrl;
+                cover.hidden = false;
+                coverPlaceholder.hidden = true;
+            } else {
+                cover.hidden = true;
+                coverPlaceholder.hidden = false;
+            }
+            playPauseButton.textContent = state.playing ? '❚❚' : '▶';
+            playPauseButton.disabled = false;
+            bar.classList.remove('is-idle');
         } else {
-            status.textContent = '还没播放任何歌曲。';
+            infoTitle.textContent = '还没播放任何歌曲。';
+            status.textContent = state.error ?? '';
+            cover.hidden = true;
+            coverPlaceholder.hidden = false;
+            playPauseButton.textContent = '▶';
+            playPauseButton.disabled = true;
+            bar.classList.add('is-idle');
         }
-        playPauseButton.textContent = state.playing ? '暂停' : '播放';
+        updateProgress(state);
     };
     onTrackChange(refreshBar);
+    onTimeUpdate(updateProgress);
     refreshBar(getCurrentState());
 
     // ---- 底部四 Tab 脚手架 ----
@@ -405,6 +445,10 @@ function renderDeveloperSection(): HTMLElement {
 
     const title = document.createElement('h2');
     title.textContent = '开发者';
+    const debugChip = document.createElement('span');
+    debugChip.className = 'dev-debug-chip';
+    debugChip.textContent = 'DEBUG';
+    title.appendChild(debugChip);
     section.appendChild(title);
 
     const hint = document.createElement('p');
@@ -424,7 +468,7 @@ function renderDeveloperSection(): HTMLElement {
     actions.appendChild(copyButton);
 
     const clearButton = document.createElement('button');
-    clearButton.className = 'login-btn';
+    clearButton.className = 'login-btn login-btn-ghost';
     clearButton.textContent = 'CLEAR';
     clearButton.addEventListener('click', () => {
         clearLogs();
@@ -634,9 +678,16 @@ function renderNeteaseLoginBlock(): HTMLElement {
     const box = document.createElement('div');
     box.className = 'login-block';
 
+    const head = document.createElement('div');
+    head.className = 'login-head';
+    const tile = document.createElement('span');
+    tile.className = 'login-tile';
+    tile.textContent = '网';
+    head.appendChild(tile);
     const title = document.createElement('h3');
     title.textContent = '网易云';
-    box.appendChild(title);
+    head.appendChild(title);
+    box.appendChild(head);
 
     const body = document.createElement('div');
     box.appendChild(body);
@@ -674,7 +725,7 @@ function renderNeteaseLoginBlock(): HTMLElement {
         }
         const button = document.createElement('button');
         button.type = 'button';
-        button.className = 'login-btn';
+        button.className = 'login-btn login-btn-primary';
         button.textContent = '登录网易云';
         button.addEventListener('click', () => {
             void startQr();
@@ -694,6 +745,9 @@ function renderNeteaseLoginBlock(): HTMLElement {
             avatar.alt = '';
             row.appendChild(avatar);
         }
+        const dot = document.createElement('span');
+        dot.className = 'login-status-dot';
+        row.appendChild(dot);
         const name = document.createElement('span');
         name.textContent = session.nickname;
         row.appendChild(name);
@@ -949,9 +1003,16 @@ function renderYtmLoginBlock(): HTMLElement {
     const box = document.createElement('div');
     box.className = 'login-block';
 
+    const head = document.createElement('div');
+    head.className = 'login-head';
+    const tile = document.createElement('span');
+    tile.className = 'login-tile';
+    tile.textContent = 'Y';
+    head.appendChild(tile);
     const title = document.createElement('h3');
     title.textContent = 'YouTube Music';
-    box.appendChild(title);
+    head.appendChild(title);
+    box.appendChild(head);
 
     const body = document.createElement('div');
     box.appendChild(body);
@@ -966,7 +1027,7 @@ function renderYtmLoginBlock(): HTMLElement {
         }
         const button = document.createElement('button');
         button.type = 'button';
-        button.className = 'login-btn';
+        button.className = 'login-btn login-btn-primary';
         button.textContent = '登录 YouTube Music';
         button.addEventListener('click', () => {
             body.replaceChildren();
@@ -995,6 +1056,9 @@ function renderYtmLoginBlock(): HTMLElement {
         body.replaceChildren();
         const row = document.createElement('div');
         row.className = 'login-row';
+        const dot = document.createElement('span');
+        dot.className = 'login-status-dot';
+        row.appendChild(dot);
         const name = document.createElement('span');
         // 账号名没有可验证的直连端点，不编名字，只标已登录态。
         name.textContent = '已登录 YouTube Music';
@@ -1155,57 +1219,69 @@ function renderPosterCard(poster: Poster, playNotice: HTMLElement): HTMLElement 
 
     const coverWrap = document.createElement('div');
     coverWrap.className = 'poster-cover-wrap';
-    // 纯色占位在下层：封面缺失或加载失败时露出来，不贴图。
+    // 纯色占位在下层：封面缺失或加载失败时露出来，不贴图；
+    // 颜色按海报 id 哈希（Folia 式），每张不同。
     const placeholder = document.createElement('div');
     placeholder.className = 'poster-cover-placeholder';
     placeholder.style.background = posterFallbackBackground(poster.id);
     coverWrap.appendChild(placeholder);
     if (poster.coverUrl) {
+        // 特性位（海报墙首张）用的模糊背：同一张图放大模糊垫底，主图方形居中；
+        // 其它形态下 CSS 把它藏起来，不额外发请求（同地址走缓存）。
+        const blur = document.createElement('img');
+        blur.className = 'poster-cover-blur';
+        blur.src = poster.coverUrl;
+        blur.alt = '';
+        blur.onerror = () => {
+            blur.remove();
+        };
+        coverWrap.appendChild(blur);
         const cover = document.createElement('img');
         cover.className = 'poster-cover';
         cover.src = poster.coverUrl;
         cover.alt = '';
         cover.onerror = () => {
             cover.remove();
+            blur.remove();
         };
         coverWrap.appendChild(cover);
     }
-    // 角标放封面左上角，标题区压在封面底部渐变上：两种布局共用同一套 DOM。
-    const badge = document.createElement('span');
-    badge.className = 'poster-badge';
-    const source = SOURCES.find((item) => item.id === poster.source);
-    badge.textContent = source ? source.label : poster.source;
-    coverWrap.appendChild(badge);
+    card.appendChild(coverWrap);
 
+    // 标题区：海报墙小卡压在图底渐变上（absolute），特性位与卡片模式
+    // 落在图下底栏里（static），形态切换只靠 CSS，不动 DOM。
     const overlay = document.createElement('div');
     overlay.className = 'poster-overlay';
+
+    const text = document.createElement('div');
+    text.className = 'poster-text';
 
     const title = document.createElement('div');
     title.className = 'poster-title';
     title.textContent = poster.title;
-    overlay.appendChild(title);
+    text.appendChild(title);
 
     if (poster.subtitle) {
         const subtitle = document.createElement('div');
         subtitle.className = 'poster-subtitle';
         subtitle.textContent = poster.subtitle;
-        overlay.appendChild(subtitle);
+        text.appendChild(subtitle);
     }
 
     const count = document.createElement('span');
     count.className = 'poster-count';
     count.textContent = `${poster.tracks.length} 首`;
-    overlay.appendChild(count);
+    text.appendChild(count);
 
-    coverWrap.appendChild(overlay);
+    overlay.appendChild(text);
 
-    // 卡片模式右下角的粉色播放圆点（纯视觉，整卡点击即播放）。
+    // 卡片模式底栏里的幽灵播放圆（纯视觉，整卡点击即播放；海报墙形态不显示）。
     const playDot = document.createElement('span');
     playDot.className = 'poster-play';
     playDot.textContent = '▶';
-    coverWrap.appendChild(playDot);
+    overlay.appendChild(playDot);
 
-    card.appendChild(coverWrap);
+    card.appendChild(overlay);
 
     card.addEventListener('click', () => {
         void (async () => {
@@ -1239,6 +1315,10 @@ function renderSourceSection(
     search.placeholder = `在${source.label}里搜索歌曲、歌手或专辑`;
     search.className = 'source-search';
     searchWrap.appendChild(search);
+    const searchIcon = document.createElement('span');
+    searchIcon.className = 'source-search-icon';
+    searchIcon.textContent = '⌕';
+    searchWrap.appendChild(searchIcon);
     block.appendChild(searchWrap);
 
     const notice = document.createElement('p');
@@ -1263,12 +1343,14 @@ function renderSourceSection(
                 return;
             }
             notice.textContent = friendlySearchError(error);
+            notice.classList.add('is-error');
             notice.hidden = false;
             return;
         }
         if (token !== requestToken) {
             return;
         }
+        notice.classList.remove('is-error');
         renderTracks(trackList, tracks, status);
         const localNotice = source.id === 'local' ? getLocalNotice() : null;
         if (tracks.length === 0 && localNotice) {
@@ -1293,9 +1375,22 @@ function renderSourceSection(
 
 function renderTracks(list: HTMLElement, tracks: Track[], status: HTMLElement): void {
     list.replaceChildren();
+    const playingId = getCurrentState().track?.id;
+    const makeEq = (): HTMLElement => {
+        const eq = document.createElement('span');
+        eq.className = 'track-eq';
+        eq.setAttribute('aria-hidden', 'true');
+        for (let i = 0; i < 3; i++) {
+            eq.appendChild(document.createElement('i'));
+        }
+        return eq;
+    };
     for (const [index, track] of tracks.entries()) {
         const item = document.createElement('li');
         item.className = 'track-row';
+        if (track.id === playingId) {
+            item.classList.add('is-playing');
+        }
 
         if (track.coverUrl) {
             const cover = document.createElement('img');
@@ -1306,6 +1401,11 @@ function renderTracks(list: HTMLElement, tracks: Track[], status: HTMLElement): 
                 cover.remove();
             };
             item.appendChild(cover);
+        } else {
+            const glyph = document.createElement('span');
+            glyph.className = 'track-glyph';
+            glyph.textContent = '♪';
+            item.appendChild(glyph);
         }
 
         const info = document.createElement('div');
@@ -1319,10 +1419,18 @@ function renderTracks(list: HTMLElement, tracks: Track[], status: HTMLElement): 
         const meta = document.createElement('div');
         meta.className = 'track-meta';
         const albumPart = track.album ? ` · ${track.album}` : '';
-        const durationPart = formatDuration(track.durationMs);
-        meta.textContent = `${track.artist}${albumPart}${durationPart ? ` · ${durationPart}` : ''}`;
+        meta.textContent = `${track.artist}${albumPart}`;
         info.appendChild(meta);
         item.appendChild(info);
+
+        if (track.id === playingId) {
+            item.appendChild(makeEq());
+        }
+
+        const duration = document.createElement('span');
+        duration.className = 'track-duration';
+        duration.textContent = formatDuration(track.durationMs);
+        item.appendChild(duration);
 
         // 整行可点：此前只有右侧小按钮有点击，点行本身（封面/歌名/歌手）
         // 全无反应——2026-10-26 用户在 YTM 搜索里点晴天那行正是这样哑火，
@@ -1331,9 +1439,14 @@ function renderTracks(list: HTMLElement, tracks: Track[], status: HTMLElement): 
         const playFromRow = (): void => {
             void (async () => {
                 try {
-                    // 点一首即把该区当前列表作为队列，从点中的这首起播。
                     await playQueue(tracks, index);
-                    status.textContent = `正在播放：${track.title} — ${track.artist}`;
+                    // 成功后刷新本列表的高亮：旧行去高亮与均衡器，点中行加上。
+                    for (const row of list.querySelectorAll('.track-row.is-playing')) {
+                        row.classList.remove('is-playing');
+                        row.querySelector('.track-eq')?.remove();
+                    }
+                    item.classList.add('is-playing');
+                    duration.before(makeEq());
                 } catch (error) {
                     status.textContent = friendlyPlayError(error);
                 }
@@ -1344,7 +1457,7 @@ function renderTracks(list: HTMLElement, tracks: Track[], status: HTMLElement): 
         const playButton = document.createElement('button');
         playButton.type = 'button';
         playButton.className = 'track-play';
-        playButton.textContent = '播放';
+        playButton.textContent = '▶';
         playButton.addEventListener('click', (event) => {
             event.stopPropagation();
             playFromRow();

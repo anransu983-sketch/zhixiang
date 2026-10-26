@@ -2,20 +2,39 @@
     color-scheme: dark;
 
     --bg: #09090b;
-    --card: #18181b;
-    --border: #3f3f46;
+    --surface-1: #131316;
+    --surface-2: #1a1a1f;
+    --surface-3: #232329;
+    --hairline: rgba(255, 255, 255, 0.06);
+    --text: #f4f4f5;
+    --text-2: #a1a1aa;
+    --text-3: #8a8a94;
     --accent: #e8a0bf;
-    --on-accent: #241522;
-    --text: #fafafa;
-    --muted: #a1a1aa;
-    --warn: #e8c87a;
+    --accent-ink: #2a1420;
+    --accent-soft: rgba(232, 160, 191, 0.14);
+    --accent-line: rgba(232, 160, 191, 0.35);
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --err: #f87171;
+    --r-card: 16px;
+    --r-poster: 18px;
+    --r-btn: 12px;
+    --r-thumb: 10px;
+    --r-pill: 999px;
+    --gutter: 16px;
+    --shadow-float: 0 10px 30px rgba(0, 0, 0, 0.45);
 
-    --radius-card: 20px;
-    --radius-cover: 14px;
-    --radius-input: 14px;
-    --section-gap: 32px;
-    --nav-h: 60px;
-    --np-h: 64px;
+    /* 旧名兜底：播放页等未动区域仍用这些名字，值与新 token 对齐。 */
+    --card: var(--surface-1);
+    --border: var(--hairline);
+    --muted: var(--text-2);
+    --on-accent: var(--accent-ink);
+    --radius-card: var(--r-card);
+    --radius-cover: var(--r-poster);
+    --radius-input: var(--r-pill);
+    --section-gap: 24px;
+    --nav-h: 56px;
+    --np-h: 60px;
     --font-sans: system-ui, -apple-system, "PingFang SC", "HarmonyOS Sans SC", "Noto Sans SC",
         "Source Han Sans SC", "Microsoft YaHei", "Hiragino Sans GB", sans-serif;
 }
@@ -40,7 +59,7 @@ body {
 /* 底部留出悬浮迷你播放条的位置，避免盖住最后一区。 */
 #app {
     min-height: 100%;
-    padding: calc(24px + env(safe-area-inset-top)) 16px calc(var(--nav-h) + var(--np-h) + 32px + env(safe-area-inset-bottom));
+    padding: calc(24px + env(safe-area-inset-top)) 16px calc(var(--nav-h) + var(--np-h) + 24px + env(safe-area-inset-bottom));
 }
 
 /* 区块间距统一：首页直接子元素之间一律 var(--section-gap)。 */
@@ -85,103 +104,187 @@ body {
     background: var(--card);
 }
 
-/* 底部迷你播放条：Folia 风格的悬浮胶囊，贴底、半透明、轻模糊。 */
+/* 底部迷你播放条（0.1.44 单坞设计）：60px 一行，悬浮在 Tab 栏上方 8px；
+   空闲时 48px，只留文字＋禁用播放圆。 */
 .home > .now-playing-bar,
 .now-playing-bar {
     position: fixed;
-    left: 12px;
-    right: 12px;
-    bottom: calc(var(--nav-h) + 12px + env(safe-area-inset-bottom));
+    left: 16px;
+    right: 16px;
+    bottom: calc(var(--nav-h) + 8px + env(safe-area-inset-bottom));
     z-index: 10;
     margin: 0;
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 10px 12px 10px 18px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: rgba(24, 24, 27, 0.88);
-    -webkit-backdrop-filter: blur(16px) saturate(140%);
-    backdrop-filter: blur(16px) saturate(140%);
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+    gap: 10px;
+    height: 60px;
+    padding: 0 12px;
+    border: 1px solid var(--hairline);
+    border-radius: 16px;
+    background: var(--surface-2);
+    box-shadow: var(--shadow-float);
 }
 
-.now-playing-info {
+.np-progress {
+    position: absolute;
+    top: 0;
+    left: 16px;
+    right: 16px;
+    height: 2px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+}
+
+.np-progress-fill {
+    height: 100%;
+    width: 0;
+    background: var(--accent);
+    border-radius: 2px;
+}
+
+.np-cover {
+    width: 40px;
+    height: 40px;
+    flex: none;
+    border-radius: 10px;
+    object-fit: cover;
+}
+
+.np-cover-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    flex: none;
+    border-radius: 10px;
+    background: var(--surface-3);
+    color: var(--text-2);
+    font-size: 18px;
+}
+
+.np-info {
     flex: 1;
     min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.np-title {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: 14px;
+    font-weight: 500;
 }
 
-.now-playing-controls {
-    flex: none;
-    display: flex;
-    gap: 6px;
-}
-
-.now-playing-btn {
-    padding: 8px 12px;
-    border: 0;
-    border-radius: 999px;
-    background: var(--accent);
-    color: var(--on-accent);
-    font-family: inherit;
-    font-size: 13px;
+.np-artist {
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
+    color: var(--text-2);
+    font-size: 12px;
 }
 
-/* 窄屏：歌名独占一行，按钮排在下面，胶囊圆角收小以免挤变形。 */
-@media (max-width: 440px) {
-    .now-playing-bar {
-        flex-wrap: wrap;
-        gap: 8px;
-        padding: 12px 14px;
-        border-radius: 26px;
-    }
+.np-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    flex: none;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-2);
+    font: inherit;
+    font-size: 15px;
+    cursor: pointer;
+}
 
-    .now-playing-info {
-        flex: 1 1 100%;
-        text-align: center;
-    }
+.np-btn.np-play {
+    width: 44px;
+    height: 44px;
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-size: 16px;
+}
 
-    .now-playing-controls {
-        flex: 1 1 100%;
-        justify-content: center;
-    }
+.np-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.now-playing-bar.is-idle {
+    height: 48px;
+}
+
+.now-playing-bar.is-idle .np-cover,
+.now-playing-bar.is-idle .np-cover-placeholder,
+.now-playing-bar.is-idle .np-btn:not(.np-play) {
+    display: none;
 }
 
 .source-search-wrap {
     position: sticky;
-    top: env(safe-area-inset-top);
+    top: calc(env(safe-area-inset-top, 0px) + 12px);
     z-index: 5;
     margin: 0 -16px;
     padding: 8px 16px;
-    background: var(--bg);
+    background: rgba(9, 9, 11, 0.85);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
 }
 
 .source-search {
     width: 100%;
-    padding: 12px 16px;
-    border: 1px solid var(--border);
+    height: 44px;
+    padding: 0 16px 0 44px;
+    border: 1px solid var(--hairline);
     border-radius: 999px;
-    background: var(--card);
+    background: var(--surface-1);
     color: inherit;
     font-family: inherit;
-    font-size: 16px;
+    font-size: 15px;
 }
 
-.source-search:focus,
-.dev-search:focus,
-.dev-select:focus {
+.source-search::placeholder {
+    color: var(--text-3);
+}
+
+.source-search:focus {
     outline: none;
-    border-color: var(--accent);
+    border-color: var(--accent-line);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.source-search-icon {
+    position: absolute;
+    left: 28px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-3);
+    font-size: 16px;
+    pointer-events: none;
 }
 
 .source-notice {
     margin: 12px 0 0;
-    color: var(--warn);
+    color: var(--text-2);
+    text-align: center;
+    font-size: 15px;
+}
+
+.source-notice.is-error {
+    color: var(--err);
 }
 
 .track-list {
@@ -189,25 +292,41 @@ body {
     margin: 12px 0 0;
     padding: 0;
     display: grid;
-    gap: 10px;
+    /* 列宽钉死：此前隐式 auto 列按最长行撑宽，整列连播放按钮一起被推出屏外。 */
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
 }
 
 .track-row {
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 10px 12px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-card);
-    background: var(--card);
+    min-height: 64px;
+    padding: 10px 0;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
 }
 
 .track-cover {
-    width: 48px;
-    height: 48px;
+    width: 44px;
+    height: 44px;
     flex: none;
-    border-radius: 12px;
+    border-radius: 10px;
     object-fit: cover;
+}
+
+.track-glyph {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    flex: none;
+    border-radius: 10px;
+    background: var(--surface-3);
+    color: var(--text-2);
+    font-size: 18px;
 }
 
 .track-info {
@@ -219,31 +338,89 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    font-size: 15px;
+    font-weight: 500;
+}
+
+.track-row.is-playing .track-title {
+    color: var(--accent);
 }
 
 .track-meta {
-    margin-top: 4px;
-    color: var(--muted);
+    margin-top: 2px;
+    color: var(--text-2);
     font-size: 13px;
+    line-height: 18px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-.track-play {
+.track-eq {
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 14px;
     flex: none;
-    padding: 8px 16px;
-    border: 0;
-    border-radius: 999px;
+}
+
+.track-eq i {
+    width: 3px;
+    border-radius: 2px;
     background: var(--accent);
-    color: var(--on-accent);
-    font-family: inherit;
+    animation: track-eq-bounce 0.9s ease-in-out infinite alternate;
+}
+
+.track-eq i:nth-child(1) {
+    height: 6px;
+}
+
+.track-eq i:nth-child(2) {
+    height: 14px;
+    animation-delay: 0.2s;
+}
+
+.track-eq i:nth-child(3) {
+    height: 9px;
+    animation-delay: 0.4s;
+}
+
+@keyframes track-eq-bounce {
+    from {
+        transform: scaleY(0.4);
+    }
+    to {
+        transform: scaleY(1);
+    }
+}
+
+.track-duration {
+    flex: none;
+    color: var(--text-3);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+}
+
+.track-play {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    flex: none;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
     font-size: 14px;
+    cursor: pointer;
 }
 
 /* 海报模块（第 6 块）：海报墙 / 磁吸卡片 / 3D 架三种形态可切换，切换只翻 data-layout，不重渲染。
-   颜色全部走 :root 变量（--bg/--card/--border/--accent/--on-accent/--text/--muted），
-   以后主题深浅切换只需换一套变量值，这里不用动。 */
+   0.1.44 视觉稿：去每张角标（页已点名音源）、标题两行夹、特性位方形＋模糊背、
+   卡片模式无外框、底栏实心、奇数末卡跨两列。 */
 .poster-module-head {
     display: flex;
     align-items: center;
@@ -254,73 +431,74 @@ body {
 
 .poster-module-head h3 {
     margin: 0;
-    font-size: 16px;
-    color: var(--muted);
+    color: var(--text);
+    font-size: 17px;
+    line-height: 24px;
+    font-weight: 600;
 }
 
 .poster-layout-switch {
     display: flex;
     flex: none;
-    gap: 4px;
-    padding: 4px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--card);
+    height: 36px;
+    padding: 3px;
+    border: 0;
+    border-radius: 10px;
+    background: var(--surface-3);
 }
 
 .poster-layout-btn {
-    padding: 4px 14px;
+    height: 100%;
+    padding: 0 12px;
     border: 0;
-    border-radius: 999px;
+    border-radius: 7px;
     background: transparent;
-    color: var(--muted);
+    color: var(--text-2);
     font: inherit;
     font-size: 13px;
     cursor: pointer;
 }
 
 .poster-layout-btn.is-active {
-    background: var(--accent);
-    color: var(--on-accent);
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
 }
 
 .poster-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 10px;
+    gap: 12px;
 }
 
 .poster-card {
-    display: flex;
-    flex-direction: column;
+    position: relative;
+    overflow: hidden;
     padding: 0;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-card);
-    background: var(--card);
+    border: 0;
+    border-radius: var(--r-poster);
+    background: var(--surface-1);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
     color: inherit;
     font: inherit;
     text-align: left;
     cursor: pointer;
-    overflow: hidden;
-}
-
-.poster-card.is-playing {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 1px var(--accent);
 }
 
 .poster-cover-wrap {
     position: relative;
-    flex: 1;
-    min-height: 0;
-    aspect-ratio: 3 / 4;
     overflow: hidden;
+    aspect-ratio: 3 / 4;
 }
 
 .poster-cover-placeholder {
     position: absolute;
     inset: 0;
-    background: linear-gradient(135deg, #2a1b30, #5a3050);
+    background: linear-gradient(160deg, #2a1b30 0%, #5a3050 100%);
+}
+
+.poster-cover-blur {
+    display: none;
 }
 
 .poster-cover {
@@ -331,52 +509,48 @@ body {
     object-fit: cover;
 }
 
-/* 角标：左上角实色粉 pill，盖在封面上。 */
-.poster-badge {
-    position: absolute;
-    top: 10px;
-    left: 10px;
-    z-index: 2;
-    padding: 2px 10px;
-    border-radius: 999px;
-    background: var(--accent);
-    color: var(--on-accent);
-    font-size: 12px;
-}
-
-/* 底部渐变上的标题区：标题白字、副标题与曲目数浅灰，单行截断。 */
 .poster-overlay {
     position: absolute;
     left: 0;
     right: 0;
     bottom: 0;
-    z-index: 1;
-    padding: 28px 12px 12px;
-    background: linear-gradient(to top, rgba(0, 0, 0, 0.75), transparent);
-    color: #fafafa;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 12px;
+    background: linear-gradient(to top, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0.35) 40%, transparent 70%);
+    color: #fff;
+}
+
+.poster-text {
+    flex: 1;
+    min-width: 0;
 }
 
 .poster-title {
-    font-size: 15px;
-    font-weight: 700;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    font-size: 15px;
+    line-height: 20px;
+    font-weight: 600;
 }
 
 .poster-subtitle {
     margin-top: 2px;
-    color: rgba(250, 250, 250, 0.75);
-    font-size: 13px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    color: rgba(255, 255, 255, 0.72);
+    font-size: 12px;
 }
 
 .poster-count {
     display: block;
     margin-top: 2px;
-    color: rgba(250, 250, 250, 0.6);
+    color: rgba(255, 255, 255, 0.72);
     font-size: 12px;
 }
 
@@ -384,53 +558,78 @@ body {
     display: none;
 }
 
-/* 海报墙模式：首张跨两行当大海报，其余叠放；竖版封面全幅出血。
-   单张海报的区没有第二行可跨，min-height 兜底不让大海报塌掉。 */
+/* 海报墙特性位：跨两列，16/10 画幅里方形主图居中＋模糊背，标题落图下底栏。 */
 .poster-module[data-layout="wall"] .poster-card:first-child {
-    grid-row: span 2;
+    grid-column: span 2;
 }
 
 .poster-module[data-layout="wall"] .poster-card:first-child .poster-cover-wrap {
-    aspect-ratio: auto;
+    aspect-ratio: 16 / 10;
+}
+
+.poster-module[data-layout="wall"] .poster-card:first-child .poster-cover-blur {
+    display: block;
+    position: absolute;
+    inset: 0;
+    width: 100%;
     height: 100%;
-    min-height: 300px;
+    object-fit: cover;
+    filter: blur(28px) scale(1.3);
+    opacity: 0.8;
 }
 
-/* 磁吸卡片模式：每区一张独立卡片模块、间距拉开；卡内 2 列横版小卡，
-   右下角粉色播放圆点（仅视觉，整卡点击即播放）。 */
-.poster-module[data-layout="cards"] {
-    padding: 16px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-card);
-    background: var(--card);
+.poster-module[data-layout="wall"] .poster-card:first-child .poster-cover {
+    left: 50%;
+    right: auto;
+    width: auto;
+    transform: translateX(-50%);
 }
 
-.poster-module[data-layout="cards"] .poster-grid {
-    gap: 12px;
+.poster-module[data-layout="wall"] .poster-card:first-child .poster-overlay {
+    position: static;
+    background: none;
+    color: var(--text);
+    padding: 12px 12px 14px;
 }
 
+.poster-module[data-layout="wall"] .poster-card:first-child .poster-subtitle,
+.poster-module[data-layout="wall"] .poster-card:first-child .poster-count {
+    color: var(--text-2);
+}
+
+/* 卡片模式：无外框，画幅 16/10，标题进底栏，奇数末卡跨两列。 */
 .poster-module[data-layout="cards"] .poster-cover-wrap {
-    aspect-ratio: 4 / 3;
+    aspect-ratio: 16 / 10;
 }
 
 .poster-module[data-layout="cards"] .poster-overlay {
-    padding-right: 48px;
+    position: static;
+    align-items: center;
+    background: none;
+    color: var(--text);
+    padding: 12px;
+}
+
+.poster-module[data-layout="cards"] .poster-subtitle,
+.poster-module[data-layout="cards"] .poster-count {
+    color: var(--text-2);
 }
 
 .poster-module[data-layout="cards"] .poster-play {
     display: flex;
-    position: absolute;
-    right: 10px;
-    bottom: 10px;
-    z-index: 2;
-    width: 32px;
-    height: 32px;
     align-items: center;
     justify-content: center;
+    width: 32px;
+    height: 32px;
+    flex: none;
+    border: 1px solid var(--hairline);
     border-radius: 50%;
-    background: var(--accent);
-    color: var(--on-accent);
-    font-size: 13px;
+    color: var(--text);
+    font-size: 12px;
+}
+
+.poster-module[data-layout="cards"] .poster-card:last-child:nth-child(odd) {
+    grid-column: span 2;
 }
 
 .poster-module[data-layout="shelf"] .poster-grid {
@@ -448,12 +647,16 @@ body {
 
 .poster-notice {
     margin: 12px 0 0;
-    color: var(--warn);
+    color: var(--text-2);
 }
 
 /* 底部四 Tab（0.1.42）：一次只看一个源；页内区块间距 20px，不再沿长页摊开。 */
 .tab-page[hidden] {
     display: none;
+}
+
+.tab-page {
+    padding-top: 12px;
 }
 
 .tab-page > * + * {
@@ -473,13 +676,15 @@ body {
 
 .tab-login-chip {
     flex: none;
-    padding: 6px 16px;
+    height: 36px;
+    padding: 0 16px;
     border: 0;
     border-radius: 999px;
-    background: var(--accent);
-    color: var(--on-accent);
+    background: var(--accent-soft);
+    color: var(--accent);
     font: inherit;
     font-size: 13px;
+    font-weight: 500;
     cursor: pointer;
 }
 
@@ -491,29 +696,39 @@ body {
     z-index: 11;
     display: flex;
     gap: 4px;
-    padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
-    border-top: 1px solid var(--border);
-    background: rgba(24, 24, 27, 0.92);
-    -webkit-backdrop-filter: blur(16px) saturate(140%);
-    backdrop-filter: blur(16px) saturate(140%);
+    height: calc(56px + env(safe-area-inset-bottom));
+    padding: 0 8px env(safe-area-inset-bottom);
+    border-top: 1px solid var(--hairline);
+    background: #0e0e11;
 }
 
 .tab-btn {
+    position: relative;
     flex: 1;
-    padding: 8px 0;
+    padding: 0;
     border: 0;
-    border-radius: 12px;
     background: transparent;
-    color: var(--muted);
+    color: var(--text-2);
     font: inherit;
-    font-size: 14px;
+    font-size: 12px;
     cursor: pointer;
 }
 
 .tab-btn.is-active {
-    background: rgba(232, 160, 191, 0.18);
     color: var(--accent);
-    font-weight: 700;
+    font-weight: 600;
+}
+
+.tab-btn.is-active::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: 24px;
+    height: 3px;
+    transform: translateX(-50%);
+    border-radius: 2px;
+    background: var(--accent);
 }
 
 /* 3D 歌单架（第 7 块）：纯 CSS 3D 多层架子，不用图片素材做架子。
@@ -534,7 +749,9 @@ body {
 .shelf-scroll {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
-    padding-bottom: 4px;
+    margin: 0 -16px;
+    padding: 0 16px 4px;
+    scroll-snap-type: x mandatory;
 }
 
 .shelf-viewport {
@@ -552,15 +769,15 @@ body {
 }
 
 .shelf-board {
-    height: 12px;
+    height: 1px;
     margin: 0 4px;
-    border-radius: 6px;
-    background: linear-gradient(180deg, #52525b 0%, #3f3f46 55%, #27272a 100%);
-    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.55);
+    background: var(--hairline);
+    box-shadow: 0 12px 24px rgba(0, 0, 0, 0.4);
 }
 
 .shelf-record {
     flex: none;
+    scroll-snap-align: start;
     width: 136px;
     padding: 10px 10px 12px;
     border: 1px solid var(--border);
@@ -912,17 +1129,40 @@ body {
 /* 登录区 */
 .login-block {
     padding: 14px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-card);
-    background: var(--card);
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-card);
+    background: var(--surface-1);
 }
 
 .login-block + .login-block {
     margin-top: 12px;
 }
 
-.login-block h3 {
-    margin: 0 0 10px;
+.login-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+
+.login-tile {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    flex: none;
+    border-radius: 10px;
+    background: var(--surface-3);
+    color: var(--text-2);
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.login-head h3 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
 }
 
 .login-row {
@@ -931,13 +1171,21 @@ body {
     gap: 12px;
 }
 
-/* 登录行的昵称没有 class：长昵称必须能缩、不许把卡片和整页撑宽。 */
-.login-row > span {
+/* 登录行的昵称没有 class：长昵称必须能缩、不许把卡片和整页撑宽；绿点不参与。 */
+.login-row > span:not(.login-status-dot) {
     flex: 1;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.login-status-dot {
+    width: 8px;
+    height: 8px;
+    flex: none;
+    border-radius: 50%;
+    background: var(--ok);
 }
 
 .login-avatar {
@@ -953,37 +1201,86 @@ body {
     width: 220px;
     height: 220px;
     margin: 8px 0;
-    border-radius: var(--radius-cover);
+    border-radius: var(--r-poster);
     background: #fff;
 }
 
+/* 按钮层级：login-btn 本身是次要（surface-3＋发丝线），登录时加 primary，CLEAR 用 ghost。 */
 .login-btn {
-    border: none;
-    border-radius: 999px;
-    padding: 10px 18px;
-    background: var(--accent);
-    color: var(--on-accent);
+    height: 38px;
+    padding: 0 16px;
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-btn);
+    background: var(--surface-3);
+    color: var(--text);
     font-family: inherit;
     font-size: 14px;
+    cursor: pointer;
+}
+
+.login-btn-primary {
+    height: 44px;
+    border: 0;
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-weight: 600;
+}
+
+.login-btn-ghost {
+    border: 0;
+    background: transparent;
+    color: var(--text-2);
 }
 
 .login-notice {
     margin: 0 0 10px;
-    color: var(--warn);
+    color: var(--text-2);
     font-size: 13px;
 }
 
 .login-hint {
     margin: 10px 0 0;
-    color: var(--muted);
+    color: var(--text-2);
     font-size: 13px;
 }
 
 /* 开发者区 */
+.home .developer > h2 {
+    color: var(--text-2);
+    font-size: 17px;
+    line-height: 24px;
+    font-weight: 600;
+}
+
+.dev-debug-chip {
+    margin-left: 8px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--surface-3);
+    color: var(--text-3);
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    vertical-align: middle;
+}
+
 .developer-hint {
     margin: 0 0 10px;
-    color: var(--muted);
-    font-size: 13px;
+    color: var(--text-3);
+    font-size: 12px;
+}
+
+.developer-actions .login-btn {
+    height: 34px;
+    padding: 0 14px;
+    border-radius: 10px;
+}
+
+.dev-search:focus,
+.dev-select:focus {
+    outline: none;
+    border-color: var(--accent-line);
+    box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .developer-actions {
@@ -1013,9 +1310,9 @@ body {
     flex: 1;
     min-width: 0;
     padding: 8px 14px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--card);
+    border: 1px solid var(--hairline);
+    border-radius: 12px;
+    background: var(--surface-1);
     color: var(--text);
     font-family: inherit;
     font-size: 13px;
@@ -1024,22 +1321,22 @@ body {
 .dev-select {
     min-width: 0;
     padding: 8px 10px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--card);
+    border: 1px solid var(--hairline);
+    border-radius: 12px;
+    background: var(--surface-1);
     color: var(--text);
     font-family: inherit;
     font-size: 13px;
 }
 
 .developer-log {
-    max-height: 320px;
+    max-height: 40vh;
     overflow: auto;
     margin: 0;
     padding: 12px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-input);
-    background: var(--bg);
+    border: 1px solid var(--hairline);
+    border-radius: 12px;
+    background: #0c0c0f;
     color: rgba(250, 250, 250, 0.85);
     font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
     font-size: 12px;
@@ -1057,7 +1354,7 @@ body {
 
 .dev-time {
     flex-shrink: 0;
-    color: #71717a;
+    color: var(--text-3);
 }
 
 .dev-level {
@@ -1075,7 +1372,8 @@ body {
 
 .dev-module {
     flex-shrink: 0;
-    color: var(--accent);
+    color: var(--text-3);
+    font-weight: 600;
 }
 
 .dev-text {
@@ -1085,5 +1383,61 @@ body {
 
 .dev-empty {
     margin: 0;
-    color: #71717a;
+    color: var(--text-3);
+}
+
+/* 0.1.44：页标题 28/34 粗体（Claude 视觉稿）；登录区标题 17px 另有高优先级规则。 */
+.home h2 {
+    font-size: 28px;
+    line-height: 34px;
+    font-weight: 700;
+}
+
+.home .login-area > h2 {
+    font-size: 17px;
+    line-height: 24px;
+    font-weight: 600;
+}
+
+/* 0.1.44 按压态：130ms ease-out 缩放，减动效时一律静止。 */
+.tab-btn,
+.poster-layout-btn,
+.poster-card,
+.track-row,
+.login-btn,
+.np-btn,
+.np-info,
+.tab-login-chip,
+.shelf-record {
+    transition: transform 130ms ease-out;
+}
+
+.tab-btn:active,
+.poster-layout-btn:active,
+.poster-card:active,
+.track-row:active,
+.login-btn:active,
+.np-btn:active,
+.np-info:active,
+.tab-login-chip:active,
+.shelf-record:active {
+    transform: scale(0.98);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .tab-btn,
+    .poster-layout-btn,
+    .poster-card,
+    .track-row,
+    .login-btn,
+    .np-btn,
+    .np-info,
+    .tab-login-chip,
+    .shelf-record {
+        transition: none;
+    }
+
+    .track-eq i {
+        animation: none;
+    }
 }
