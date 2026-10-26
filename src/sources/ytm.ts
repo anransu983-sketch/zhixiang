@@ -43,11 +43,11 @@
 // 由第 5 块的播放引擎实现（MSE 分块加载或本地 Range 代理均可，第 5 块定）。
 
 import { httpPost } from '../native/http';
-import { countSapisidEntries, loadYtmSession, withYtmSession } from './ytm-session';
+import { loadYtmSession, sapisidPairMismatched, withYtmSession } from './ytm-session';
 import type { AudioSource, Poster, SourceId, Track } from '../types';
 
 const SEARCH_URL = 'https://music.youtube.com/youtubei/v1/search';
-const PLAYER_URL = 'https://www.youtube.com/youtubei/v1/player';
+const PLAYER_URL = 'https://www.youtube.com/youtubei/v1/player?prettyPrint=false';
 // 公开客户端标识（见文件头 key 说明），非私人密钥。
 const INNERTUBE_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
 const SEARCH_LIMIT = 20;
@@ -524,7 +524,7 @@ async function tryPlayerClient(
             }
         };
         const body = JSON.stringify(bodyObject);
-        response = await httpPost(`${PLAYER_URL}?key=${client.apiKey ?? INNERTUBE_KEY}`, body, headers);
+        response = await httpPost(`${PLAYER_URL}&key=${client.apiKey ?? INNERTUBE_KEY}`, body, headers);
     } catch {
         // 单个客户端请求失败（断网、超时）不直接抛，落到下一客户端。
         console.log(`[Ytm] ${client.name} 不可用：请求失败`);
@@ -701,8 +701,8 @@ export async function resolveYtmStream(track: Track): Promise<YtmStream> {
         if (signedHeaders['Authorization']) {
             console.log('[Ytm] 登录链带 SAPISIDHASH 签名');
         }
-        if (countSapisidEntries() > 1) {
-            console.log('[Ytm] cookie 含多个 SAPISID，取首个');
+        if (sapisidPairMismatched()) {
+            console.log('[Ytm] SAPISID 与 __Secure-3PAPISID 值不一致');
         }
         const signed = await runChain(videoId, signedHeaders, signedVisitor, false);
         if (signed.stream) {

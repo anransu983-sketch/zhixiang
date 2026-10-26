@@ -179,35 +179,53 @@ function sha1Hex(text: string): string {
 // cookie 里没有 SAPISID（或它的 __Secure- 形态）就回 null，请求只带 Cookie。
 // 签名现算现用，不记日志、不落盘。
 export function sapisidHash(cookie: string): string | null {
+    // 优先 plain SAPISID（SAPISIDHASH 规范的本名），再 fallback
+    // __Secure-3PAPISID：旧逻辑取首个，顺序依赖，两值不同时可能取错。
     let sapisid: string | null = null;
+    let fallback: string | null = null;
     for (const pair of cookie.split(';')) {
         const split = pair.indexOf('=');
         if (split <= 0) {
             continue;
         }
         const name = pair.slice(0, split).trim();
-        if (name === 'SAPISID' || name === '__Secure-3PAPISID') {
+        if (name === 'SAPISID' && sapisid === null) {
             sapisid = pair.slice(split + 1).trim();
-            break;
+        } else if (name === '__Secure-3PAPISID' && fallback === null) {
+            fallback = pair.slice(split + 1).trim();
         }
     }
-    if (!sapisid) {
+    const value = sapisid ?? fallback;
+    if (!value) {
         return null;
     }
     const seconds = Math.floor(Date.now() / 1000);
-    return `SAPISIDHASH ${seconds}_${sha1Hex(`${seconds} ${sapisid} https://www.youtube.com`)}`;
+    return `SAPISIDHASH ${seconds}_${sha1Hex(`${seconds} ${value} https://www.youtube.com`)}`;
 }
 
 // 有会话时补 Cookie 与同源 UA；无会话时原样返回，不动匿名请求。
-// cookie 里 SAPISID（或 __Secure-3PAPISID）条数：www＋music 两域拼一条时
-// 可能出现两条，签名取首个；只记条数，不记值。
-export function countSapisidEntries(): number {
+// SAPISID 与 __Secure-3PAPISID 是否两值不一致：标准会话两值相同；
+// 不同则签名取哪一个就有讲究（现取 plain SAPISID）。只返回布尔值，不记值。
+export function sapisidPairMismatched(): boolean {
     const session = loadYtmSession();
     if (!session) {
-        return 0;
+        return false;
     }
-    const matches = session.cookie.match(/(?:^|;\s*)(?:SAPISID|__Secure-3PAPISID)=/g);
-    return matches ? matches.length : 0;
+    let plain: string | null = null;
+    let secure: string | null = null;
+    for (const pair of session.cookie.split(';')) {
+        const split = pair.indexOf('=');
+        if (split <= 0) {
+            continue;
+        }
+        const name = pair.slice(0, split).trim();
+        if (name === 'SAPISID' && plain === null) {
+            plain = pair.slice(split + 1).trim();
+        } else if (name === '__Secure-3PAPISID' && secure === null) {
+            secure = pair.slice(split + 1).trim();
+        }
+    }
+    return plain !== null && secure !== null && plain !== secure;
 }
 
 export function withYtmSession(headers: Record<string, string>): Record<string, string> {
