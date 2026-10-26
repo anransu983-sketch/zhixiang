@@ -1,6 +1,11 @@
-// 音乐足迹页（0.1.54）：照网易云月报的样子，数据只用本地播放记录。
+// 音乐足迹页（0.1.54 建，0.1.55 加年/全部视图）：照网易云月报的样子，
+// 数据只用本地播放记录。
 //
-// 能做的：月切换、收听时长、唱片墙、TOP 歌曲/歌手、来源分布、收听日历。
+// 范围三档：月 / 年 / 全部，存在 zx_footprint_range_v1，下次打开接着看。
+// 月视图：时长＋已听天数、唱片墙、TOP 歌曲/歌手、来源分布、收听日历。
+// 年视图：时长＋已听天数、唱片墙、TOP 歌曲/歌手、来源分布、月度分布
+//   （当年只列到本月，往年列 12 个月）。
+// 全部视图：累计时长＋天数＋首数、唱片墙、TOP 歌曲/歌手、来源分布。
 // 做不了的：曲风与年代——曲目对象没有这个字段，页底会写明，不编假数据。
 // 封面：远程 http(s) 直出；本地 content:// 不走 data URL 回炉（v1 不解析），
 // 露 id 色相渐变 + ♪ 占位，与海报墙占位同款。
@@ -10,6 +15,7 @@ import {
     formatListenedMs,
     getFootprint,
     getMonthActiveDays,
+    getYearFootprint,
     hasAnyHistory,
     SOURCE_NAMES,
 } from './playback-history';
@@ -18,11 +24,32 @@ import { posterFallbackBackground } from './posters';
 import type { SourceId } from './types';
 
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
+const RANGE_KEY = 'zx_footprint_range_v1';
+
+type FootprintRange = 'month' | 'year' | 'all';
+
+const RANGE_LABELS: Record<FootprintRange, string> = {
+    month: '月',
+    year: '年',
+    all: '全部',
+};
 
 export function openFootprintPage(): void {
     const now = new Date();
     const page = buildFootprintPage(now.getFullYear(), now.getMonth() + 1);
     document.body.appendChild(page);
+}
+
+function loadRange(): FootprintRange {
+    try {
+        const stored = localStorage.getItem(RANGE_KEY);
+        if (stored === 'year' || stored === 'all') {
+            return stored;
+        }
+    } catch {
+        // 忽略。
+    }
+    return 'month';
 }
 
 function buildFootprintPage(year: number, month: number): HTMLElement {
@@ -51,57 +78,84 @@ function buildFootprintPage(year: number, month: number): HTMLElement {
         page.appendChild(firstNote);
     }
 
+    let range = loadRange();
     let viewedYear = year;
     let viewedMonth = month;
     const body = document.createElement('div');
     page.appendChild(body);
 
-    const monthRow = document.createElement('div');
-    monthRow.className = 'footprint-month';
+    const rangeRow = document.createElement('div');
+    rangeRow.className = 'footprint-range';
+    const rangeButtons = new Map<FootprintRange, HTMLButtonElement>();
+    (['month', 'year', 'all'] as FootprintRange[]).forEach((key) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = RANGE_LABELS[key];
+        button.addEventListener('click', () => {
+            if (range === key) {
+                return;
+            }
+            range = key;
+            try {
+                localStorage.setItem(RANGE_KEY, key);
+            } catch {
+                // 忽略。
+            }
+            render();
+        });
+        rangeButtons.set(key, button);
+        rangeRow.appendChild(button);
+    });
+    page.insertBefore(rangeRow, body);
+
+    const navRow = document.createElement('div');
+    navRow.className = 'footprint-month';
     const prevButton = document.createElement('button');
     prevButton.type = 'button';
     prevButton.textContent = '◀︎';
-    const monthLabel = document.createElement('span');
-    monthLabel.className = 'footprint-month-label';
+    const navLabel = document.createElement('span');
+    navLabel.className = 'footprint-month-label';
     const nextButton = document.createElement('button');
     nextButton.type = 'button';
     nextButton.textContent = '▶︎';
-    monthRow.append(prevButton, monthLabel, nextButton);
-    page.insertBefore(monthRow, body);
+    navRow.append(prevButton, navLabel, nextButton);
+    page.insertBefore(navRow, body);
 
-    const render = (): void => {
-        const current = new Date();
-        const currentKey = current.getFullYear() * 12 + (current.getMonth() + 1);
-        const viewedKey = viewedYear * 12 + viewedMonth;
-        monthLabel.textContent = `${viewedYear}年${viewedMonth}月`;
-        nextButton.disabled = viewedKey >= currentKey;
-        body.replaceChildren();
-        renderMonth(body, viewedYear, viewedMonth);
+    const step = (delta: -1 | 1): void => {
+        if (range === 'month') {
+            const total = viewedYear * 12 + viewedMonth + delta;
+            viewedYear = Math.floor((total - 1) / 12);
+            viewedMonth = total - viewedYear * 12;
+        } else if (range === 'year') {
+            viewedYear += delta;
+        }
+        render();
     };
     prevButton.addEventListener('click', () => {
-        if (viewedMonth === 1) {
-            viewedYear -= 1;
-            viewedMonth = 12;
-        } else {
-            viewedMonth -= 1;
-        }
-        render();
+        step(-1);
     });
     nextButton.addEventListener('click', () => {
-        const current = new Date();
-        const currentKey = current.getFullYear() * 12 + (current.getMonth() + 1);
-        const viewedKey = viewedYear * 12 + viewedMonth;
-        if (viewedKey >= currentKey) {
-            return;
-        }
-        if (viewedMonth === 12) {
-            viewedYear += 1;
-            viewedMonth = 1;
-        } else {
-            viewedMonth += 1;
-        }
-        render();
+        step(1);
     });
+
+    const render = (): void => {
+        for (const [key, button] of rangeButtons) {
+            button.classList.toggle('is-active', key === range);
+        }
+        navRow.hidden = range === 'all';
+        const current = new Date();
+        if (range === 'month') {
+            const currentKey = current.getFullYear() * 12 + (current.getMonth() + 1);
+            const viewedKey = viewedYear * 12 + viewedMonth;
+            navLabel.textContent = `${viewedYear}年${viewedMonth}月`;
+            nextButton.disabled = viewedKey >= currentKey;
+        } else if (range === 'year') {
+            navLabel.textContent = `${viewedYear}年`;
+            nextButton.disabled = viewedYear >= current.getFullYear();
+        }
+        body.replaceChildren();
+        renderRange(body, range, viewedYear, viewedMonth);
+    };
     render();
     return page;
 }
@@ -123,58 +177,50 @@ function coverThumb(trackId: string, coverUrl: string | undefined, sizeClass: st
     return fallback;
 }
 
-function section(titleText: string): { wrap: HTMLElement; } {
+function section(titleText: string): HTMLElement {
     const wrap = document.createElement('div');
     wrap.className = 'footprint-section';
     const heading = document.createElement('h3');
     heading.textContent = titleText;
     wrap.appendChild(heading);
-    return { wrap };
+    return wrap;
 }
 
-function renderMonth(body: HTMLElement, year: number, month: number): void {
-    const totals = getFootprint(null, null);
-    const totalLine = document.createElement('p');
-    totalLine.className = 'footprint-total';
-    totalLine.textContent = `累计收听 ${formatListenedMs(totals.totalMs)} · 累计 ${totals.songCount} 首`;
-    body.appendChild(totalLine);
-
-    const stats: FootprintStats = getFootprint(year, month);
-    const daysInMonth = new Date(year, month, 0).getDate();
+function renderHero(
+    body: HTMLElement,
+    timeText: string,
+    subText: string,
+): void {
     const hero = document.createElement('div');
     hero.className = 'footprint-hero';
     const heroTime = document.createElement('div');
     heroTime.className = 'footprint-hero-time';
-    heroTime.textContent = formatListenedMs(stats.totalMs);
+    heroTime.textContent = timeText;
     const heroSub = document.createElement('div');
     heroSub.className = 'footprint-hero-sub';
-    heroSub.textContent = `本月收听 · 已听 ${stats.activeDays} / ${daysInMonth} 天`;
+    heroSub.textContent = subText;
     hero.append(heroTime, heroSub);
     body.appendChild(hero);
+}
 
-    if (stats.totalMs === 0) {
-        const empty = document.createElement('p');
-        empty.className = 'footprint-empty';
-        empty.textContent = '本月还没有收听记录，听首歌再回来看看。';
-        body.appendChild(empty);
-        return;
-    }
-
-    const wallSection = section(`唱片墙 · ${stats.songCount} 首`);
+function renderWall(body: HTMLElement, stats: FootprintStats): void {
+    const wrap = section(`唱片墙 · ${stats.songCount} 首`);
     const wall = document.createElement('div');
     wall.className = 'footprint-wall';
     for (const item of stats.wall) {
         wall.appendChild(coverThumb(item.trackId, item.coverUrl, 'footprint-wall-item'));
     }
-    wallSection.wrap.appendChild(wall);
-    body.appendChild(wallSection.wrap);
+    wrap.appendChild(wall);
+    body.appendChild(wrap);
+}
 
-    const songSection = section('TOP 歌曲');
+function renderTopSongs(body: HTMLElement, stats: FootprintStats): void {
+    const wrap = section('TOP 歌曲');
     if (stats.topSongs.length === 0) {
         const note = document.createElement('p');
         note.className = 'footprint-note';
         note.textContent = '暂无计次收听：播放 30 秒以上才计一次。';
-        songSection.wrap.appendChild(note);
+        wrap.appendChild(note);
     } else {
         for (let index = 0; index < stats.topSongs.length; index += 1) {
             const song = stats.topSongs[index] as (typeof stats.topSongs)[number];
@@ -196,17 +242,19 @@ function renderMonth(body: HTMLElement, year: number, month: number): void {
             count.className = 'footprint-row-count';
             count.textContent = `${song.plays} 次`;
             row.append(rank, coverThumb(song.trackId, song.coverUrl, 'footprint-thumb'), main, count);
-            songSection.wrap.appendChild(row);
+            wrap.appendChild(row);
         }
     }
-    body.appendChild(songSection.wrap);
+    body.appendChild(wrap);
+}
 
-    const artistSection = section('TOP 歌手');
+function renderTopArtists(body: HTMLElement, stats: FootprintStats): void {
+    const wrap = section('TOP 歌手');
     if (stats.topArtists.length === 0) {
         const note = document.createElement('p');
         note.className = 'footprint-note';
         note.textContent = '暂无计次收听：播放 30 秒以上才计一次。';
-        artistSection.wrap.appendChild(note);
+        wrap.appendChild(note);
     } else {
         for (let index = 0; index < stats.topArtists.length; index += 1) {
             const artist = stats.topArtists[index] as (typeof stats.topArtists)[number];
@@ -225,12 +273,14 @@ function renderMonth(body: HTMLElement, year: number, month: number): void {
             count.className = 'footprint-row-count';
             count.textContent = `${artist.plays} 次`;
             row.append(rank, main, count);
-            artistSection.wrap.appendChild(row);
+            wrap.appendChild(row);
         }
     }
-    body.appendChild(artistSection.wrap);
+    body.appendChild(wrap);
+}
 
-    const sourceSection = section('来源分布');
+function renderSources(body: HTMLElement, stats: FootprintStats): void {
+    const wrap = section('来源分布');
     const sources: SourceId[] = ['local', 'netease', 'ytm'];
     let anySource = false;
     for (const source of sources) {
@@ -259,13 +309,128 @@ function renderMonth(body: HTMLElement, year: number, month: number): void {
         count.className = 'footprint-row-count';
         count.textContent = `${plays} 次 · ${formatListenedMs(ms)}`;
         row.append(main, count);
-        sourceSection.wrap.appendChild(row);
+        wrap.appendChild(row);
     }
     if (anySource) {
-        body.appendChild(sourceSection.wrap);
+        body.appendChild(wrap);
+    }
+}
+
+function renderFootnote(body: HTMLElement): void {
+    const footnote = document.createElement('p');
+    footnote.className = 'footprint-note';
+    footnote.textContent = '播放 30 秒以上计一次收听；时长按实际播放累计。曲风与年代暂无——曲库没有这个字段，不编假数据。';
+    body.appendChild(footnote);
+}
+
+function renderEmpty(body: HTMLElement, text: string): void {
+    const empty = document.createElement('p');
+    empty.className = 'footprint-empty';
+    empty.textContent = text;
+    body.appendChild(empty);
+}
+
+function renderRange(
+    body: HTMLElement,
+    range: FootprintRange,
+    year: number,
+    month: number,
+): void {
+    if (range === 'all') {
+        const stats = getFootprint(null, null);
+        renderHero(
+            body,
+            formatListenedMs(stats.totalMs),
+            `累计收听 · 已听 ${stats.activeDays} 天 · ${stats.songCount} 首`,
+        );
+        if (stats.totalMs === 0) {
+            renderEmpty(body, '还没有收听记录，听首歌再回来看看。');
+            return;
+        }
+        renderWall(body, stats);
+        renderTopSongs(body, stats);
+        renderTopArtists(body, stats);
+        renderSources(body, stats);
+        renderFootnote(body);
+        return;
     }
 
-    const calSection = section('收听日历');
+    if (range === 'year') {
+        const stats = getYearFootprint(year);
+        renderHero(
+            body,
+            formatListenedMs(stats.totalMs),
+            `${year}年收听 · 已听 ${stats.activeDays} 天 · ${stats.songCount} 首`,
+        );
+        if (stats.totalMs === 0) {
+            renderEmpty(body, '今年还没有收听记录，听首歌再回来看看。');
+            return;
+        }
+        renderWall(body, stats);
+        renderTopSongs(body, stats);
+        renderTopArtists(body, stats);
+        renderSources(body, stats);
+        const current = new Date();
+        const lastMonth = year === current.getFullYear() ? current.getMonth() + 1 : 12;
+        const monthStats: { month: number; ms: number }[] = [];
+        let maxMs = 0;
+        for (let m = 1; m <= lastMonth; m += 1) {
+            const ms = getFootprint(year, m).totalMs;
+            monthStats.push({ month: m, ms });
+            if (ms > maxMs) {
+                maxMs = ms;
+            }
+        }
+        const distWrap = section('月度分布');
+        for (const entry of monthStats) {
+            const row = document.createElement('div');
+            row.className = 'footprint-row';
+            const main = document.createElement('div');
+            main.className = 'footprint-row-main';
+            const titleText = document.createElement('div');
+            titleText.className = 'footprint-row-title';
+            titleText.textContent = `${entry.month}月`;
+            const bar = document.createElement('div');
+            bar.className = 'footprint-source-bar';
+            const fill = document.createElement('div');
+            fill.className = 'footprint-source-fill';
+            fill.style.width = maxMs > 0 ? `${Math.round((entry.ms / maxMs) * 100)}%` : '0%';
+            bar.appendChild(fill);
+            main.append(titleText, bar);
+            const count = document.createElement('span');
+            count.className = 'footprint-row-count';
+            count.textContent = formatListenedMs(entry.ms);
+            row.append(main, count);
+            distWrap.appendChild(row);
+        }
+        body.appendChild(distWrap);
+        renderFootnote(body);
+        return;
+    }
+
+    const totals = getFootprint(null, null);
+    const totalLine = document.createElement('p');
+    totalLine.className = 'footprint-total';
+    totalLine.textContent = `累计收听 ${formatListenedMs(totals.totalMs)} · 累计 ${totals.songCount} 首`;
+    body.appendChild(totalLine);
+
+    const stats = getFootprint(year, month);
+    const daysInMonth = new Date(year, month, 0).getDate();
+    renderHero(
+        body,
+        formatListenedMs(stats.totalMs),
+        `本月收听 · 已听 ${stats.activeDays} / ${daysInMonth} 天`,
+    );
+    if (stats.totalMs === 0) {
+        renderEmpty(body, '本月还没有收听记录，听首歌再回来看看。');
+        return;
+    }
+    renderWall(body, stats);
+    renderTopSongs(body, stats);
+    renderTopArtists(body, stats);
+    renderSources(body, stats);
+
+    const calWrap = section('收听日历');
     const calendar = document.createElement('div');
     calendar.className = 'footprint-calendar';
     for (const weekday of WEEKDAYS) {
@@ -293,11 +458,7 @@ function renderMonth(body: HTMLElement, year: number, month: number): void {
         }
         calendar.appendChild(cell);
     }
-    calSection.wrap.appendChild(calendar);
-    body.appendChild(calSection.wrap);
-
-    const footnote = document.createElement('p');
-    footnote.className = 'footprint-note';
-    footnote.textContent = '播放 30 秒以上计一次收听；时长按实际播放累计。曲风与年代暂无——曲库没有这个字段，不编假数据。';
-    body.appendChild(footnote);
+    calWrap.appendChild(calendar);
+    body.appendChild(calWrap);
+    renderFootnote(body);
 }

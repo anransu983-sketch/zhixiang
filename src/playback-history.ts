@@ -293,6 +293,14 @@ export function getFootprint(year: number | null, month: number | null): Footpri
     return aggregate(all.filter((session) => monthKeyOf(session.startedAt) === key));
 }
 
+/** 指定年的足迹（0.1.55 年视图用）。 */
+export function getYearFootprint(year: number): FootprintStats {
+    const prefix = `${year}-`;
+    return aggregate(
+        loadSessions().filter((session) => monthKeyOf(session.startedAt).startsWith(prefix)),
+    );
+}
+
 /** 某月每天是否有收听（日历用，返回日期号集合）；累计模式不画日历。 */
 export function getMonthActiveDays(year: number, month: number): Set<number> {
     const key = `${year}-${String(month).padStart(2, '0')}`;

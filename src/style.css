@@ -1445,6 +1445,34 @@ body {
     opacity: 0.4;
 }
 
+/* 全部档隐藏月份导航：本规则写了 display:flex，hidden 属性会被盖掉，
+   必须补 [hidden] 规则（0.1.53 的教训，别再犯第三次）。 */
+.footprint-month[hidden] {
+    display: none;
+}
+
+.footprint-range {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    margin: 12px 0 4px;
+}
+
+.footprint-range button {
+    border: 1px solid var(--hairline);
+    border-radius: 999px;
+    background: var(--surface-1);
+    color: var(--text-3);
+    padding: 6px 18px;
+}
+
+.footprint-range button.is-active {
+    background: var(--accent-soft);
+    border-color: var(--accent-line);
+    color: var(--accent);
+    font-weight: 600;
+}
+
 .footprint-month-label {
     font-size: 16px;
     font-weight: 600;
