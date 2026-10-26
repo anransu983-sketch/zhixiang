@@ -899,6 +899,13 @@ body {
     box-sizing: border-box;
 }
 
+/* 返回钮靠 hidden 关页，但本规则写了 display:flex，会盖掉 UA 对 hidden
+   的 display:none——0.1.46 同款坑（那次是 track-list），这次是页本身：
+   0.1.50 加 display:flex 后返回就再没关上过页。必须补 [hidden] 规则。 */
+.player-page[hidden] {
+    display: none;
+}
+
 .player-canvas {
     position: absolute;
     inset: 0;
