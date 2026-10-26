@@ -922,9 +922,42 @@ function renderPosterWall(): HTMLElement {
     const wall = document.createElement('section');
     wall.className = 'poster-wall';
 
+    // 布局切换：海报墙 / 磁吸卡片，存在 localStorage，切换只翻 data-layout，不重渲染。
+    const storedLayout = localStorage.getItem('zx_poster_layout_v1');
+    const initialLayout = storedLayout === 'cards' ? 'cards' : 'wall';
+    wall.dataset.layout = initialLayout;
+
+    const head = document.createElement('div');
+    head.className = 'poster-wall-head';
+
     const heading = document.createElement('h2');
     heading.textContent = '海报墙';
-    wall.appendChild(heading);
+    head.appendChild(heading);
+
+    const layoutSwitch = document.createElement('div');
+    layoutSwitch.className = 'poster-layout-switch';
+    const layoutButtons = new Map<string, HTMLButtonElement>();
+    const refreshLayoutButtons = (): void => {
+        for (const [layout, button] of layoutButtons) {
+            button.classList.toggle('is-active', wall.dataset.layout === layout);
+        }
+    };
+    for (const [layout, label] of [['wall', '海报墙'], ['cards', '卡片']] as const) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'poster-layout-btn';
+        button.textContent = label;
+        button.addEventListener('click', () => {
+            wall.dataset.layout = layout;
+            localStorage.setItem('zx_poster_layout_v1', layout);
+            refreshLayoutButtons();
+        });
+        layoutButtons.set(layout, button);
+        layoutSwitch.appendChild(button);
+    }
+    refreshLayoutButtons();
+    head.appendChild(layoutSwitch);
+    wall.appendChild(head);
 
     const playNotice = document.createElement('p');
     playNotice.className = 'poster-notice';
@@ -1015,34 +1048,42 @@ function renderPosterCard(poster: Poster, playNotice: HTMLElement): HTMLElement 
         };
         coverWrap.appendChild(cover);
     }
-    card.appendChild(coverWrap);
+    // 角标放封面左上角，标题区压在封面底部渐变上：两种布局共用同一套 DOM。
+    const badge = document.createElement('span');
+    badge.className = 'poster-badge';
+    const source = SOURCES.find((item) => item.id === poster.source);
+    badge.textContent = source ? source.label : poster.source;
+    coverWrap.appendChild(badge);
+
+    const overlay = document.createElement('div');
+    overlay.className = 'poster-overlay';
 
     const title = document.createElement('div');
     title.className = 'poster-title';
     title.textContent = poster.title;
-    card.appendChild(title);
+    overlay.appendChild(title);
 
     if (poster.subtitle) {
         const subtitle = document.createElement('div');
         subtitle.className = 'poster-subtitle';
         subtitle.textContent = poster.subtitle;
-        card.appendChild(subtitle);
+        overlay.appendChild(subtitle);
     }
 
-    const meta = document.createElement('div');
-    meta.className = 'poster-meta';
-
-    const badge = document.createElement('span');
-    badge.className = 'poster-badge';
-    const source = SOURCES.find((item) => item.id === poster.source);
-    badge.textContent = source ? source.label : poster.source;
-    meta.appendChild(badge);
-
     const count = document.createElement('span');
+    count.className = 'poster-count';
     count.textContent = `${poster.tracks.length} 首`;
-    meta.appendChild(count);
+    overlay.appendChild(count);
 
-    card.appendChild(meta);
+    coverWrap.appendChild(overlay);
+
+    // 卡片模式右下角的粉色播放圆点（纯视觉，整卡点击即播放）。
+    const playDot = document.createElement('span');
+    playDot.className = 'poster-play';
+    playDot.textContent = '▶';
+    coverWrap.appendChild(playDot);
+
+    card.appendChild(coverWrap);
 
     card.addEventListener('click', () => {
         void (async () => {

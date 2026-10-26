@@ -230,9 +230,49 @@ body {
     font-size: 14px;
 }
 
-/* 海报墙（第 6 块）：首页顶部大封面卡片，CSS grid 排布。 */
+/* 海报墙（第 6 块）：海报墙 / 磁吸卡片两种布局可切换，切换只翻 data-layout，不重渲染。
+   颜色全部走 :root 变量（--bg/--card/--border/--accent/--on-accent/--text/--muted），
+   以后主题深浅切换只需换一套变量值，这里不用动。 */
+.poster-wall-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.poster-wall-head h2 {
+    margin: 0;
+}
+
+.poster-layout-switch {
+    display: flex;
+    flex: none;
+    gap: 4px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--card);
+}
+
+.poster-layout-btn {
+    padding: 4px 14px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.poster-layout-btn.is-active {
+    background: var(--accent);
+    color: var(--on-accent);
+}
+
 .poster-section + .poster-section {
-    margin-top: 8px;
+    margin-top: 20px;
 }
 
 .poster-section h3 {
@@ -243,12 +283,14 @@ body {
 
 .poster-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-    gap: 12px;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
 }
 
 .poster-card {
-    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    padding: 0;
     border: 1px solid var(--border);
     border-radius: var(--radius-card);
     background: var(--card);
@@ -256,6 +298,7 @@ body {
     font: inherit;
     text-align: left;
     cursor: pointer;
+    overflow: hidden;
 }
 
 .poster-card.is-playing {
@@ -265,8 +308,9 @@ body {
 
 .poster-cover-wrap {
     position: relative;
-    aspect-ratio: 1 / 1;
-    border-radius: var(--radius-cover);
+    flex: 1;
+    min-height: 0;
+    aspect-ratio: 3 / 4;
     overflow: hidden;
 }
 
@@ -284,46 +328,110 @@ body {
     object-fit: cover;
 }
 
+/* 角标：左上角实色粉 pill，盖在封面上。 */
+.poster-badge {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 2;
+    padding: 2px 10px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--on-accent);
+    font-size: 12px;
+}
+
+/* 底部渐变上的标题区：标题白字、副标题与曲目数浅灰，单行截断。 */
+.poster-overlay {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 1;
+    padding: 28px 12px 12px;
+    background: linear-gradient(to top, rgba(0, 0, 0, 0.75), transparent);
+    color: #fafafa;
+}
+
 .poster-title {
-    margin-top: 10px;
+    font-size: 15px;
+    font-weight: 700;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
 .poster-subtitle {
-    margin-top: 4px;
-    color: var(--muted);
+    margin-top: 2px;
+    color: rgba(250, 250, 250, 0.75);
     font-size: 13px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-.poster-meta {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-top: 8px;
-    color: var(--muted);
-    font-size: 13px;
-}
-
-.poster-badge {
-    flex: none;
-    padding: 2px 10px;
-    border-radius: 999px;
-    background: rgba(232, 160, 191, 0.18);
-    color: var(--text);
+.poster-count {
+    display: block;
+    margin-top: 2px;
+    color: rgba(250, 250, 250, 0.6);
     font-size: 12px;
 }
 
-/* 海报卡片里的曲目数没有 class：窄卡片上必须能缩，不许撑出卡片。 */
-.poster-meta span:not(.poster-badge) {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+.poster-play {
+    display: none;
+}
+
+/* 海报墙模式：首张跨两行当大海报，其余叠放；竖版封面全幅出血。
+   单张海报的区没有第二行可跨，min-height 兜底不让大海报塌掉。 */
+.poster-wall[data-layout="wall"] .poster-card:first-child {
+    grid-row: span 2;
+}
+
+.poster-wall[data-layout="wall"] .poster-card:first-child .poster-cover-wrap {
+    aspect-ratio: auto;
+    height: 100%;
+    min-height: 300px;
+}
+
+/* 磁吸卡片模式：每区一张独立卡片模块、间距拉开；卡内 2 列横版小卡，
+   右下角粉色播放圆点（仅视觉，整卡点击即播放）。 */
+.poster-wall[data-layout="cards"] .poster-section {
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    background: var(--card);
+}
+
+.poster-wall[data-layout="cards"] .poster-section h3 {
+    margin-top: 0;
+}
+
+.poster-wall[data-layout="cards"] .poster-grid {
+    gap: 12px;
+}
+
+.poster-wall[data-layout="cards"] .poster-cover-wrap {
+    aspect-ratio: 4 / 3;
+}
+
+.poster-wall[data-layout="cards"] .poster-overlay {
+    padding-right: 48px;
+}
+
+.poster-wall[data-layout="cards"] .poster-play {
+    display: flex;
+    position: absolute;
+    right: 10px;
+    bottom: 10px;
+    z-index: 2;
+    width: 32px;
+    height: 32px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--on-accent);
+    font-size: 13px;
 }
 
 .poster-notice {
