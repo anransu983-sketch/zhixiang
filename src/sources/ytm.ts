@@ -523,6 +523,8 @@ async function tryPlayerClient(
         console.log(`[Ytm] ${client.name} 不可用：请求失败`);
         return { stream: null, loginRequired: false, responded: false, responseVisitorData: null };
     }
+    // 网络实情：只记协议/TLS/头名，不记任何值；门失败时也有响应，照样记。
+    console.log(`[Ytm] 网络实情：${client.name} 协议 ${response.networkProtocol ?? '?'} / TLS ${response.tlsVersion ?? '?'} ${response.tlsCipher ?? ''} / 发头 [${(response.requestHeaderNames ?? []).join(',')}] / 收头 [${(response.responseHeaderNames ?? []).join(',')}]`);
     if (response.status !== 200) {
         console.log(`[Ytm] ${client.name} 不可用：状态 ${response.status}`);
         return { stream: null, loginRequired: false, responded: true, responseVisitorData: null };

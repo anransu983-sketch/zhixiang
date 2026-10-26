@@ -19,6 +19,7 @@ import java.util.List;
 
 import okhttp3.Call;
 import okhttp3.Callback;
+import okhttp3.Handshake;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -158,6 +159,16 @@ public class HttpBridgePlugin extends Plugin {
                         result.put("status", status);
                         result.put("body", text);
                         result.put("setCookies", setCookies);
+                        // 网络实情（只记协议/TLS/头名，不记任何头值与正文）：
+                        // 源码对不上的差只能在线上看，下一版照着实情改。
+                        result.put("networkProtocol", res.protocol().toString());
+                        Handshake handshake = res.handshake();
+                        if (handshake != null) {
+                            result.put("tlsVersion", handshake.tlsVersion().toString());
+                            result.put("tlsCipher", handshake.cipherSuite().toString());
+                        }
+                        result.put("requestHeaderNames", new ArrayList<>(res.request().headers().names()));
+                        result.put("responseHeaderNames", new ArrayList<>(res.headers().names()));
                         call.resolve(result);
                     } catch (ResponseTooLargeException e) {
                         call.reject("响应体过大，请求被中断", "RESPONSE_TOO_LARGE", e);

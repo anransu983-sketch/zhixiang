@@ -14,6 +14,12 @@ export interface HttpResponse {
     body: string;
     // 原生侧回传的 Set-Cookie（登录流程拿凭证的兜底）；普通请求不用理会。
     setCookies?: string[];
+    // 网络实情（原生侧回传）：协议、TLS 版本/套件、收发头名；只含名不含值。
+    networkProtocol?: string;
+    tlsVersion?: string;
+    tlsCipher?: string;
+    requestHeaderNames?: string[];
+    responseHeaderNames?: string[];
 }
 
 interface HttpBridgePlugin {
