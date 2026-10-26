@@ -287,6 +287,13 @@ body {
     color: var(--err);
 }
 
+/* hidden 必须赢：作者样式的 display 会盖掉 UA 给 [hidden] 的 display:none，
+   0.1.45 本地藏歌就是这么失效的（grid 顶掉了 hidden）。 */
+.track-list[hidden],
+.np-cover-placeholder[hidden] {
+    display: none;
+}
+
 .track-list-toolbar {
     display: flex;
     justify-content: flex-end;
