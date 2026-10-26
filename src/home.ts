@@ -3,6 +3,7 @@
 
 import { getCurrentState, next, onTimeUpdate, onTrackChange, playQueue, previous, runYtmUpstreamExperiment, togglePlay } from './playback';
 import { openPlayerPage } from './player';
+import { openFootprintPage } from './footprint';
 import type { PlaybackState } from './playback';
 import {
     POSTER_SECTIONS,
@@ -263,6 +264,7 @@ export function renderHome(): HTMLElement {
             heading.textContent = '我的';
             page.appendChild(heading);
             page.appendChild(renderLoginArea());
+            page.appendChild(renderFootprintEntry());
             page.appendChild(renderDeveloperSection());
             const record: TabPage = { page };
             pages.set(tabId, record);
@@ -768,6 +770,30 @@ function renderDeveloperSection(): HTMLElement {
 
 // 登录区（网易云扫码 + YTM 原生登录）：两处入口放同一区，登录后显示账号标识
 // 与退出登录；未登录时一切如旧，登录只影响对应音源。
+// 音乐足迹入口（0.1.54）：放登录区与开发者区之间，点开足迹页。
+function renderFootprintEntry(): HTMLElement {
+    const entry = document.createElement('button');
+    entry.type = 'button';
+    entry.className = 'footprint-entry';
+    const main = document.createElement('span');
+    main.className = 'footprint-entry-main';
+    const titleText = document.createElement('span');
+    titleText.className = 'footprint-entry-title';
+    titleText.textContent = '音乐足迹';
+    const sub = document.createElement('span');
+    sub.className = 'footprint-entry-sub';
+    sub.textContent = '收听时长 · 唱片墙 · TOP 歌曲';
+    main.append(titleText, sub);
+    const chev = document.createElement('span');
+    chev.className = 'footprint-entry-chev';
+    chev.textContent = '›';
+    entry.append(main, chev);
+    entry.addEventListener('click', () => {
+        openFootprintPage();
+    });
+    return entry;
+}
+
 function renderLoginArea(): HTMLElement {
     const area = document.createElement('section');
     area.className = 'login-area';
