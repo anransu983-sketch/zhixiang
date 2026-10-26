@@ -421,19 +421,50 @@ function buildPlayerPage(): HTMLElement {
     content.appendChild(bottomRow);
     content.appendChild(sleepPicker);
 
-    // 可折叠「视觉」区：五项开关 + 设壁纸（默认收起）。
-    const visualsButton = document.createElement('button');
-    visualsButton.type = 'button';
-    visualsButton.className = 'player-visuals-btn';
-    visualsButton.textContent = '视觉 ▾';
-    content.appendChild(visualsButton);
-
-    const toggleBox = document.createElement('div');
-    toggleBox.className = 'player-toggles';
-    toggleBox.hidden = true;
-    const toggleHeading = document.createElement('h3');
-    toggleHeading.textContent = '视觉';
-    toggleBox.appendChild(toggleHeading);
+    // 可折叠「视觉」磁吸玻璃卡：与首页开发者卡同款 mag 结构（默认收起）。
+    // padding 挂在 .mag-pad 子层，不挂 .mag-inner——收起时 0fr 轨道压不住
+    // 带 padding 的夹层，沿用 0.1.49 折叠条的教训。
+    const visualCard = document.createElement('section');
+    visualCard.className = 'visual-card mag-card';
+    let storedVisualOpen = false;
+    try {
+        storedVisualOpen = localStorage.getItem('zx.player.visualOpen') === '1';
+    } catch {
+        storedVisualOpen = false;
+    }
+    visualCard.dataset.open = String(storedVisualOpen);
+    const visualHead = document.createElement('button');
+    visualHead.type = 'button';
+    visualHead.className = 'mag-head';
+    visualHead.setAttribute('aria-expanded', String(storedVisualOpen));
+    visualHead.setAttribute('aria-controls', 'visual-body');
+    const visualTile = document.createElement('span');
+    visualTile.className = 'mag-tile';
+    visualTile.textContent = '✦';
+    const visualTitles = document.createElement('span');
+    visualTitles.className = 'mag-titles';
+    const visualTitle = document.createElement('span');
+    visualTitle.className = 'mag-title';
+    visualTitle.textContent = '视觉';
+    const visualSub = document.createElement('span');
+    visualSub.className = 'mag-sub';
+    visualTitles.append(visualTitle, visualSub);
+    const visualChev = document.createElement('span');
+    visualChev.className = 'mag-chevron';
+    visualChev.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" /></svg>';
+    visualHead.append(visualTile, visualTitles, visualChev);
+    visualCard.appendChild(visualHead);
+    const visualBody = document.createElement('div');
+    visualBody.className = 'mag-body';
+    visualBody.id = 'visual-body';
+    const visualInner = document.createElement('div');
+    visualInner.className = 'mag-inner';
+    const visualPad = document.createElement('div');
+    visualPad.className = 'mag-pad';
+    visualInner.appendChild(visualPad);
+    visualBody.appendChild(visualInner);
+    visualCard.appendChild(visualBody);
+    content.appendChild(visualCard);
     const toggleDefs: { key: keyof VisualToggles; label: string }[] = [
         { key: 'rain', label: '雨滴玻璃（默认开）' },
         { key: 'particles', label: '粒子舞台' },
@@ -455,26 +486,26 @@ function buildPlayerPage(): HTMLElement {
             void pushWallpaperState();
         });
         label.append(box, document.createTextNode(def.label));
-        toggleBox.appendChild(label);
+        visualPad.appendChild(label);
     }
 
     const degradedNote = document.createElement('p');
-    degradedNote.className = 'player-note';
+    degradedNote.className = 'player-note visual-degraded';
     degradedNote.hidden = true;
     degradedNote.textContent =
         '频谱不可用：粒子与脉动当前为氛围降级模式，不跟随真实频谱。';
-    toggleBox.appendChild(degradedNote);
+    visualPad.appendChild(degradedNote);
 
     const wallpaperButton = document.createElement('button');
     wallpaperButton.type = 'button';
     wallpaperButton.className = 'player-wallpaper-btn';
     wallpaperButton.textContent = '设为系统壁纸';
-    toggleBox.appendChild(wallpaperButton);
+    visualPad.appendChild(wallpaperButton);
 
     const wallpaperNotice = document.createElement('p');
     wallpaperNotice.className = 'player-note';
     wallpaperNotice.hidden = true;
-    toggleBox.appendChild(wallpaperNotice);
+    visualPad.appendChild(wallpaperNotice);
 
     wallpaperButton.addEventListener('click', () => {
         wallpaperNotice.hidden = true;
@@ -488,12 +519,36 @@ function buildPlayerPage(): HTMLElement {
                 wallpaperNotice.hidden = false;
             });
     });
-    content.appendChild(toggleBox);
-
-    visualsButton.addEventListener('click', () => {
-        toggleBox.hidden = !toggleBox.hidden;
-        visualsButton.textContent = toggleBox.hidden ? '视觉 ▾' : '视觉 ▴';
+    const updateVisualSub = (): void => {
+        const n = Object.values(toggles).filter(Boolean).length;
+        visualSub.textContent = n > 0 ? `已开 ${n} 项` : '全部关闭';
+    };
+    const setVisualOpen = (open: boolean, persist = true): void => {
+        visualCard.dataset.open = String(open);
+        visualHead.setAttribute('aria-expanded', String(open));
+        visualBody.toggleAttribute('inert', !open);
+        if (persist) {
+            try {
+                localStorage.setItem('zx.player.visualOpen', open ? '1' : '0');
+            } catch {
+                // 忽略。
+            }
+        }
+        if (open) {
+            window.setTimeout(() => {
+                visualCard.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }, 280);
+        }
+    };
+    visualHead.addEventListener('click', () => {
+        setVisualOpen(visualCard.dataset.open !== 'true');
     });
+    // 开关自己的 change 先跑（目标阶段改 toggles 并存盘），冒泡到卡身
+    // 再刷副标题，读到的就是新值；开关存盘逻辑本身不动。
+    visualPad.addEventListener('change', updateVisualSub);
+    // 首帧：dataset 在挂载前已写，无过渡；收起时 inert 防焦点进卡身。
+    visualBody.toggleAttribute('inert', !storedVisualOpen);
+    updateVisualSub();
 
     // 封面：img 一直挂着（模糊底要靠它），是否显示由 updateCoverVisibility 定；
     // 套的显隐只看有没有曲 + 词开没开，img 与占位在套里二选一，

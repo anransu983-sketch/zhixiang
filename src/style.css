@@ -1132,12 +1132,7 @@ body {
     color: var(--text);
 }
 
-.player-visuals-btn {
-    margin-top: 4px;
-    border: none;
-    background: transparent;
-    color: var(--muted);
-}
+
 
 /* 歌词卡（0.1.49）：定高，不再用 flex:1——父列是内容定高，
    flex:1 的百分比基数会被当成内容，盒子直接撑满整首词。
@@ -1278,28 +1273,80 @@ body {
     text-shadow: 0 1px 6px rgba(0, 0, 0, 0.45);
 }
 
-.player-toggles {
+/* 播放页视觉磁吸玻璃卡（0.1.52）：复用首页开发者卡的 mag 结构，
+   卡面走歌词卡同款玻璃（梅子暗底 + 白光 + 粉底 + blur 14 saturate 1.6）。
+   padding 挂在 .mag-pad 子层，不挂 .mag-inner——收起时 0fr 轨道压不住
+   带 padding 的夹层，沿用 0.1.49 折叠条的教训。磁砖与头行直接复用
+   .mag-tile / .mag-head（40px、--g-cta），只换 ✦ 字形。 */
+.visual-card {
     width: 100%;
-    padding: 12px 16px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-card);
-    background: var(--card);
-    display: grid;
-    gap: 10px;
+    border-color: rgba(255, 255, 255, 0.14);
+    background-color: rgba(30, 8, 22, 0.38);
+    background-image:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0) 50%),
+        linear-gradient(rgba(232, 160, 191, 0.14), rgba(232, 160, 191, 0.14));
+    -webkit-backdrop-filter: blur(14px) saturate(1.6);
+    backdrop-filter: blur(14px) saturate(1.6);
+    transition: box-shadow 0.26s ease-out, border-color 0.26s ease-out;
 }
 
-.player-toggles h3 {
-    margin: 0;
+.visual-card[data-open="true"] {
+    border-color: rgba(232, 160, 191, 0.35);
+    box-shadow: 0 0 0 1px var(--accent-line), var(--glow-violet);
 }
 
-.player-toggle {
+.visual-card[data-open="true"] .mag-chevron {
+    transform: rotate(180deg);
+}
+
+.visual-card[data-open="true"] .mag-body {
+    grid-template-rows: 1fr;
+}
+
+.visual-card .mag-inner {
+    padding: 0;
+}
+
+.visual-card .mag-pad {
+    padding: 4px 14px 14px;
+}
+
+.visual-card .player-toggle {
     display: flex;
-    gap: 8px;
     align-items: center;
+    gap: 12px;
+    min-height: 44px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    font-size: 15px;
 }
 
-.player-wallpaper-btn {
-    margin-top: 4px;
+.visual-card .player-toggle input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
+    accent-color: var(--accent, #e8a0bf);
+}
+
+.visual-card .visual-degraded {
+    margin-top: 10px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    border: 1px solid rgba(251, 191, 36, 0.28);
+    background: rgba(251, 191, 36, 0.10);
+    color: #fde68a;
+    font-size: 12px;
+    line-height: 18px;
+    text-align: left;
+    text-shadow: none;
+}
+
+.visual-card .player-wallpaper-btn {
+    width: 100%;
+    height: 44px;
+    margin-top: 12px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    background: rgba(255, 255, 255, 0.10);
+    color: #fff;
 }
 
 /* 登录区 */

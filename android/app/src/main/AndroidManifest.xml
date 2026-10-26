@@ -33,7 +33,21 @@
         <service
             android:name=".PlaybackService"
             android:exported="false"
-            android:foregroundServiceType="mediaPlayback" />
+            android:foregroundServiceType="mediaPlayback">
+            <!-- 耳机按键链：清单里的 MediaButtonReceiver 查到带 MEDIA_BUTTON
+                 intent-filter 的唯一服务后起服务转交按键，服务再经会话回调发给 JS。 -->
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </service>
+
+        <receiver
+            android:name="androidx.media.session.MediaButtonReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
 
         <service
             android:name=".LyricWallpaperService"
