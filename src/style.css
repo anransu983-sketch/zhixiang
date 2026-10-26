@@ -890,6 +890,13 @@ body {
     z-index: 20;
     overflow-y: auto;
     background: var(--bg);
+    /* 居中悬浮板（0.1.50，照参考图）：内容不再顶满全屏，
+       而是收进一块板里垂直居中；内容超高时 margin auto 归零，
+       照常从顶部滚，不会像 justify-content:center 那样裁顶。 */
+    display: flex;
+    flex-direction: column;
+    padding: 20px 0;
+    box-sizing: border-box;
 }
 
 .player-canvas {
@@ -901,9 +908,17 @@ body {
 
 .player-content {
     position: relative;
-    min-height: 100%;
     box-sizing: border-box;
-    padding: calc(24px + env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom));
+    /* 板宽实测约 80% 屏宽：两侧各 40px；卡在板里再缩 21px，
+       得卡约 70%，与参考图量到的 73% 一致。 */
+    width: calc(100% - 80px);
+    align-self: center;
+    margin-top: auto;
+    margin-bottom: auto;
+    padding: 20px 21px;
+    border-radius: 28px;
+    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid rgba(255, 255, 255, 0.12);
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -919,7 +934,9 @@ body {
 .player-cover-wrap {
     position: relative;
     width: 220px;
-    height: 220px;
+    /* 板内宽在窄屏上不到 280px，宽高比守住方形，免得大封面撑出板外。 */
+    aspect-ratio: 1;
+    max-width: 100%;
 }
 
 .player-cover-wrap.player-cover-large {
@@ -953,7 +970,7 @@ body {
 .player-title {
     margin: 4px 0 0;
     text-align: center;
-    font-size: 30px;
+    font-size: 24px;
     text-shadow: 0 1px 6px rgba(0, 0, 0, 0.45);
 }
 
@@ -982,17 +999,17 @@ body {
 }
 
 .player-progress-bar {
-    height: 4px;
-    border-radius: 2px;
-    background: rgba(255, 255, 255, 0.25);
+    height: 10px;
+    border-radius: 5px;
+    background: rgba(0, 0, 0, 0.45);
     overflow: hidden;
 }
 
 .player-progress-fill {
     height: 100%;
     width: 0%;
-    background: var(--accent, #e8a0bf);
-    border-radius: 2px;
+    background: #fff;
+    border-radius: 5px;
 }
 
 .player-progress-times {
@@ -1021,7 +1038,7 @@ body {
     background: transparent;
     border: none;
     color: #fff;
-    font-size: 36px;
+    font-size: 40px;
 }
 
 .player-icon-btn.is-bars {
@@ -1081,11 +1098,13 @@ body {
 
 .player-quality-badge {
     align-self: center;
-    padding: 3px 8px;
-    border: 1px solid #e8a0bf;
-    border-radius: 999px;
-    color: #e8a0bf;
+    padding: 4px 10px;
+    border: none;
+    border-radius: 8px;
+    background: rgba(232, 160, 191, 0.40);
+    color: #fff;
     font-size: 11px;
+    font-weight: 700;
     line-height: 1.4;
     white-space: nowrap;
 }
@@ -1121,11 +1140,12 @@ body {
     position: relative;
     width: 100%;
     flex: 0 0 auto;
-    border-radius: 20px;
+    border-radius: 18px;
     overflow: hidden;
-    background: rgba(232, 160, 191, 0.20);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
+    /* 上层白渐变 + 粉底（0.1.50，照参考图），saturate 提亮背后的封面。 */
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.10), transparent 45%), rgba(232, 160, 191, 0.32);
+    backdrop-filter: blur(14px) saturate(1.6);
+    -webkit-backdrop-filter: blur(14px) saturate(1.6);
 }
 
 .player-lyrics {
@@ -1135,25 +1155,32 @@ body {
     overflow-y: auto;
     overscroll-behavior: contain;
     scrollbar-width: none;
-    padding-inline: 16px;
+    padding-inline: 14px 24px;
     padding-block: calc(var(--lyric-h) / 2 - 18px);
 }
 
 /* 折叠：两行 grid 0fr/1fr 互换，与开发者磁吸卡同款套路；
-   盒子始终按全高布局，展开不用等 transitionend 就能复位滚动。 */
-.lyric-collapse,
-.lyric-bar-wrap {
+   盒子始终按全高布局，展开不用等 transitionend 就能复位滚动。
+   0.1.50：条侧改夹层——bar 定高 48px，0fr 轨道压不住它，
+   必须经无定高的 clip 裁掉；再加 visibility + 淡入，藏起的一侧
+   不进无障碍树（TS 里另有 inert 兜底）。 */
+.lyric-collapse {
     display: grid;
+    grid-template-rows: 1fr;
     transition: grid-template-rows 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
-.lyric-collapse {
-    grid-template-rows: 1fr;
+.lyric-clip {
+    min-height: 0;
+    overflow: hidden;
 }
 .lyric-bar-wrap {
+    display: grid;
     grid-template-rows: 0fr;
+    visibility: hidden;
+    pointer-events: none;
+    transition: grid-template-rows 0.28s cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s 0.28s;
 }
-.lyric-clip,
-.lyric-bar {
+.lyric-bar-clip {
     min-height: 0;
     overflow: hidden;
 }
@@ -1162,6 +1189,9 @@ body {
 }
 .lyric-card[data-folded="true"] .lyric-bar-wrap {
     grid-template-rows: 1fr;
+    visibility: visible;
+    pointer-events: auto;
+    transition: grid-template-rows 0.28s cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s 0s;
 }
 .lyric-card[data-folded="true"] .player-lyrics {
     visibility: hidden;
@@ -1175,7 +1205,14 @@ body {
     font-size: 17px;
     font-weight: 600;
     white-space: nowrap;
+    overflow: hidden;
     text-overflow: ellipsis;
+    opacity: 0;
+    transition: opacity 0.16s;
+}
+.lyric-card[data-folded="true"] .lyric-bar {
+    opacity: 1;
+    transition-delay: 0.12s;
 }
 .lyric-fold {
     position: absolute;
@@ -1194,18 +1231,19 @@ body {
     transform: rotate(180deg);
 }
 
+/* 歌词左对齐（0.1.50，参考图实测：三行左缘同 x，短行也不居中）。 */
 .player-lyric-line {
-    margin: 8px 0;
-    color: rgba(255, 255, 255, 0.65);
-    text-align: center;
-    font-size: 19px;
+    margin: 6px 0;
+    color: rgba(255, 255, 255, 0.55);
+    text-align: left;
+    font-size: 20px;
     line-height: 1.6;
 }
 
 .player-lyric-line.is-active {
     color: #fff;
     font-weight: 700;
-    font-size: 23px;
+    font-size: 22px;
 }
 
 .player-lyric-note {

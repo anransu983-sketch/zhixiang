@@ -1,6 +1,6 @@
 // 播放页（第 8 块，全新写）：全屏播放页，参考另一 App 的全屏播放页布局。
 //
-// 布局（自上而下）：返回按钮 → 定高可折叠歌词卡（默认显示）→ 歌名/歌手 →
+// 布局（自上而下，内容收进居中悬浮板）：返回按钮 → 定高可折叠歌词卡（默认显示）→ 歌名/歌手 →
 // 进度条（仅展示，不可拖动：第 5 块没有 seek 口子，不发明）→ 图标控制条 →
 // 底排（循环 / 收藏 / 睡眠定时 / 词 / 音质角标）→ 可折叠「视觉」区。
 // 歌词隐藏时中央改显示大封面；封面模糊底由第 8 块画布画（见 visuals.ts），
@@ -132,11 +132,16 @@ function buildPlayerPage(): HTMLElement {
     foldButton.type = 'button';
     foldButton.className = 'lyric-fold';
     foldButton.textContent = '⌃';
+    // 折叠条夹层（0.1.50）：bar 本身 48px 定高，0fr 轨道压不住它，
+    // 必须经一层无定高的 clip 裁掉，做法与歌词侧 clip 同款。
     const lyricBarWrap = document.createElement('div');
     lyricBarWrap.className = 'lyric-bar-wrap';
+    const lyricBarClip = document.createElement('div');
+    lyricBarClip.className = 'lyric-bar-clip';
     const lyricBar = document.createElement('div');
     lyricBar.className = 'lyric-bar';
-    lyricBarWrap.appendChild(lyricBar);
+    lyricBarClip.appendChild(lyricBar);
+    lyricBarWrap.appendChild(lyricBarClip);
     const lyricCollapse = document.createElement('div');
     lyricCollapse.className = 'lyric-collapse';
     const lyricClip = document.createElement('div');
@@ -158,6 +163,9 @@ function buildPlayerPage(): HTMLElement {
     lyricCard.dataset.folded = lyricsFolded ? 'true' : 'false';
     foldButton.setAttribute('aria-expanded', lyricsFolded ? 'false' : 'true');
     foldButton.setAttribute('aria-label', lyricsFolded ? '展开歌词' : '折叠歌词');
+    // 藏起的一侧不进无障碍树与焦点：展开时条 inert，折叠时歌词盒 inert。
+    lyricBarWrap.inert = !lyricsFolded;
+    lyricCollapse.inert = lyricsFolded;
     content.appendChild(lyricCard);
 
     // 封面套：img 与占位共用；img 一直挂着（模糊底要靠它），
@@ -207,7 +215,7 @@ function buildPlayerPage(): HTMLElement {
     const prevButton = document.createElement('button');
     prevButton.type = 'button';
     prevButton.className = 'player-icon-btn';
-    prevButton.textContent = '⏮︎';
+    prevButton.textContent = '◀︎';
     prevButton.addEventListener('click', () => {
         void previous();
     });
@@ -228,7 +236,7 @@ function buildPlayerPage(): HTMLElement {
     const nextButton = document.createElement('button');
     nextButton.type = 'button';
     nextButton.className = 'player-icon-btn';
-    nextButton.textContent = '⏭︎';
+    nextButton.textContent = '▶︎';
     nextButton.addEventListener('click', () => {
         void next();
     });
@@ -711,6 +719,8 @@ function buildPlayerPage(): HTMLElement {
     const applyFoldState = (folded: boolean, persist: boolean): void => {
         lyricsFolded = folded;
         lyricCard.dataset.folded = folded ? 'true' : 'false';
+        lyricBarWrap.inert = !folded;
+        lyricCollapse.inert = folded;
         foldButton.setAttribute('aria-expanded', folded ? 'false' : 'true');
         foldButton.setAttribute('aria-label', folded ? '展开歌词' : '折叠歌词');
         if (persist) {
