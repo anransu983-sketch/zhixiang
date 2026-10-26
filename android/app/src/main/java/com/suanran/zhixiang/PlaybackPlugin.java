@@ -35,6 +35,17 @@ public class PlaybackPlugin extends Plugin {
 
     private StreamProxyServer proxy;
 
+    /**
+     * 桥接加载时就钉住实例（0.1.56）：之前只在各方法里赋值，若桥接
+     * 重建后、下一声道同步前点了系统卡按键，静态实例还指着旧桥接，
+     * 会话回调的事件就悄悄丢了，卡上按键看着全没用。
+     */
+    @Override
+    public void load() {
+        super.load();
+        instance = this;
+    }
+
     /** 会话回调入口：服务侧调，Web 层已不在时直接丢弃。 */
     public static void emitMediaAction(String action) {
         PlaybackPlugin plugin = instance;

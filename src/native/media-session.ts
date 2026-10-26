@@ -34,8 +34,11 @@ export function initMediaSession(): void {
     started = true;
     void addMediaActionListener((action) => {
         void handleMediaAction(action);
+    }).then(() => {
+        console.log('[MediaSession] 系统按键监听已注册');
     }).catch(() => {
         // 非原生环境（浏览器预览）无此事件，忽略。
+        console.log('[MediaSession] 系统按键监听注册失败');
     });
     onTrackChange(() => {
         if (syncTimer !== null) {
@@ -91,6 +94,10 @@ async function syncMediaSession(): Promise<void> {
 async function handleMediaAction(action: string): Promise<void> {
     try {
         const state = getCurrentState();
+        // 关键诊断行（0.1.56）：卡上按键有没有走到 JS、以及系统发来的
+        // 动作与当前态是否对得上（比如点暂停却收到 play），全看这一行。
+        // 我的页 → 开发者 → 运行日志里能看到。
+        console.log(`[MediaSession] 收到系统按键：${action}（当前${state.playing ? '播放中' : '已暂停'}）`);
         if (action === 'play') {
             if (!state.playing) {
                 await resume();
