@@ -5,7 +5,8 @@ import { getCurrentState, next, onTrackChange, playQueue, previous, runYtmUpstre
 import { openPlayerPage } from './player';
 import type { PlaybackState } from './playback';
 import { POSTER_SECTIONS, friendlyPosterError } from './posters';
-import { renderShelf } from './shelf';
+import type { PosterSectionDefinition } from './posters';
+import { renderShelfLayer } from './shelf';
 import { clearLogs, copyPlainText, getLogEntries, getLogModules, getLogText, subscribeLogs, type LogEntry } from './logger';
 import { SOURCES } from './sources/index';
 import { getLocalNotice } from './sources/local';
@@ -32,7 +33,6 @@ import {
 import type { AudioSource, Poster, Track } from './types';
 
 // 第 8 块已接上：歌词动态壁纸与四项视觉都在播放页里，清单不再列它。
-const UPCOMING: string[] = [];
 
 function formatDuration(durationMs?: number): string {
     if (!durationMs || durationMs <= 0) {
@@ -83,26 +83,27 @@ function qrFailureReason(error: unknown): string {
     return '未知原因';
 }
 
+// 首页 Tab 化（0.1.42）：底部四 Tab（本地／网易云／YTM／我的），一次只看一个源，
+// 不再把所有模块沿长页摊开。每页懒挂载（首次进 Tab 时才建 DOM、才发海报与搜索请求），
+// DOM 常驻、按 Tab 存 window.scrollY 恢复；上次 Tab 存在 localStorage。
+// 迷你播放条全局常驻，不跟 Tab 走，位置在 Tab 栏上方（CSS 里算）。
+
+type HomeTabId = 'local' | 'netease' | 'ytm' | 'me';
+
+interface TabPage {
+    page: HTMLElement;
+    search?: HTMLInputElement;
+    loginChip?: HTMLButtonElement;
+    loginKind?: 'netease' | 'ytm';
+}
+
 export function renderHome(): HTMLElement {
     const section = document.createElement('section');
     section.className = 'home';
 
-    const title = document.createElement('h1');
-    title.textContent = '芷湘';
-    section.appendChild(title);
-
-    const hint = document.createElement('p');
-    hint.textContent = '全新重做版，首版功能正在一块一块接上来。';
-    section.appendChild(hint);
-
-    // 登录区放最上：网易云与 YTM 的登录入口都在这里，不藏进播放页深处。
-    section.appendChild(renderLoginArea());
-
-    // 海报墙放最上：原有正在播放条与各音源浏览区顺序保持不动。
-    section.appendChild(renderPosterWall());
-
-    // 3D 歌单架（第 7 块）：海报墙之后、正在播放条之前的一区。
-    section.appendChild(renderShelf());
+    const pagesWrap = document.createElement('div');
+    pagesWrap.className = 'tab-pages';
+    section.appendChild(pagesWrap);
 
     // 最小正在播放条：歌名、歌手、播放/暂停、上一首/下一首，样式与首页卡片一致。
     // 点一首即把该区当前列表作为队列，条上的上一首/下一首就在该队列里切。
@@ -170,26 +171,126 @@ export function renderHome(): HTMLElement {
     onTrackChange(refreshBar);
     refreshBar(getCurrentState());
 
-    for (const source of SOURCES) {
-        section.appendChild(renderSourceSection(source, status));
-    }
+    // ---- 底部四 Tab 脚手架 ----
+    const pages = new Map<HomeTabId, TabPage>();
+    const scrollTops = new Map<HomeTabId, number>();
+    const tabButtons = new Map<HomeTabId, HTMLButtonElement>();
+    let currentTab: HomeTabId = 'local';
 
-    if (UPCOMING.length > 0) {
-        const upcomingTitle = document.createElement('h2');
-        upcomingTitle.textContent = '即将接上';
-        section.appendChild(upcomingTitle);
-
-        const list = document.createElement('ul');
-        list.className = 'feature-list';
-        for (const name of UPCOMING) {
-            const item = document.createElement('li');
-            item.textContent = name;
-            list.appendChild(item);
+    function refreshLoginChip(record: TabPage): void {
+        if (!record.loginChip || !record.loginKind) {
+            return;
         }
-        section.appendChild(list);
+        const loggedIn = record.loginKind === 'netease' ? loadNeteaseSession() !== null : loadYtmSession() !== null;
+        record.loginChip.hidden = loggedIn;
     }
 
-    section.appendChild(renderDeveloperSection());
+    function mountPage(tabId: HomeTabId): TabPage {
+        if (tabId === 'me') {
+            const page = document.createElement('div');
+            page.className = 'tab-page';
+            const heading = document.createElement('h2');
+            heading.textContent = '我的';
+            page.appendChild(heading);
+            page.appendChild(renderLoginArea());
+            page.appendChild(renderDeveloperSection());
+            const record: TabPage = { page };
+            pages.set(tabId, record);
+            pagesWrap.appendChild(page);
+            return record;
+        }
+        const source = SOURCES.find((item) => item.id === tabId);
+        const definition = POSTER_SECTIONS.find((item) => item.key === tabId);
+        if (!source || !definition) {
+            throw new Error(`未知 Tab：${tabId}`);
+        }
+        const page = document.createElement('div');
+        page.className = 'tab-page';
+
+        const head = document.createElement('div');
+        head.className = 'tab-page-head';
+        const heading = document.createElement('h2');
+        heading.textContent = source.label;
+        head.appendChild(heading);
+        let loginChip: HTMLButtonElement | undefined;
+        let loginKind: 'netease' | 'ytm' | undefined;
+        if (tabId === 'netease' || tabId === 'ytm') {
+            loginKind = tabId;
+            loginChip = document.createElement('button');
+            loginChip.type = 'button';
+            loginChip.className = 'tab-login-chip';
+            loginChip.textContent = '登录';
+            loginChip.addEventListener('click', () => {
+                switchTab('me');
+            });
+            head.appendChild(loginChip);
+        }
+        page.appendChild(head);
+
+        page.appendChild(renderPosterModule(definition));
+
+        const { block, search } = renderSourceSection(source, status, (query) => {
+            // 有查询时海报区收成细条（只剩标题＋切换行），结果接管页面。
+            page.classList.toggle('has-query', query.trim().length > 0);
+        });
+        page.appendChild(block);
+
+        const record: TabPage = { page, search, loginChip, loginKind };
+        pages.set(tabId, record);
+        pagesWrap.appendChild(page);
+        return record;
+    }
+
+    function switchTab(tabId: HomeTabId): void {
+        scrollTops.set(currentTab, window.scrollY);
+        currentTab = tabId;
+        localStorage.setItem('zx_home_tab_v1', tabId);
+        let record = pages.get(tabId);
+        if (!record) {
+            record = mountPage(tabId);
+        }
+        for (const [id, other] of pages) {
+            other.page.hidden = id !== tabId;
+        }
+        refreshLoginChip(record);
+        for (const [id, button] of tabButtons) {
+            button.classList.toggle('is-active', id === tabId);
+        }
+        window.scrollTo(0, scrollTops.get(tabId) ?? 0);
+    }
+
+    const tabBar = document.createElement('nav');
+    tabBar.className = 'tab-bar';
+    const TAB_DEFS: Array<{ id: HomeTabId; label: string }> = [
+        { id: 'local', label: '本地' },
+        { id: 'netease', label: '网易云' },
+        { id: 'ytm', label: 'YTM' },
+        { id: 'me', label: '我的' }
+    ];
+    for (const def of TAB_DEFS) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'tab-btn';
+        button.textContent = def.label;
+        button.addEventListener('click', () => {
+            if (def.id === currentTab) {
+                // 再点当前 Tab：回顶并聚焦搜索框（我的页没有搜索框，只回顶）。
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+                pages.get(def.id)?.search?.focus();
+                return;
+            }
+            switchTab(def.id);
+        });
+        tabButtons.set(def.id, button);
+        tabBar.appendChild(button);
+    }
+    section.appendChild(tabBar);
+
+    // 初始 Tab：上次停留的页，没有则本地页；只挂载这一页，其余首次进入时再挂。
+    const storedTab = localStorage.getItem('zx_home_tab_v1');
+    const initialTab: HomeTabId =
+        storedTab === 'netease' || storedTab === 'ytm' || storedTab === 'me' ? storedTab : 'local';
+    switchTab(initialTab);
 
     return section;
 }
@@ -918,51 +1019,91 @@ function renderYtmLoginBlock(): HTMLElement {
     return box;
 }
 
-function renderPosterWall(): HTMLElement {
-    const wall = document.createElement('section');
-    wall.className = 'poster-wall';
+// 海报模块（0.1.42）：每源页只放本源那一组海报，不再三组摊开。
+// 海报模式（海报墙／卡片／3D 架）是全局值，存在 zx_poster_layout_v1，
+// 各页模块共用，任何一页切换都同步到已挂载的全部模块；切换只翻 data-layout，不重渲染。
+// 颜色全部走 :root 变量，以后主题深浅切换只需换一套变量值，这里不用动。
 
-    // 布局切换：海报墙 / 磁吸卡片，存在 localStorage，切换只翻 data-layout，不重渲染。
-    const storedLayout = localStorage.getItem('zx_poster_layout_v1');
-    const initialLayout = storedLayout === 'cards' ? 'cards' : 'wall';
-    wall.dataset.layout = initialLayout;
+type PosterLayout = 'wall' | 'cards' | 'shelf';
+
+const POSTER_LAYOUT_KEY = 'zx_poster_layout_v1';
+
+const POSTER_LAYOUTS: Array<{ id: PosterLayout; label: string }> = [
+    { id: 'wall', label: '海报墙' },
+    { id: 'cards', label: '卡片' },
+    { id: 'shelf', label: '3D 架' }
+];
+
+function loadPosterLayout(): PosterLayout {
+    const stored = localStorage.getItem(POSTER_LAYOUT_KEY);
+    return stored === 'cards' || stored === 'shelf' ? stored : 'wall';
+}
+
+let currentPosterLayout: PosterLayout = loadPosterLayout();
+const posterModules = new Set<HTMLElement>();
+const posterLayoutButtons: HTMLButtonElement[] = [];
+
+function applyPosterLayout(layout: PosterLayout): void {
+    currentPosterLayout = layout;
+    localStorage.setItem(POSTER_LAYOUT_KEY, layout);
+    for (const module of posterModules) {
+        module.dataset.layout = layout;
+    }
+    for (const button of posterLayoutButtons) {
+        button.classList.toggle('is-active', button.dataset.layout === layout);
+    }
+}
+
+function renderPosterModule(definition: PosterSectionDefinition): HTMLElement {
+    const module = document.createElement('section');
+    module.className = 'poster-module';
+    module.dataset.layout = currentPosterLayout;
+    posterModules.add(module);
 
     const head = document.createElement('div');
-    head.className = 'poster-wall-head';
-
-    const heading = document.createElement('h2');
-    heading.textContent = '海报墙';
-    head.appendChild(heading);
+    head.className = 'poster-module-head';
+    const label = document.createElement('h3');
+    label.textContent = definition.label;
+    head.appendChild(label);
 
     const layoutSwitch = document.createElement('div');
     layoutSwitch.className = 'poster-layout-switch';
-    const layoutButtons = new Map<string, HTMLButtonElement>();
-    const refreshLayoutButtons = (): void => {
-        for (const [layout, button] of layoutButtons) {
-            button.classList.toggle('is-active', wall.dataset.layout === layout);
-        }
-    };
-    for (const [layout, label] of [['wall', '海报墙'], ['cards', '卡片']] as const) {
+    for (const layout of POSTER_LAYOUTS) {
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'poster-layout-btn';
-        button.textContent = label;
+        button.dataset.layout = layout.id;
+        button.textContent = layout.label;
+        button.classList.toggle('is-active', layout.id === currentPosterLayout);
         button.addEventListener('click', () => {
-            wall.dataset.layout = layout;
-            localStorage.setItem('zx_poster_layout_v1', layout);
-            refreshLayoutButtons();
+            applyPosterLayout(layout.id);
         });
-        layoutButtons.set(layout, button);
+        posterLayoutButtons.push(button);
         layoutSwitch.appendChild(button);
     }
-    refreshLayoutButtons();
     head.appendChild(layoutSwitch);
-    wall.appendChild(head);
+    module.appendChild(head);
 
     const playNotice = document.createElement('p');
     playNotice.className = 'poster-notice';
     playNotice.hidden = true;
-    wall.appendChild(playNotice);
+    module.appendChild(playNotice);
+
+    const grid = document.createElement('div');
+    grid.className = 'poster-grid';
+    module.appendChild(grid);
+
+    // 3D 架形态：同一路数据走共享缓存，与海报墙形态只发一次请求；
+    // 层标题不画，由模块头统一展示。
+    const shelfWrap = document.createElement('div');
+    shelfWrap.className = 'poster-shelf-wrap';
+    shelfWrap.appendChild(renderShelfLayer(definition, playNotice, false));
+    module.appendChild(shelfWrap);
+
+    const notice = document.createElement('p');
+    notice.className = 'poster-notice';
+    notice.textContent = '正在加载…';
+    module.appendChild(notice);
 
     const cards = new Map<string, HTMLElement>();
     const postersById = new Map<string, Poster>();
@@ -980,51 +1121,31 @@ function renderPosterWall(): HTMLElement {
     onTrackChange(refreshHighlight);
     refreshHighlight(getCurrentState());
 
-    for (const definition of POSTER_SECTIONS) {
-        const block = document.createElement('div');
-        block.className = 'poster-section';
+    void (async () => {
+        let posters: Poster[];
+        try {
+            posters = await definition.load();
+        } catch (error) {
+            const reason = friendlyPosterError(definition, error);
+            console.warn(`[Poster] ${definition.label} 加载失败：${reason}`);
+            notice.textContent = reason;
+            return;
+        }
+        if (posters.length === 0) {
+            notice.textContent = definition.emptyNotice;
+            return;
+        }
+        notice.hidden = true;
+        for (const poster of posters) {
+            postersById.set(poster.id, poster);
+            const card = renderPosterCard(poster, playNotice);
+            cards.set(poster.id, card);
+            grid.appendChild(card);
+        }
+        refreshHighlight(getCurrentState());
+    })();
 
-        const label = document.createElement('h3');
-        label.textContent = definition.label;
-        block.appendChild(label);
-
-        const grid = document.createElement('div');
-        grid.className = 'poster-grid';
-        block.appendChild(grid);
-
-        const notice = document.createElement('p');
-        notice.className = 'poster-notice';
-        notice.textContent = '正在加载…';
-        block.appendChild(notice);
-
-        void (async () => {
-            let posters: Poster[];
-            try {
-                posters = await definition.load();
-            } catch (error) {
-                const reason = friendlyPosterError(definition, error);
-                console.warn(`[Poster] ${definition.label} 加载失败：${reason}`);
-                notice.textContent = reason;
-                return;
-            }
-            if (posters.length === 0) {
-                notice.textContent = definition.emptyNotice;
-                return;
-            }
-            notice.hidden = true;
-            for (const poster of posters) {
-                postersById.set(poster.id, poster);
-                const card = renderPosterCard(poster, playNotice);
-                cards.set(poster.id, card);
-                grid.appendChild(card);
-            }
-            refreshHighlight(getCurrentState());
-        })();
-
-        wall.appendChild(block);
-    }
-
-    return wall;
+    return module;
 }
 
 function renderPosterCard(poster: Poster, playNotice: HTMLElement): HTMLElement {
@@ -1100,19 +1221,24 @@ function renderPosterCard(poster: Poster, playNotice: HTMLElement): HTMLElement 
     return card;
 }
 
-function renderSourceSection(source: AudioSource, status: HTMLElement): HTMLElement {
+// 音源区（0.1.42）：页头由 Tab 页自己画，这里只出吸顶搜索＋提示＋歌曲行；
+// onQuery 供 Tab 页在有查询时把海报区收成细条。返回搜索框给 Tab 再点回顶时聚焦。
+function renderSourceSection(
+    source: AudioSource,
+    status: HTMLElement,
+    onQuery: (query: string) => void
+): { block: HTMLElement; search: HTMLInputElement } {
     const block = document.createElement('div');
     block.className = 'source-section';
 
-    const heading = document.createElement('h2');
-    heading.textContent = source.label;
-    block.appendChild(heading);
-
+    const searchWrap = document.createElement('div');
+    searchWrap.className = 'source-search-wrap';
     const search = document.createElement('input');
     search.type = 'search';
     search.placeholder = `在${source.label}里搜索歌曲、歌手或专辑`;
     search.className = 'source-search';
-    block.appendChild(search);
+    searchWrap.appendChild(search);
+    block.appendChild(searchWrap);
 
     const notice = document.createElement('p');
     notice.className = 'source-notice';
@@ -1156,11 +1282,12 @@ function renderSourceSection(source: AudioSource, status: HTMLElement): HTMLElem
     };
 
     search.addEventListener('input', () => {
+        onQuery(search.value);
         void refresh(search.value);
     });
     void refresh('');
 
-    return block;
+    return { block, search };
 }
 
 function renderTracks(list: HTMLElement, tracks: Track[], status: HTMLElement): void {

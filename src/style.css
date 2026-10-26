@@ -14,6 +14,8 @@
     --radius-cover: 14px;
     --radius-input: 14px;
     --section-gap: 32px;
+    --nav-h: 60px;
+    --np-h: 64px;
     --font-sans: system-ui, -apple-system, "PingFang SC", "HarmonyOS Sans SC", "Noto Sans SC",
         "Source Han Sans SC", "Microsoft YaHei", "Hiragino Sans GB", sans-serif;
 }
@@ -38,7 +40,7 @@ body {
 /* 底部留出悬浮迷你播放条的位置，避免盖住最后一区。 */
 #app {
     min-height: 100%;
-    padding: calc(24px + env(safe-area-inset-top)) 16px calc(112px + env(safe-area-inset-bottom));
+    padding: calc(24px + env(safe-area-inset-top)) 16px calc(var(--nav-h) + var(--np-h) + 32px + env(safe-area-inset-bottom));
 }
 
 /* 区块间距统一：首页直接子元素之间一律 var(--section-gap)。 */
@@ -89,7 +91,7 @@ body {
     position: fixed;
     left: 12px;
     right: 12px;
-    bottom: calc(12px + env(safe-area-inset-bottom));
+    bottom: calc(var(--nav-h) + 12px + env(safe-area-inset-bottom));
     z-index: 10;
     margin: 0;
     display: flex;
@@ -148,6 +150,15 @@ body {
         flex: 1 1 100%;
         justify-content: center;
     }
+}
+
+.source-search-wrap {
+    position: sticky;
+    top: env(safe-area-inset-top);
+    z-index: 5;
+    margin: 0 -16px;
+    padding: 8px 16px;
+    background: var(--bg);
 }
 
 .source-search {
@@ -230,10 +241,10 @@ body {
     font-size: 14px;
 }
 
-/* 海报墙（第 6 块）：海报墙 / 磁吸卡片两种布局可切换，切换只翻 data-layout，不重渲染。
+/* 海报模块（第 6 块）：海报墙 / 磁吸卡片 / 3D 架三种形态可切换，切换只翻 data-layout，不重渲染。
    颜色全部走 :root 变量（--bg/--card/--border/--accent/--on-accent/--text/--muted），
    以后主题深浅切换只需换一套变量值，这里不用动。 */
-.poster-wall-head {
+.poster-module-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -241,8 +252,10 @@ body {
     margin-bottom: 12px;
 }
 
-.poster-wall-head h2 {
+.poster-module-head h3 {
     margin: 0;
+    font-size: 16px;
+    color: var(--muted);
 }
 
 .poster-layout-switch {
@@ -269,16 +282,6 @@ body {
 .poster-layout-btn.is-active {
     background: var(--accent);
     color: var(--on-accent);
-}
-
-.poster-section + .poster-section {
-    margin-top: 20px;
-}
-
-.poster-section h3 {
-    margin: 16px 0 12px;
-    font-size: 16px;
-    color: var(--muted);
 }
 
 .poster-grid {
@@ -383,11 +386,11 @@ body {
 
 /* 海报墙模式：首张跨两行当大海报，其余叠放；竖版封面全幅出血。
    单张海报的区没有第二行可跨，min-height 兜底不让大海报塌掉。 */
-.poster-wall[data-layout="wall"] .poster-card:first-child {
+.poster-module[data-layout="wall"] .poster-card:first-child {
     grid-row: span 2;
 }
 
-.poster-wall[data-layout="wall"] .poster-card:first-child .poster-cover-wrap {
+.poster-module[data-layout="wall"] .poster-card:first-child .poster-cover-wrap {
     aspect-ratio: auto;
     height: 100%;
     min-height: 300px;
@@ -395,30 +398,26 @@ body {
 
 /* 磁吸卡片模式：每区一张独立卡片模块、间距拉开；卡内 2 列横版小卡，
    右下角粉色播放圆点（仅视觉，整卡点击即播放）。 */
-.poster-wall[data-layout="cards"] .poster-section {
+.poster-module[data-layout="cards"] {
     padding: 16px;
     border: 1px solid var(--border);
     border-radius: var(--radius-card);
     background: var(--card);
 }
 
-.poster-wall[data-layout="cards"] .poster-section h3 {
-    margin-top: 0;
-}
-
-.poster-wall[data-layout="cards"] .poster-grid {
+.poster-module[data-layout="cards"] .poster-grid {
     gap: 12px;
 }
 
-.poster-wall[data-layout="cards"] .poster-cover-wrap {
+.poster-module[data-layout="cards"] .poster-cover-wrap {
     aspect-ratio: 4 / 3;
 }
 
-.poster-wall[data-layout="cards"] .poster-overlay {
+.poster-module[data-layout="cards"] .poster-overlay {
     padding-right: 48px;
 }
 
-.poster-wall[data-layout="cards"] .poster-play {
+.poster-module[data-layout="cards"] .poster-play {
     display: flex;
     position: absolute;
     right: 10px;
@@ -434,9 +433,87 @@ body {
     font-size: 13px;
 }
 
+.poster-module[data-layout="shelf"] .poster-grid {
+    display: none;
+}
+
+.poster-module:not([data-layout="shelf"]) .poster-shelf-wrap {
+    display: none;
+}
+
+.tab-page.has-query .poster-grid,
+.tab-page.has-query .poster-shelf-wrap {
+    display: none;
+}
+
 .poster-notice {
     margin: 12px 0 0;
     color: var(--warn);
+}
+
+/* 底部四 Tab（0.1.42）：一次只看一个源；页内区块间距 20px，不再沿长页摊开。 */
+.tab-page[hidden] {
+    display: none;
+}
+
+.tab-page > * + * {
+    margin-top: 20px;
+}
+
+.tab-page-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.tab-page-head h2 {
+    margin: 0;
+}
+
+.tab-login-chip {
+    flex: none;
+    padding: 6px 16px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--on-accent);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.tab-bar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 11;
+    display: flex;
+    gap: 4px;
+    padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--border);
+    background: rgba(24, 24, 27, 0.92);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    backdrop-filter: blur(16px) saturate(140%);
+}
+
+.tab-btn {
+    flex: 1;
+    padding: 8px 0;
+    border: 0;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.tab-btn.is-active {
+    background: rgba(232, 160, 191, 0.18);
+    color: var(--accent);
+    font-weight: 700;
 }
 
 /* 3D 歌单架（第 7 块）：纯 CSS 3D 多层架子，不用图片素材做架子。

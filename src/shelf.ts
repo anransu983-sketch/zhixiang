@@ -1,8 +1,7 @@
-// 3D 歌单架（第 7 块，全新写）：首页内的一区，放在海报墙之后。
+// 3D 歌单架形态（全新写）：海报模块三种形态之一，不再是首页内单独的一区。
 // 内容就是海报墙那三路歌单（本地专辑、网易云榜单、YTM 热门专辑），
-// 按路分层摆，不另造数据、不另发请求：直接复用 posters.ts 的
-// POSTER_SECTIONS 加载函数，那里已有成功结果共享缓存，海报墙与
-// 歌单架调用同一路时只发一次请求。
+// 每页只摆本页那一路，不另造数据、不另发请求：直接复用 posters.ts 的
+// 加载函数，那里已有成功结果共享缓存，海报墙形态与 3D 架形态调用同一路时只发一次请求。
 // 形态只用 CSS 3D（perspective + rotateY），不引入 WebGL 或新依赖，
 // 不做拖拽旋转、陀螺仪与复杂动画，只给整体一个轻微倾角。
 // 交互：横向滑动浏览（overflow-x 滚动，移动端手势优先）；
@@ -12,7 +11,8 @@
 
 import { getCurrentState, onTrackChange, playQueue } from './playback';
 import type { PlaybackState } from './playback';
-import { POSTER_SECTIONS, friendlyPosterError } from './posters';
+import { friendlyPosterError } from './posters';
+import type { PosterSectionDefinition } from './posters';
 import type { Poster } from './types';
 
 function friendlyPlayError(error: unknown): string {
@@ -23,23 +23,47 @@ function friendlyPlayError(error: unknown): string {
     return '播放失败，请确认文件仍在且已授予读取音频文件的权限。';
 }
 
-export function renderShelf(): HTMLElement {
-    const shelf = document.createElement('section');
-    shelf.className = 'shelf';
+// 单层 3D 架：只渲染一路歌单（本地专辑／网易云榜单／YTM 热门专辑之一），
+// 供首页海报模块的 3D 架形态复用；数据仍走 posters.ts 的共享缓存，
+// 与海报墙形态调用同一路时只发一次请求。withLabel 为 false 时不画层标题，
+// 由海报模块自己的头（标题＋三向切换）统一展示。
+export function renderShelfLayer(
+    definition: PosterSectionDefinition,
+    playNotice: HTMLElement,
+    withLabel = true
+): HTMLElement {
+    const layer = document.createElement('div');
+    layer.className = 'shelf-layer';
 
-    const heading = document.createElement('h2');
-    heading.textContent = '3D 歌单架';
-    shelf.appendChild(heading);
+    if (withLabel) {
+        const label = document.createElement('h3');
+        label.textContent = definition.label;
+        layer.appendChild(label);
+    }
 
-    const hint = document.createElement('p');
-    hint.className = 'shelf-hint';
-    hint.textContent = '横向滑动浏览，点击一张歌单从第一首开始播放。';
-    shelf.appendChild(hint);
+    const scroll = document.createElement('div');
+    scroll.className = 'shelf-scroll';
+    layer.appendChild(scroll);
 
-    const playNotice = document.createElement('p');
-    playNotice.className = 'shelf-notice';
-    playNotice.hidden = true;
-    shelf.appendChild(playNotice);
+    // 内层随内容撑宽，架板宽度跟整排歌单走，不只跟屏幕宽走。
+    const viewport = document.createElement('div');
+    viewport.className = 'shelf-viewport';
+    scroll.appendChild(viewport);
+
+    const stage = document.createElement('div');
+    stage.className = 'shelf-stage';
+    viewport.appendChild(stage);
+
+    // 底部架板：纯 CSS 的一根板子，不用图片素材。
+    const board = document.createElement('div');
+    board.className = 'shelf-board';
+    board.hidden = true;
+    viewport.appendChild(board);
+
+    const notice = document.createElement('p');
+    notice.className = 'shelf-notice';
+    notice.textContent = '正在加载…';
+    layer.appendChild(notice);
 
     const records = new Map<string, HTMLElement>();
     const postersById = new Map<string, Poster>();
@@ -57,65 +81,30 @@ export function renderShelf(): HTMLElement {
     onTrackChange(refreshHighlight);
     refreshHighlight(getCurrentState());
 
-    for (const definition of POSTER_SECTIONS) {
-        const layer = document.createElement('div');
-        layer.className = 'shelf-layer';
+    void (async () => {
+        let posters: Poster[];
+        try {
+            posters = await definition.load();
+        } catch (error) {
+            notice.textContent = friendlyPosterError(definition, error);
+            return;
+        }
+        if (posters.length === 0) {
+            notice.textContent = definition.emptyNotice;
+            return;
+        }
+        notice.hidden = true;
+        for (const poster of posters) {
+            postersById.set(poster.id, poster);
+            const record = renderShelfRecord(poster, playNotice);
+            records.set(poster.id, record);
+            stage.appendChild(record);
+        }
+        board.hidden = false;
+        refreshHighlight(getCurrentState());
+    })();
 
-        const label = document.createElement('h3');
-        label.textContent = definition.label;
-        layer.appendChild(label);
-
-        const scroll = document.createElement('div');
-        scroll.className = 'shelf-scroll';
-        layer.appendChild(scroll);
-
-        // 内层随内容撑宽，架板宽度跟整排歌单走，不只跟屏幕宽走。
-        const viewport = document.createElement('div');
-        viewport.className = 'shelf-viewport';
-        scroll.appendChild(viewport);
-
-        const stage = document.createElement('div');
-        stage.className = 'shelf-stage';
-        viewport.appendChild(stage);
-
-        // 底部架板：纯 CSS 的一根板子，不用图片素材。
-        const board = document.createElement('div');
-        board.className = 'shelf-board';
-        board.hidden = true;
-        viewport.appendChild(board);
-
-        const notice = document.createElement('p');
-        notice.className = 'shelf-notice';
-        notice.textContent = '正在加载…';
-        layer.appendChild(notice);
-
-        void (async () => {
-            let posters: Poster[];
-            try {
-                posters = await definition.load();
-            } catch (error) {
-                notice.textContent = friendlyPosterError(definition, error);
-                return;
-            }
-            if (posters.length === 0) {
-                notice.textContent = definition.emptyNotice;
-                return;
-            }
-            notice.hidden = true;
-            for (const poster of posters) {
-                postersById.set(poster.id, poster);
-                const record = renderShelfRecord(poster, playNotice);
-                records.set(poster.id, record);
-                stage.appendChild(record);
-            }
-            board.hidden = false;
-            refreshHighlight(getCurrentState());
-        })();
-
-        shelf.appendChild(layer);
-    }
-
-    return shelf;
+    return layer;
 }
 
 function renderShelfRecord(poster: Poster, playNotice: HTMLElement): HTMLElement {
