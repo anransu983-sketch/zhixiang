@@ -199,6 +199,17 @@ export function sapisidHash(cookie: string): string | null {
 }
 
 // 有会话时补 Cookie 与同源 UA；无会话时原样返回，不动匿名请求。
+// cookie 里 SAPISID（或 __Secure-3PAPISID）条数：www＋music 两域拼一条时
+// 可能出现两条，签名取首个；只记条数，不记值。
+export function countSapisidEntries(): number {
+    const session = loadYtmSession();
+    if (!session) {
+        return 0;
+    }
+    const matches = session.cookie.match(/(?:^|;\s*)(?:SAPISID|__Secure-3PAPISID)=/g);
+    return matches ? matches.length : 0;
+}
+
 export function withYtmSession(headers: Record<string, string>): Record<string, string> {
     const session = loadYtmSession();
     if (!session) {

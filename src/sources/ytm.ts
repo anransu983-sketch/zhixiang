@@ -43,7 +43,7 @@
 // 由第 5 块的播放引擎实现（MSE 分块加载或本地 Range 代理均可，第 5 块定）。
 
 import { httpPost } from '../native/http';
-import { withYtmSession } from './ytm-session';
+import { countSapisidEntries, loadYtmSession, withYtmSession } from './ytm-session';
 import type { AudioSource, Poster, SourceId, Track } from '../types';
 
 const SEARCH_URL = 'https://music.youtube.com/youtubei/v1/search';
@@ -69,13 +69,16 @@ interface InnertubeClient {
     deviceModel?: string;
     osName?: string;
     osVersion?: string;
-    // Folia 对照字段：客户端专属语言/地区、铸链 UA、数字客户端 id、
-    // 是否带完整上下文块（user/request/playbackContext）。
+    // Folia 桥同款：每客户端专属 key、UA、数字客户端 id、安卓 SDK 版、
+    // embed 嵌套地址（仅 TV_EMBEDDED）。播放链每腿都带全套上下文
+    // （user/request/playbackContext）与 en/US，不再只给 VISIONOS。
     hl?: string;
     gl?: string;
     userAgent?: string;
     clientNameId?: number;
-    fullContext?: boolean;
+    apiKey?: string;
+    androidSdkVersion?: number;
+    embedUrl?: string;
 }
 
 const SEARCH_CLIENT: InnertubeClient = {
@@ -87,6 +90,10 @@ const SEARCH_CLIENT: InnertubeClient = {
 // VISIONOS 规格照搬 Folia 桥（2026-10-26 第四轮结论）：1.0 恒 404，
 // Folia 的 1.02＋101 头＋设备字段＋Safari UA 才能回 200；先整套照搬，
 // 跑通后再单独消 hl/gl 做消融， bisect 前不拆。
+// 取链回落链：照搬 Folia 桥的表（2026-10-26 第十四轮结论）——
+// 每客户端专属 key、UA、数字 id、版本，全腿 en/US 全上下文；
+// WEB 系不在播放链里（WEB 路要 poToken，桥里产不出来；搜索仍走 WEB_REMIX）。
+// ANDROID_VR 是 legacy 兜底：其直链约 1MiB 取流上限，赢了要留意中途断流。
 const PLAYER_CLIENTS: InnertubeClient[] = [
     {
         name: 'VISIONOS',
@@ -95,23 +102,52 @@ const PLAYER_CLIENTS: InnertubeClient[] = [
         deviceModel: 'RealityDevice17,1',
         osName: 'visionOS',
         osVersion: '26.5.23O471',
-        hl: 'en',
-        gl: 'US',
         userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15',
         clientNameId: 101,
-        fullContext: true
+        apiKey: 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8'
     },
-    { name: 'ANDROID', version: '20.10.38' },
+    {
+        name: 'ANDROID_VR',
+        version: '1.65.10',
+        deviceMake: 'Oculus',
+        deviceModel: 'Quest 3',
+        osName: 'Android',
+        osVersion: '12L',
+        userAgent: 'com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip',
+        clientNameId: 28,
+        apiKey: 'AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w',
+        androidSdkVersion: 32
+    },
     {
         name: 'IOS',
-        version: '20.10.38',
+        version: '20.11.6',
         deviceMake: 'Apple',
-        deviceModel: 'iPhone16,2',
-        osName: 'iPhone',
-        osVersion: '18.0'
+        deviceModel: 'iPhone10,4',
+        osName: 'iOS',
+        osVersion: '16.7.7.20H330',
+        userAgent: 'com.google.ios.youtube/20.11.6 (iPhone10,4; U; CPU iOS 16_7_7 like Mac OS X)',
+        clientNameId: 5,
+        apiKey: 'AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc'
     },
-    { name: 'WEB_REMIX', version: '1.20240111.01.00' },
-    { name: 'WEB', version: '2.20240111.09' }
+    {
+        name: 'TVHTML5_SIMPLY_EMBEDDED_PLAYER',
+        version: '2.0',
+        userAgent: 'Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version',
+        clientNameId: 85,
+        apiKey: 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8',
+        embedUrl: 'https://www.youtube.com/'
+    },
+    {
+        name: 'ANDROID',
+        version: '21.03.36',
+        deviceModel: 'SM-S908E',
+        osName: 'Android',
+        osVersion: '16',
+        userAgent: 'com.google.android.youtube/21.03.36(Linux; U; Android 16; en_US; SM-S908E Build/TP1A.220624.014) gzip',
+        clientNameId: 3,
+        apiKey: 'AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w',
+        androidSdkVersion: 36
+    }
 ];
 
 export interface YtmStream {
@@ -375,19 +411,95 @@ interface PlayerAttempt {
     stream: YtmStream | null;
     loginRequired: boolean;
     responded: boolean;
+    responseVisitorData: string | null;
+}
+
+// 播放链专用的 client 上下文：Folia 桥同款——全腿 en/US、
+// androidSdkVersion（>0 才带）、visitorData（有才带）。
+function playerClientContext(client: InnertubeClient, visitorData: string | null): Record<string, unknown> {
+    const context: Record<string, unknown> = {
+        clientName: client.name,
+        clientVersion: client.version,
+        hl: 'en',
+        gl: 'US'
+    };
+    if (client.deviceMake) {
+        context.deviceMake = client.deviceMake;
+    }
+    if (client.deviceModel) {
+        context.deviceModel = client.deviceModel;
+    }
+    if (client.osName) {
+        context.osName = client.osName;
+    }
+    if (client.osVersion) {
+        context.osVersion = client.osVersion;
+    }
+    if (client.androidSdkVersion) {
+        context.androidSdkVersion = client.androidSdkVersion;
+    }
+    if (visitorData) {
+        context.visitorData = visitorData;
+    }
+    return context;
+}
+
+// visitor_id 端点（Folia 桥同款 WEB 参数；WEB key 与共享 key 是同一把）。
+// 匿名那份只存内存、冷启重取；登录那份与 cookie 同源、每次登录链现换、
+// 不缓存。取不到回 null，不拦路（缺了照样发 player 请求，只是更容易被挡）。
+const VISITOR_URL = 'https://www.youtube.com/youtubei/v1/visitor_id';
+const WEB_CLIENT_VERSION = '2.20260623.01.00';
+
+async function fetchVisitorId(signed: boolean): Promise<string | null> {
+    try {
+        const body = JSON.stringify({
+            context: {
+                client: {
+                    clientName: 'WEB',
+                    clientVersion: WEB_CLIENT_VERSION,
+                    hl: 'en',
+                    gl: 'US'
+                }
+            }
+        });
+        const headers = signed ? withYtmSession(HEADERS) : { ...HEADERS };
+        const response = await httpPost(`${VISITOR_URL}?prettyPrint=false&key=${INNERTUBE_KEY}`, body, headers);
+        if (response.status !== 200) {
+            return null;
+        }
+        const parsed = JSON.parse(response.body) as { responseContext?: { visitorData?: unknown } | null } | null;
+        const visitorData = parsed?.responseContext?.visitorData;
+        return typeof visitorData === 'string' && visitorData ? visitorData : null;
+    } catch {
+        return null;
+    }
+}
+
+let anonymousVisitorData: string | null = null;
+
+async function ensureAnonymousVisitorData(): Promise<string | null> {
+    if (anonymousVisitorData) {
+        return anonymousVisitorData;
+    }
+    const fresh = await fetchVisitorId(false);
+    if (fresh) {
+        anonymousVisitorData = fresh;
+    }
+    return fresh;
 }
 
 // 单次客户端取链尝试：返回流、或失败原因。LOGIN_REQUIRED 单独标记，
-// 供调用方做熔断与裸重试；其余失败一律只记日志、不抛。
+// 供调用方做分链与熔断；其余失败一律只记日志、不抛。
 async function tryPlayerClient(
     client: InnertubeClient,
     videoId: string,
-    baseHeaders: Record<string, string>
+    baseHeaders: Record<string, string>,
+    visitorData: string | null
 ): Promise<PlayerAttempt> {
     let response;
     try {
-        // 客户端专属头：VISIONOS 用 Folia 同款 Safari UA（覆盖会话 UA）＋
-        // 数字客户端头；其它客户端沿用原有头，不动已跑通的 ANDROID 行为。
+        // 每腿专属 UA 与数字客户端头（Folia 桥同款）：会话 UA 不再覆盖
+        // 非 VISIONOS 客户端——旧逻辑里 ANDROID/IOS 发的是 WebView 会话 UA。
         const headers: Record<string, string> = { ...baseHeaders };
         if (client.userAgent) {
             headers['User-Agent'] = client.userAgent;
@@ -396,40 +508,38 @@ async function tryPlayerClient(
             headers['X-YouTube-Client-Name'] = String(client.clientNameId);
             headers['X-YouTube-Client-Version'] = client.version;
         }
-        const context: Record<string, unknown> = { client: clientContext(client, true) };
-        if (client.fullContext) {
-            // Folia tryClient 同款上下文块：VISIONOS 整套照搬的一部分。
-            context.user = { lockedSafetyMode: false };
-            context.request = { useSsl: true };
+        const context: Record<string, unknown> = { client: playerClientContext(client, visitorData) };
+        context['user'] = { lockedSafetyMode: false };
+        context['request'] = { useSsl: true };
+        if (client.embedUrl) {
+            context['thirdParty'] = { embedUrl: client.embedUrl };
         }
         const bodyObject: Record<string, unknown> = {
             context,
             videoId,
             racyCheckOk: true,
-            contentCheckOk: true
-        };
-        if (client.fullContext) {
-            bodyObject.playbackContext = {
+            contentCheckOk: true,
+            playbackContext: {
                 contentPlaybackContext: { vis: 0, splay: false, lactMilliseconds: '-1' }
-            };
-        }
+            }
+        };
         const body = JSON.stringify(bodyObject);
-        response = await httpPost(`${PLAYER_URL}?key=${INNERTUBE_KEY}`, body, headers);
+        response = await httpPost(`${PLAYER_URL}?key=${client.apiKey ?? INNERTUBE_KEY}`, body, headers);
     } catch {
         // 单个客户端请求失败（断网、超时）不直接抛，落到下一客户端。
         console.log(`[Ytm] ${client.name} 不可用：请求失败`);
-        return { stream: null, loginRequired: false, responded: false };
+        return { stream: null, loginRequired: false, responded: false, responseVisitorData: null };
     }
     if (response.status !== 200) {
         console.log(`[Ytm] ${client.name} 不可用：状态 ${response.status}`);
-        return { stream: null, loginRequired: false, responded: true };
+        return { stream: null, loginRequired: false, responded: true, responseVisitorData: null };
     }
     let parsed: unknown;
     try {
         parsed = JSON.parse(response.body);
     } catch {
         console.log(`[Ytm] ${client.name} 不可用：解析失败`);
-        return { stream: null, loginRequired: false, responded: true };
+        return { stream: null, loginRequired: false, responded: true, responseVisitorData: null };
     }
     const root = parsed as {
         playabilityStatus?: { status?: unknown } | null;
@@ -437,12 +547,17 @@ async function tryPlayerClient(
         captions?: {
             playerCaptionsTracklistRenderer?: { captionTracks?: unknown } | null;
         } | null;
+        responseContext?: { visitorData?: unknown } | null;
     } | null;
+    const responseVisitorData =
+        typeof root?.responseContext?.visitorData === 'string' && root.responseContext.visitorData
+            ? root.responseContext.visitorData
+            : null;
     if (root?.playabilityStatus?.status !== 'OK') {
         // LOGIN_REQUIRED / UNPLAYABLE / ERROR 等都不是可用流，换下一客户端。
         const status = String(root?.playabilityStatus?.status ?? '未知');
         console.log(`[Ytm] ${client.name} 不可用：playability=${status}`);
-        return { stream: null, loginRequired: status === 'LOGIN_REQUIRED', responded: true };
+        return { stream: null, loginRequired: status === 'LOGIN_REQUIRED', responded: true, responseVisitorData };
     }
     // 字幕轨与音频流同一次返回：只记条数与语种，不记地址与正文。
     const rawCaptions = root.captions?.playerCaptionsTracklistRenderer?.captionTracks;
@@ -466,7 +581,7 @@ async function tryPlayerClient(
     const formats = root.streamingData?.adaptiveFormats;
     if (!Array.isArray(formats)) {
         console.log(`[Ytm] ${client.name} 不可用：无 streamingData`);
-        return { stream: null, loginRequired: false, responded: true };
+        return { stream: null, loginRequired: false, responded: true, responseVisitorData };
     }
     let best: YtmStream | null = null;
     let bestBitrate = -1;
@@ -507,10 +622,48 @@ async function tryPlayerClient(
     if (best) {
         lastYtmStream = best;
         console.log(`[Ytm] 取链成功 ${client.name} ${best.mimeType} ${best.bitrate ?? 0}bps`);
-        return { stream: best, loginRequired: false, responded: true };
+        return { stream: best, loginRequired: false, responded: true, responseVisitorData };
     }
     console.log(`[Ytm] ${client.name} 不可用：无可用音频流`);
-    return { stream: null, loginRequired: false, responded: true };
+    return { stream: null, loginRequired: false, responded: true, responseVisitorData };
+}
+
+interface ChainResult {
+    stream: YtmStream | null;
+    sawLoginGate: boolean;
+    sawResponse: boolean;
+}
+
+// 跑一遍回落链：每链熔断 2 次 LOGIN_REQUIRED（单首两链合计约 4 次取链）。
+// 匿名答复带回的新 visitorData 比缓存的新：顺手换上（Folia 桥同款）。
+async function runChain(
+    videoId: string,
+    baseHeaders: Record<string, string>,
+    visitorData: string | null,
+    isAnonymous: boolean
+): Promise<ChainResult> {
+    let sawLoginGate = false;
+    let sawResponse = false;
+    let loginRequiredCount = 0;
+    for (const client of PLAYER_CLIENTS) {
+        const attempt = await tryPlayerClient(client, videoId, baseHeaders, visitorData);
+        sawResponse = sawResponse || attempt.responded;
+        if (isAnonymous && attempt.responseVisitorData) {
+            anonymousVisitorData = attempt.responseVisitorData;
+        }
+        if (attempt.stream) {
+            return { stream: attempt.stream, sawLoginGate, sawResponse };
+        }
+        if (attempt.loginRequired) {
+            sawLoginGate = true;
+            loginRequiredCount += 1;
+            if (loginRequiredCount >= 2) {
+                console.log('[Ytm] 本链连续 2 个客户端 LOGIN_REQUIRED，停链');
+                break;
+            }
+        }
+    }
+    return { stream: null, sawLoginGate, sawResponse };
 }
 
 export async function resolveYtmStream(track: Track): Promise<YtmStream> {
@@ -525,52 +678,49 @@ export async function resolveYtmStream(track: Track): Promise<YtmStream> {
     }
     const videoId = track.id.slice(prefix.length);
     console.log(`[Ytm] 取链 ${track.title}`);
-    // 铸链头一次算好、各客户端共用：成功那次实际发出的 UA 就是取流时要复用的 UA。
-    const sentHeaders = requestHeaders();
-    // 只记签名在不在，不记签名值。
-    if (sentHeaders['Authorization']) {
-        console.log('[Ytm] 取链带 SAPISIDHASH 签名');
+    const session = loadYtmSession();
+    // 第一程：匿名链（Folia 桥同款结构）。匿名 visitorData 现取现缓存，
+    // 不带 cookie、不带签名——先证明匿名身份本身过不过得了门。
+    // 旧逻辑从第一次请求就带 cookie，且复用搜索响应的旧 visitorData；
+    // 所谓“裸重试”只去了 Cookie、没换 visitorData，测得并不干净。
+    const anonVisitor = await ensureAnonymousVisitorData();
+    if (!anonVisitor) {
+        console.log('[Ytm] 匿名 visitorData 未取到，继续裸发');
     }
-    const sessionAttached = sentHeaders['Cookie'] !== undefined;
-    let sawResponse = false;
-    let loginRequiredCount = 0;
-    for (const client of PLAYER_CLIENTS) {
-        const attempt = await tryPlayerClient(client, videoId, sentHeaders);
-        sawResponse = sawResponse || attempt.responded;
-        if (attempt.stream) {
+    const anon = await runChain(videoId, HEADERS, anonVisitor, true);
+    if (anon.stream) {
+        ytmSessionSuspect = false;
+        return anon.stream;
+    }
+    // 第二程：第一程撞了登录门、且手里有会话，才走登录链。登录 visitorData
+    // 与 cookie 同源现换、不缓存；头含 Cookie＋SAPISIDHASH＋AuthUser。
+    if (anon.sawLoginGate && session) {
+        const signedVisitor = await fetchVisitorId(true);
+        const signedHeaders = withYtmSession(HEADERS);
+        // 只记签名在不在，不记签名值；只记 SAPISID 条数，不记值。
+        if (signedHeaders['Authorization']) {
+            console.log('[Ytm] 登录链带 SAPISIDHASH 签名');
+        }
+        if (countSapisidEntries() > 1) {
+            console.log('[Ytm] cookie 含多个 SAPISID，取首个');
+        }
+        const signed = await runChain(videoId, signedHeaders, signedVisitor, false);
+        if (signed.stream) {
             ytmSessionSuspect = false;
-            return attempt.stream;
+            return signed.stream;
         }
-        if (attempt.loginRequired) {
-            loginRequiredCount += 1;
-            // 熔断：连续 2 个客户端都 LOGIN_REQUIRED 就不再往下 hammer，
-            // 剩下的客户端大概率同因失败，继续试只会加重 flag。
-            if (loginRequiredCount >= 2) {
-                ytmSessionSuspect = true;
-                console.log('[Ytm] 会话可疑：连续 2 个客户端 LOGIN_REQUIRED，停止继续尝试');
-                break;
-            }
-        }
-    }
-    // 带会话 Cookie 全败且含 LOGIN_REQUIRED 时，裸重试一次 VISIONOS：
-    // 死 Cookie 本身就可能触发 LOGIN_REQUIRED，裸请求能当场区分
-    // “Cookie 已死”（裸通）与“IP 门”（裸也不通）。
-    const visionosClient = PLAYER_CLIENTS[0];
-    if (loginRequiredCount > 0 && sessionAttached && visionosClient) {
-        console.log('[Ytm] 裸重试 VISIONOS（不带会话 Cookie）');
-        const bare = await tryPlayerClient(visionosClient, videoId, HEADERS);
-        if (bare.stream) {
+        if (signed.sawLoginGate) {
             ytmSessionSuspect = true;
-            console.log('[Ytm] 裸重试成功，会话 Cookie 可能已失效，建议重新登录');
-            return bare.stream;
+            throw new Error('YTM 会话可能失效（LOGIN_REQUIRED），请重新登录或换网络再试');
         }
-        console.log('[Ytm] 裸重试也失败');
     }
-    if (loginRequiredCount > 0) {
+    if (anon.sawLoginGate) {
+        // 匿名撞门、无会话可走登录链：唯一解是登录或换网络。
+        ytmSessionSuspect = true;
         throw new Error('YTM 会话可能失效（LOGIN_REQUIRED），请重新登录或换网络再试');
     }
     console.log(`[Ytm] 全部客户端失败 ${track.title}`);
-    if (!sawResponse) {
+    if (!anon.sawResponse) {
         throw new Error('YTM 请求失败，请检查网络后重试');
     }
     throw new Error('这首歌在 YTM 上暂时播不了，请换一首试试');
