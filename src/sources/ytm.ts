@@ -646,7 +646,6 @@ async function runChain(
 ): Promise<ChainResult> {
     let sawLoginGate = false;
     let sawResponse = false;
-    let loginRequiredCount = 0;
     for (const client of PLAYER_CLIENTS) {
         const attempt = await tryPlayerClient(client, videoId, baseHeaders, visitorData);
         sawResponse = sawResponse || attempt.responded;
@@ -658,11 +657,10 @@ async function runChain(
         }
         if (attempt.loginRequired) {
             sawLoginGate = true;
-            loginRequiredCount += 1;
-            if (loginRequiredCount >= 2) {
-                console.log('[Ytm] 本链连续 2 个客户端 LOGIN_REQUIRED，停链');
-                break;
-            }
+            // 不再 2 连门就停链：Folia 是 5 腿全试，门可能是按客户端分的
+            //（VISIONOS 新、ANDROID_VR 要 PO-token，这两腿先天难过），
+            // 0.1.58 五腿全败是旧请求形态，新形态下 IOS/TV/ANDROID 从没试过；
+            // 流量控制由门限流退避（gatedUntil）管，不靠停链。
         }
     }
     return { stream: null, sawLoginGate, sawResponse };
