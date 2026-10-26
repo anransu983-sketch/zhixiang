@@ -831,13 +831,18 @@ function renderNeteaseLoginBlock(): HTMLElement {
     // 旧流程里已发出的请求回来时若令牌已换，一律丢弃——防止一次重复
     // 触发产生两个取码、旧 tick 杀掉新轮询器这类竞态（Claude 实验 2 的一类）。
     let qrToken: object | null = null;
-    // 连续自动换码计数：健康码（801）会清零；只有“一拿就过期”的坏流程
-    // 才会连涨，涨满 10 次停下来给手动按钮，不对坏流程无限刷码。
+    // 累计自动换码计数：一次登录尝试内累计，801 不再清零——旧逻辑里
+    // 801 会清零，24 秒短命码每次过期前都有 801 垫底，计数永远涨不到
+    // 上限，等于无限刷码（还可能喂给限流器）。涨满 3 次停下来给手动
+    // 按钮；手动重开（非 auto）时清零，扫码成功流程自然结束。
     let qrAutoRefreshes = 0;
+    // 当前码生成时刻（毫秒）：801 状态里显示“码已生成 Xs”，让短命码
+    // 在界面上就能看出来，不用翻日志算。
+    let keyBornAt = 0;
     let qrVisibilityHandler: (() => void) | null = null;
     const stopPoll = (): void => {
         if (pollTimer !== undefined) {
-            window.clearInterval(pollTimer);
+            window.clearTimeout(pollTimer);
             pollTimer = undefined;
         }
         if (qrVisibilityHandler) {
@@ -896,7 +901,7 @@ function renderNeteaseLoginBlock(): HTMLElement {
         body.appendChild(row);
     };
 
-    const startQr = async (auto = false): Promise<void> => {
+    const startQr = async (auto = false, expiredNotice = false): Promise<void> => {
         stopPoll();
         const token = {};
         qrToken = token;
@@ -906,7 +911,7 @@ function renderNeteaseLoginBlock(): HTMLElement {
         body.replaceChildren();
         const status = document.createElement('p');
         status.className = 'login-notice';
-        status.textContent = '正在获取二维码…';
+        status.textContent = expiredNotice ? '二维码已过期，正在换新码…' : '正在获取二维码…';
         body.appendChild(status);
         let key: string;
         try {
@@ -931,6 +936,7 @@ function renderNeteaseLoginBlock(): HTMLElement {
             return;
         }
         currentKey = key;
+        keyBornAt = Date.now();
         console.log('[Netease] 二维码已生成，等待扫码');
         status.textContent = '用网易云 App 扫码登录';
         // 在网易云 App 里打开确认（Claude 2026-10-25 绕过办法）：把二维码
@@ -1023,7 +1029,6 @@ function renderNeteaseLoginBlock(): HTMLElement {
             if (result.code !== lastPollCode) {
                 lastPollCode = result.code;
                 if (result.code === 801) {
-                    qrAutoRefreshes = 0;
                     console.log('[Netease] 扫码等待中');
                 } else if (result.code === 802) {
                     console.log('[Netease] 已扫码，等待手机确认');
@@ -1036,14 +1041,18 @@ function renderNeteaseLoginBlock(): HTMLElement {
                 }
             }
             if (result.code === 801) {
-                status.textContent = '等待扫码';
+                status.textContent = keyBornAt
+                    ? `等待扫码（码已生成 ${Math.floor((Date.now() - keyBornAt) / 1000)}s）`
+                    : '等待扫码';
             } else if (result.code === 802) {
                 status.textContent = '已扫码，请在手机上确认';
             } else if (result.code === 800) {
                 // 码过期就自动换新码：用户切去网易云 App 扫码再回来时，
                 // 旧码可能已过期，屏幕上永远有新鲜码可扫，不用手动点刷新。
+                // 但累计 3 次还扫不上就停：短命码下无限自动换码等于每小时
+                // 刷上百次取码，可能反过来喂给限流器。
                 stopPoll();
-                if (qrAutoRefreshes < 10) {
+                if (qrAutoRefreshes < 3) {
                     qrAutoRefreshes += 1;
                     console.log('[Netease] 二维码已过期，已自动换新码');
                     window.setTimeout(() => {
@@ -1052,10 +1061,10 @@ function renderNeteaseLoginBlock(): HTMLElement {
                         if (qrToken !== null) {
                             return;
                         }
-                        void startQr(true);
+                        void startQr(true, true);
                     }, 800);
                 } else {
-                    status.textContent = '二维码已过期';
+                    status.textContent = '连续换码 3 次仍未扫码，点按重新获取';
                     const refresh = document.createElement('button');
                     refresh.type = 'button';
                     refresh.className = 'login-btn';
@@ -1108,9 +1117,19 @@ function renderNeteaseLoginBlock(): HTMLElement {
             }
         };
         document.addEventListener('visibilitychange', qrVisibilityHandler);
-        pollTimer = window.setInterval(() => {
-            void tick();
-        }, 3000);
+        // 自调度链：802（已扫码待确认）后 1.5 秒一查，其余 3 秒；上轮
+        // 跑完才约下轮，不重叠。链的代次用本轮 token 守：新流程开始后
+        // 旧链的 finally 看到令牌已换就不再续约，不会双链并跑。
+        const armPoll = (): void => {
+            pollTimer = window.setTimeout(() => {
+                void tick().finally(() => {
+                    if (qrToken === token) {
+                        armPoll();
+                    }
+                });
+            }, lastPollCode === 802 ? 1500 : 3000);
+        };
+        armPoll();
     };
 
     const stored = loadNeteaseSession();

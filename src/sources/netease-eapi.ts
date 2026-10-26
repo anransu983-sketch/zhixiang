@@ -310,15 +310,31 @@ export async function eapiRequest(path: string, data: Record<string, unknown>): 
     const apiPath = uri.slice(5);
     const header = buildEapiHeader();
     const params = await eapiEncrypt(uri, { ...data, header });
-    const response = await httpPost(
-        `${EAPI_BASE}/eapi/${apiPath}`,
-        `params=${encodeURIComponent(params)}`,
-        {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'User-Agent': EAPI_UA,
-            Cookie: formatCookieHeader(header)
+    // JS 层 25 秒兜底超时：OkHttp 连接 15 秒＋读取 20 秒可能叠到 35 秒
+    // 才报失败，期间界面一直是“正在获取二维码…”。eapi 目前只给扫码
+    // 登录用，超时只影响这条链路；底层的 httpPost 继续跑完、结果丢弃。
+    let timer: number | undefined;
+    try {
+        const timeout = new Promise<never>((_, reject) => {
+            timer = window.setTimeout(() => reject(new Error('eapi 请求超时')), 25000);
+        });
+        const response = await Promise.race([
+            httpPost(
+                `${EAPI_BASE}/eapi/${apiPath}`,
+                `params=${encodeURIComponent(params)}`,
+                {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'User-Agent': EAPI_UA,
+                    Cookie: formatCookieHeader(header)
+                }
+            ),
+            timeout
+        ]);
+        rememberNmtid(response.setCookies);
+        return response;
+    } finally {
+        if (timer !== undefined) {
+            window.clearTimeout(timer);
         }
-    );
-    rememberNmtid(response.setCookies);
-    return response;
+    }
 }

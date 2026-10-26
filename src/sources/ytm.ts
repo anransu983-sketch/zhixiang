@@ -362,6 +362,156 @@ class YtmSource implements AudioSource {
     }
 }
 
+// YTM 会话可疑标志：连续 LOGIN_REQUIRED 熔断时置位，取链成功时清零。
+// 播放层据此把跳歌文案换成“重新登录或换网络”的提示，不静默跳歌。
+let ytmSessionSuspect = false;
+
+export function isYtmSessionSuspect(): boolean {
+    return ytmSessionSuspect;
+}
+
+interface PlayerAttempt {
+    stream: YtmStream | null;
+    loginRequired: boolean;
+    responded: boolean;
+}
+
+// 单次客户端取链尝试：返回流、或失败原因。LOGIN_REQUIRED 单独标记，
+// 供调用方做熔断与裸重试；其余失败一律只记日志、不抛。
+async function tryPlayerClient(
+    client: InnertubeClient,
+    videoId: string,
+    baseHeaders: Record<string, string>
+): Promise<PlayerAttempt> {
+    let response;
+    try {
+        // 客户端专属头：VISIONOS 用 Folia 同款 Safari UA（覆盖会话 UA）＋
+        // 数字客户端头；其它客户端沿用原有头，不动已跑通的 ANDROID 行为。
+        const headers: Record<string, string> = { ...baseHeaders };
+        if (client.userAgent) {
+            headers['User-Agent'] = client.userAgent;
+        }
+        if (client.clientNameId !== undefined) {
+            headers['X-YouTube-Client-Name'] = String(client.clientNameId);
+            headers['X-YouTube-Client-Version'] = client.version;
+        }
+        const context: Record<string, unknown> = { client: clientContext(client, true) };
+        if (client.fullContext) {
+            // Folia tryClient 同款上下文块：VISIONOS 整套照搬的一部分。
+            context.user = { lockedSafetyMode: false };
+            context.request = { useSsl: true };
+        }
+        const bodyObject: Record<string, unknown> = {
+            context,
+            videoId,
+            racyCheckOk: true,
+            contentCheckOk: true
+        };
+        if (client.fullContext) {
+            bodyObject.playbackContext = {
+                contentPlaybackContext: { vis: 0, splay: false, lactMilliseconds: '-1' }
+            };
+        }
+        const body = JSON.stringify(bodyObject);
+        response = await httpPost(`${PLAYER_URL}?key=${INNERTUBE_KEY}`, body, headers);
+    } catch {
+        // 单个客户端请求失败（断网、超时）不直接抛，落到下一客户端。
+        console.log(`[Ytm] ${client.name} 不可用：请求失败`);
+        return { stream: null, loginRequired: false, responded: false };
+    }
+    if (response.status !== 200) {
+        console.log(`[Ytm] ${client.name} 不可用：状态 ${response.status}`);
+        return { stream: null, loginRequired: false, responded: true };
+    }
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(response.body);
+    } catch {
+        console.log(`[Ytm] ${client.name} 不可用：解析失败`);
+        return { stream: null, loginRequired: false, responded: true };
+    }
+    const root = parsed as {
+        playabilityStatus?: { status?: unknown } | null;
+        streamingData?: { adaptiveFormats?: unknown } | null;
+        captions?: {
+            playerCaptionsTracklistRenderer?: { captionTracks?: unknown } | null;
+        } | null;
+    } | null;
+    if (root?.playabilityStatus?.status !== 'OK') {
+        // LOGIN_REQUIRED / UNPLAYABLE / ERROR 等都不是可用流，换下一客户端。
+        const status = String(root?.playabilityStatus?.status ?? '未知');
+        console.log(`[Ytm] ${client.name} 不可用：playability=${status}`);
+        return { stream: null, loginRequired: status === 'LOGIN_REQUIRED', responded: true };
+    }
+    // 字幕轨与音频流同一次返回：只记条数与语种，不记地址与正文。
+    const rawCaptions = root.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+    if (Array.isArray(rawCaptions)) {
+        const tracks: YtmCaptionTrack[] = [];
+        for (const raw of rawCaptions as Array<Record<string, unknown>>) {
+            if (typeof raw.baseUrl === 'string' && raw.baseUrl &&
+                typeof raw.languageCode === 'string' && raw.languageCode) {
+                tracks.push({
+                    baseUrl: raw.baseUrl,
+                    languageCode: raw.languageCode,
+                    kind: typeof raw.kind === 'string' ? raw.kind : undefined
+                });
+            }
+        }
+        storeYtmCaptions(videoId, tracks);
+        if (tracks.length > 0) {
+            console.log(`[Ytm] 字幕轨 ${tracks.length} 条：${tracks.map((t) => t.languageCode).join(',')}`);
+        }
+    }
+    const formats = root.streamingData?.adaptiveFormats;
+    if (!Array.isArray(formats)) {
+        console.log(`[Ytm] ${client.name} 不可用：无 streamingData`);
+        return { stream: null, loginRequired: false, responded: true };
+    }
+    let best: YtmStream | null = null;
+    let bestBitrate = -1;
+    for (const raw of formats as RawFormat[]) {
+        // 只要纯音频 adaptiveFormats，且必须带直链 url；带 signatureCipher 而无
+        // url 的项本块不解算，直接跳过。
+        if (
+            typeof raw.mimeType !== 'string' ||
+            !raw.mimeType.startsWith('audio') ||
+            typeof raw.url !== 'string' ||
+            !raw.url
+        ) {
+            continue;
+        }
+        const bitrate = typeof raw.bitrate === 'number' ? raw.bitrate : 0;
+        if (bitrate >= bestBitrate) {
+            bestBitrate = bitrate;
+            const contentLength =
+                typeof raw.contentLength === 'string'
+                    ? Number(raw.contentLength)
+                    : typeof raw.contentLength === 'number'
+                      ? raw.contentLength
+                      : undefined;
+            best = {
+                url: raw.url,
+                mimeType: raw.mimeType,
+                bitrate,
+                contentLength:
+                    contentLength !== undefined && Number.isFinite(contentLength)
+                        ? contentLength
+                        : undefined,
+                // 没显式 UA 时桥用 OkHttp 默认 UA 铸链，取流复用同一个串；
+                // 客户端专属 UA（如 VISIONOS 的 Safari 串）优先于会话 UA。
+                userAgent: client.userAgent ?? baseHeaders['User-Agent'] ?? 'okhttp/4.12.0'
+            };
+        }
+    }
+    if (best) {
+        lastYtmStream = best;
+        console.log(`[Ytm] 取链成功 ${client.name} ${best.mimeType} ${best.bitrate ?? 0}bps`);
+        return { stream: best, loginRequired: false, responded: true };
+    }
+    console.log(`[Ytm] ${client.name} 不可用：无可用音频流`);
+    return { stream: null, loginRequired: false, responded: true };
+}
+
 export async function resolveYtmStream(track: Track): Promise<YtmStream> {
     if (track.streamUrl) {
         // 已有直链时不再取链；mimeType 与 contentLength 只有取链响应才给得出。
@@ -376,136 +526,43 @@ export async function resolveYtmStream(track: Track): Promise<YtmStream> {
     console.log(`[Ytm] 取链 ${track.title}`);
     // 铸链头一次算好、各客户端共用：成功那次实际发出的 UA 就是取流时要复用的 UA。
     const sentHeaders = requestHeaders();
+    const sessionAttached = sentHeaders['Cookie'] !== undefined;
     let sawResponse = false;
+    let loginRequiredCount = 0;
     for (const client of PLAYER_CLIENTS) {
-        let response;
-        try {
-            // 客户端专属头：VISIONOS 用 Folia 同款 Safari UA（覆盖会话 UA）＋
-            // 数字客户端头；其它客户端沿用原有头，不动已跑通的 ANDROID 行为。
-            const headers: Record<string, string> = { ...sentHeaders };
-            if (client.userAgent) {
-                headers['User-Agent'] = client.userAgent;
-            }
-            if (client.clientNameId !== undefined) {
-                headers['X-YouTube-Client-Name'] = String(client.clientNameId);
-                headers['X-YouTube-Client-Version'] = client.version;
-            }
-            const context: Record<string, unknown> = { client: clientContext(client, true) };
-            if (client.fullContext) {
-                // Folia tryClient 同款上下文块：VISIONOS 整套照搬的一部分。
-                context.user = { lockedSafetyMode: false };
-                context.request = { useSsl: true };
-            }
-            const bodyObject: Record<string, unknown> = {
-                context,
-                videoId,
-                racyCheckOk: true,
-                contentCheckOk: true
-            };
-            if (client.fullContext) {
-                bodyObject.playbackContext = {
-                    contentPlaybackContext: { vis: 0, splay: false, lactMilliseconds: '-1' }
-                };
-            }
-            const body = JSON.stringify(bodyObject);
-            response = await httpPost(`${PLAYER_URL}?key=${INNERTUBE_KEY}`, body, headers);
-        } catch {
-            // 单个客户端请求失败（断网、超时）不直接抛，落到下一客户端。
-            console.log(`[Ytm] ${client.name} 不可用：请求失败`);
-            continue;
+        const attempt = await tryPlayerClient(client, videoId, sentHeaders);
+        sawResponse = sawResponse || attempt.responded;
+        if (attempt.stream) {
+            ytmSessionSuspect = false;
+            return attempt.stream;
         }
-        sawResponse = true;
-        if (response.status !== 200) {
-            console.log(`[Ytm] ${client.name} 不可用：状态 ${response.status}`);
-            continue;
-        }
-        let parsed: unknown;
-        try {
-            parsed = JSON.parse(response.body);
-        } catch {
-            console.log(`[Ytm] ${client.name} 不可用：解析失败`);
-            continue;
-        }
-        const root = parsed as {
-            playabilityStatus?: { status?: unknown } | null;
-            streamingData?: { adaptiveFormats?: unknown } | null;
-            captions?: {
-                playerCaptionsTracklistRenderer?: { captionTracks?: unknown } | null;
-            } | null;
-        } | null;
-        if (root?.playabilityStatus?.status !== 'OK') {
-            // LOGIN_REQUIRED / UNPLAYABLE / ERROR 等都不是可用流，换下一客户端。
-            console.log(
-                `[Ytm] ${client.name} 不可用：playability=${String(root?.playabilityStatus?.status ?? '未知')}`
-            );
-            continue;
-        }
-        // 字幕轨与音频流同一次返回：只记条数与语种，不记地址与正文。
-        const rawCaptions = root.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-        if (Array.isArray(rawCaptions)) {
-            const tracks: YtmCaptionTrack[] = [];
-            for (const raw of rawCaptions as Array<Record<string, unknown>>) {
-                if (typeof raw.baseUrl === 'string' && raw.baseUrl &&
-                    typeof raw.languageCode === 'string' && raw.languageCode) {
-                    tracks.push({
-                        baseUrl: raw.baseUrl,
-                        languageCode: raw.languageCode,
-                        kind: typeof raw.kind === 'string' ? raw.kind : undefined
-                    });
-                }
-            }
-            storeYtmCaptions(videoId, tracks);
-            if (tracks.length > 0) {
-                console.log(`[Ytm] 字幕轨 ${tracks.length} 条：${tracks.map((t) => t.languageCode).join(',')}`);
+        if (attempt.loginRequired) {
+            loginRequiredCount += 1;
+            // 熔断：连续 2 个客户端都 LOGIN_REQUIRED 就不再往下 hammer，
+            // 剩下的客户端大概率同因失败，继续试只会加重 flag。
+            if (loginRequiredCount >= 2) {
+                ytmSessionSuspect = true;
+                console.log('[Ytm] 会话可疑：连续 2 个客户端 LOGIN_REQUIRED，停止继续尝试');
+                break;
             }
         }
-        const formats = root.streamingData?.adaptiveFormats;
-        if (!Array.isArray(formats)) {
-            console.log(`[Ytm] ${client.name} 不可用：无 streamingData`);
-            continue;
+    }
+    // 带会话 Cookie 全败且含 LOGIN_REQUIRED 时，裸重试一次 VISIONOS：
+    // 死 Cookie 本身就可能触发 LOGIN_REQUIRED，裸请求能当场区分
+    // “Cookie 已死”（裸通）与“IP 门”（裸也不通）。
+    const visionosClient = PLAYER_CLIENTS[0];
+    if (loginRequiredCount > 0 && sessionAttached && visionosClient) {
+        console.log('[Ytm] 裸重试 VISIONOS（不带会话 Cookie）');
+        const bare = await tryPlayerClient(visionosClient, videoId, HEADERS);
+        if (bare.stream) {
+            ytmSessionSuspect = true;
+            console.log('[Ytm] 裸重试成功，会话 Cookie 可能已失效，建议重新登录');
+            return bare.stream;
         }
-        let best: YtmStream | null = null;
-        let bestBitrate = -1;
-        for (const raw of formats as RawFormat[]) {
-            // 只要纯音频 adaptiveFormats，且必须带直链 url；带 signatureCipher 而无
-            // url 的项本块不解算，直接跳过。
-            if (
-                typeof raw.mimeType !== 'string' ||
-                !raw.mimeType.startsWith('audio') ||
-                typeof raw.url !== 'string' ||
-                !raw.url
-            ) {
-                continue;
-            }
-            const bitrate = typeof raw.bitrate === 'number' ? raw.bitrate : 0;
-            if (bitrate >= bestBitrate) {
-                bestBitrate = bitrate;
-                const contentLength =
-                    typeof raw.contentLength === 'string'
-                        ? Number(raw.contentLength)
-                        : typeof raw.contentLength === 'number'
-                          ? raw.contentLength
-                          : undefined;
-                best = {
-                    url: raw.url,
-                    mimeType: raw.mimeType,
-                    bitrate,
-                    contentLength:
-                        contentLength !== undefined && Number.isFinite(contentLength)
-                            ? contentLength
-                            : undefined,
-                    // 没显式 UA 时桥用 OkHttp 默认 UA 铸链，取流复用同一个串；
-                    // 客户端专属 UA（如 VISIONOS 的 Safari 串）优先于会话 UA。
-                    userAgent: client.userAgent ?? sentHeaders['User-Agent'] ?? 'okhttp/4.12.0'
-                };
-            }
-        }
-        if (best) {
-            lastYtmStream = best;
-            console.log(`[Ytm] 取链成功 ${client.name} ${best.mimeType} ${best.bitrate ?? 0}bps`);
-            return best;
-        }
-        console.log(`[Ytm] ${client.name} 不可用：无可用音频流`);
+        console.log('[Ytm] 裸重试也失败');
+    }
+    if (loginRequiredCount > 0) {
+        throw new Error('YTM 会话可能失效（LOGIN_REQUIRED），请重新登录或换网络再试');
     }
     console.log(`[Ytm] 全部客户端失败 ${track.title}`);
     if (!sawResponse) {
