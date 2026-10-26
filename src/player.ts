@@ -366,7 +366,7 @@ function buildPlayerPage(): HTMLElement {
     content.appendChild(bottomRow);
     content.appendChild(sleepPicker);
 
-    // 可折叠「视觉」区：四项开关 + 设壁纸（默认收起）。
+    // 可折叠「视觉」区：五项开关 + 设壁纸（默认收起）。
     const visualsButton = document.createElement('button');
     visualsButton.type = 'button';
     visualsButton.className = 'player-visuals-btn';
@@ -383,7 +383,8 @@ function buildPlayerPage(): HTMLElement {
         { key: 'rain', label: '雨滴玻璃（默认开）' },
         { key: 'particles', label: '粒子舞台' },
         { key: 'pulse', label: '节奏脉动' },
-        { key: 'stars', label: '氛围星空' }
+        { key: 'stars', label: '氛围星空' },
+        { key: 'sword', label: '剑来（切歌时）' }
     ];
     for (const def of toggleDefs) {
         const label = document.createElement('label');
@@ -634,6 +635,10 @@ function buildPlayerPage(): HTMLElement {
         if (visible) {
             refresh(state);
             stage?.poke();
+            // 剑来只在切歌且播放页打开时出鞘，开关关着时 triggerSword 直接空转。
+            if (state.track) {
+                stage?.triggerSword();
+            }
         }
         const generation = ++lyricGeneration;
         const track = state.track;

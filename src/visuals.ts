@@ -1,10 +1,12 @@
-// 播放页视觉（第 8 块，全新写）：单块画布上的四项独立图层。
+// 播放页视觉（第 8 块，全新写）：单块画布上的五项独立图层。
 //
-// 四项开关各自独立，互不依赖，存在 localStorage，键 zhixiang.visual.toggles：
+// 五项开关各自独立，互不依赖，存在 localStorage，键 zhixiang.visual.toggles：
 // - rain（雨滴玻璃，默认开）：封面模糊底 + 玻璃水滴（静止圆滴＋下滑拖尾＋大光斑）。
 // - particles（粒子舞台，默认关）：粒子随频谱能量律动。
 // - pulse（节奏脉动，默认关）：封面随频谱能量缩放发光。
 // - stars（氛围星空，默认关）：星空闪烁漂移。
+// - sword（剑来，默认关）：切歌时剑光斜划全屏＋诗句逐字浮现后淡出，
+//   只在播放页打开且正在播放时触发，静态帧不画。
 //
 // 频谱降级（诚实降级，不伪造频谱）：
 // - 有 AnalyserNode 时，粒子速度/大小与脉动缩放都取真实频谱能量
@@ -23,6 +25,7 @@ export interface VisualToggles {
     particles: boolean;
     pulse: boolean;
     stars: boolean;
+    sword: boolean;
 }
 
 const STORAGE_KEY = 'zhixiang.visual.toggles';
@@ -31,7 +34,8 @@ export const DEFAULT_TOGGLES: VisualToggles = {
     rain: true,
     particles: false,
     pulse: false,
-    stars: false
+    stars: false,
+    sword: false
 };
 
 export function loadVisualToggles(): VisualToggles {
@@ -48,7 +52,8 @@ export function loadVisualToggles(): VisualToggles {
                     ? parsed.particles
                     : DEFAULT_TOGGLES.particles,
             pulse: typeof parsed.pulse === 'boolean' ? parsed.pulse : DEFAULT_TOGGLES.pulse,
-            stars: typeof parsed.stars === 'boolean' ? parsed.stars : DEFAULT_TOGGLES.stars
+            stars: typeof parsed.stars === 'boolean' ? parsed.stars : DEFAULT_TOGGLES.stars,
+            sword: typeof parsed.sword === 'boolean' ? parsed.sword : DEFAULT_TOGGLES.sword
         };
     } catch {
         return { ...DEFAULT_TOGGLES };
@@ -117,6 +122,7 @@ export class VisualStage {
     private bokeh: Bokeh[] = [];
     private particles: Particle[] = [];
     private stars: Star[] = [];
+    private swordStart: number | null = null;
     private seededWidth = 0;
     private seededHeight = 0;
     private bgCanvas: HTMLCanvasElement | null = null;
@@ -199,6 +205,16 @@ export class VisualStage {
     // 播放页重开时调用：解除挂起并按当前状态恢复（poke 语义）。
     resume(): void {
         this.suspended = false;
+        this.poke();
+    }
+
+    // 切歌时调用：剑来开着才起效，记下出鞘时刻，动画由 drawFrame 逐帧画；
+    // 暂停/静态帧不画，动画跑完自动收尾，不用额外停循环。
+    triggerSword(): void {
+        if (!this.options.getToggles().sword) {
+            return;
+        }
+        this.swordStart = performance.now();
         this.poke();
     }
 
@@ -351,6 +367,10 @@ export class VisualStage {
         }
         if (toggles.rain) {
             this.drawRain(ctx, width, height, animated);
+        }
+        // 剑来画在最上层：剑光斜划＋诗句，静态帧不画。
+        if (toggles.sword && animated) {
+            this.drawSword(ctx, width, height);
         }
 
         // 脉动作用在封面元素上，不在画布里画。
@@ -595,6 +615,105 @@ export class VisualStage {
                 Math.PI * 2
             );
             ctx.fill();
+        }
+        ctx.restore();
+    }
+
+    // 剑来：0–0.55s 剑光自左上斜划到右下（带拖尾与出鞘闪光），
+    // 0.45s 起诗句逐字浮现（两行），2.8–3.4s 整体淡出；
+    // 诗句放画面下方空带，避开中央封面与歌词区。
+    private drawSword(ctx: CanvasRenderingContext2D, width: number, height: number): void {
+        if (this.swordStart === null) {
+            return;
+        }
+        const elapsed = (performance.now() - this.swordStart) / 1000;
+        const total = 3.4;
+        if (elapsed >= total) {
+            this.swordStart = null;
+            return;
+        }
+        const cssWidth = this.canvas.clientWidth || width;
+        const cssHeight = this.canvas.clientHeight || height;
+        const scaleX = width / cssWidth;
+        const scaleY = height / cssHeight;
+        ctx.save();
+        // 出鞘闪光：前 0.15s 全屏微亮后迅速收掉。
+        if (elapsed < 0.15) {
+            ctx.fillStyle = `rgba(255, 255, 255, ${(0.1 * (1 - elapsed / 0.15)).toFixed(3)})`;
+            ctx.fillRect(0, 0, width, height);
+        }
+        // 剑光斜划：起点左上、终点右下，拖尾约占全程 35%，划完 0.55s 后淡出。
+        const slashDuration = 0.55;
+        const slashFade = 0.55;
+        const fromX = cssWidth * 0.05;
+        const fromY = cssHeight * 0.1;
+        const toX = cssWidth * 0.95;
+        const toY = cssHeight * 0.7;
+        const progress = Math.min(1, elapsed / slashDuration);
+        const headX = fromX + (toX - fromX) * progress;
+        const headY = fromY + (toY - fromY) * progress;
+        const tailX = fromX + (toX - fromX) * Math.max(0, progress - 0.35);
+        const tailY = fromY + (toY - fromY) * Math.max(0, progress - 0.35);
+        let slashAlpha = 1;
+        if (elapsed > slashDuration) {
+            slashAlpha = Math.max(0, 1 - (elapsed - slashDuration) / slashFade);
+        }
+        if (slashAlpha > 0) {
+            ctx.save();
+            ctx.lineCap = 'round';
+            ctx.shadowColor = 'rgba(232, 160, 191, 0.9)';
+            ctx.shadowBlur = 24 * scaleX;
+            ctx.strokeStyle = `rgba(232, 160, 191, ${(0.5 * slashAlpha).toFixed(3)})`;
+            ctx.lineWidth = 10 * scaleX;
+            ctx.beginPath();
+            ctx.moveTo(tailX * scaleX, tailY * scaleY);
+            ctx.lineTo(headX * scaleX, headY * scaleY);
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+            ctx.strokeStyle = `rgba(255, 255, 255, ${slashAlpha.toFixed(3)})`;
+            ctx.lineWidth = 3 * scaleX;
+            ctx.beginPath();
+            ctx.moveTo(tailX * scaleX, tailY * scaleY);
+            ctx.lineTo(headX * scaleX, headY * scaleY);
+            ctx.stroke();
+            ctx.restore();
+        }
+        // 诗句逐字：0.45s 起、每字 0.13s，两行共 13 字，2.8s 起淡出。
+        const line1 = '我有一剑，';
+        const line2 = '可开天、辟地……';
+        const textStart = 0.45;
+        const perChar = 0.13;
+        const shown = Math.max(
+            0,
+            Math.min(13, Math.floor((elapsed - textStart) / perChar))
+        );
+        if (shown > 0) {
+            let textAlpha = Math.min(1, (elapsed - textStart) / 0.2);
+            if (elapsed > 2.8) {
+                textAlpha *= Math.max(0, (total - elapsed) / 0.6);
+            }
+            const fontSize = Math.max(20, Math.min(30, cssWidth * 0.062));
+            const centerX = (cssWidth / 2) * scaleX;
+            const baseY = cssHeight * 0.82 * scaleY;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.font = `600 ${Math.round(fontSize * scaleX)}px sans-serif`;
+            ctx.shadowColor = 'rgba(232, 160, 191, 0.9)';
+            ctx.shadowBlur = 18 * scaleX;
+            ctx.lineWidth = 4 * scaleX;
+            ctx.strokeStyle = `rgba(0, 0, 0, ${(0.45 * textAlpha).toFixed(3)})`;
+            ctx.fillStyle = `rgba(255, 255, 255, ${textAlpha.toFixed(3)})`;
+            const visible1 = line1.slice(0, Math.min(shown, line1.length));
+            const visible2 =
+                shown > line1.length ? line2.slice(0, shown - line1.length) : '';
+            if (visible1) {
+                ctx.strokeText(visible1, centerX, baseY - fontSize * scaleX * 0.8);
+                ctx.fillText(visible1, centerX, baseY - fontSize * scaleX * 0.8);
+            }
+            if (visible2) {
+                ctx.strokeText(visible2, centerX, baseY + fontSize * scaleX * 0.8);
+                ctx.fillText(visible2, centerX, baseY + fontSize * scaleX * 0.8);
+            }
         }
         ctx.restore();
     }
