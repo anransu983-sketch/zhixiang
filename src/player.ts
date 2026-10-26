@@ -417,54 +417,41 @@ function buildPlayerPage(): HTMLElement {
         qualityBadge.hidden = text === '';
     };
 
-    bottomRow.append(repeatButton, heartButton, sleepButton, lyricsButton, qualityBadge);
+    const visualEntry = document.createElement('button');
+    visualEntry.type = 'button';
+    visualEntry.className = 'player-bottom-btn';
+    visualEntry.setAttribute('aria-controls', 'visual-panel');
+    const visualEntryTile = document.createElement('span');
+    visualEntryTile.className = 'player-visual-tile';
+    visualEntryTile.textContent = '✦';
+    const visualEntryLabel = document.createElement('span');
+    visualEntryLabel.className = 'player-bottom-label';
+    visualEntryLabel.textContent = '视觉';
+    visualEntry.append(visualEntryTile, visualEntryLabel);
+    bottomRow.append(repeatButton, heartButton, sleepButton, lyricsButton, qualityBadge, visualEntry);
     content.appendChild(bottomRow);
     content.appendChild(sleepPicker);
 
-    // 可折叠「视觉」磁吸玻璃卡：与首页开发者卡同款 mag 结构（默认收起）。
-    // padding 挂在 .mag-pad 子层，不挂 .mag-inner——收起时 0fr 轨道压不住
-    // 带 padding 的夹层，沿用 0.1.49 折叠条的教训。
-    const visualCard = document.createElement('section');
-    visualCard.className = 'visual-card mag-card';
+    // 「视觉」收进底排（0.1.57）：独立磁吸卡撤掉，底排末尾 ✦ 入口，
+    // 点开展开玻璃面板（与睡眠选择器同款展开位）。折叠走 grid 0fr/1fr
+    // + inner 夹层，padding 挂 pad 子层（0.1.49 折叠条教训）。
+    const visualPanel = document.createElement('section');
+    visualPanel.className = 'visual-panel';
+    visualPanel.id = 'visual-panel';
     let storedVisualOpen = false;
     try {
         storedVisualOpen = localStorage.getItem('zx.player.visualOpen') === '1';
     } catch {
         storedVisualOpen = false;
     }
-    visualCard.dataset.open = String(storedVisualOpen);
-    const visualHead = document.createElement('button');
-    visualHead.type = 'button';
-    visualHead.className = 'mag-head';
-    visualHead.setAttribute('aria-expanded', String(storedVisualOpen));
-    visualHead.setAttribute('aria-controls', 'visual-body');
-    const visualTile = document.createElement('span');
-    visualTile.className = 'mag-tile';
-    visualTile.textContent = '✦';
-    const visualTitles = document.createElement('span');
-    visualTitles.className = 'mag-titles';
-    const visualTitle = document.createElement('span');
-    visualTitle.className = 'mag-title';
-    visualTitle.textContent = '视觉';
-    const visualSub = document.createElement('span');
-    visualSub.className = 'mag-sub';
-    visualTitles.append(visualTitle, visualSub);
-    const visualChev = document.createElement('span');
-    visualChev.className = 'mag-chevron';
-    visualChev.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" /></svg>';
-    visualHead.append(visualTile, visualTitles, visualChev);
-    visualCard.appendChild(visualHead);
-    const visualBody = document.createElement('div');
-    visualBody.className = 'mag-body';
-    visualBody.id = 'visual-body';
+    visualPanel.dataset.open = String(storedVisualOpen);
     const visualInner = document.createElement('div');
-    visualInner.className = 'mag-inner';
+    visualInner.className = 'visual-panel-inner';
     const visualPad = document.createElement('div');
-    visualPad.className = 'mag-pad';
+    visualPad.className = 'visual-panel-pad';
     visualInner.appendChild(visualPad);
-    visualBody.appendChild(visualInner);
-    visualCard.appendChild(visualBody);
-    content.appendChild(visualCard);
+    visualPanel.appendChild(visualInner);
+    content.appendChild(visualPanel);
     const toggleDefs: { key: keyof VisualToggles; label: string }[] = [
         { key: 'rain', label: '雨滴玻璃（默认开）' },
         { key: 'particles', label: '粒子舞台' },
@@ -519,14 +506,11 @@ function buildPlayerPage(): HTMLElement {
                 wallpaperNotice.hidden = false;
             });
     });
-    const updateVisualSub = (): void => {
-        const n = Object.values(toggles).filter(Boolean).length;
-        visualSub.textContent = n > 0 ? `已开 ${n} 项` : '全部关闭';
-    };
     const setVisualOpen = (open: boolean, persist = true): void => {
-        visualCard.dataset.open = String(open);
-        visualHead.setAttribute('aria-expanded', String(open));
-        visualBody.toggleAttribute('inert', !open);
+        visualPanel.dataset.open = String(open);
+        visualPanel.toggleAttribute('inert', !open);
+        visualEntry.classList.toggle('is-active', open);
+        visualEntry.setAttribute('aria-expanded', String(open));
         if (persist) {
             try {
                 localStorage.setItem('zx.player.visualOpen', open ? '1' : '0');
@@ -536,19 +520,17 @@ function buildPlayerPage(): HTMLElement {
         }
         if (open) {
             window.setTimeout(() => {
-                visualCard.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                visualPanel.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
             }, 280);
         }
     };
-    visualHead.addEventListener('click', () => {
-        setVisualOpen(visualCard.dataset.open !== 'true');
+    visualEntry.addEventListener('click', () => {
+        setVisualOpen(visualPanel.dataset.open !== 'true');
     });
-    // 开关自己的 change 先跑（目标阶段改 toggles 并存盘），冒泡到卡身
-    // 再刷副标题，读到的就是新值；开关存盘逻辑本身不动。
-    visualPad.addEventListener('change', updateVisualSub);
-    // 首帧：dataset 在挂载前已写，无过渡；收起时 inert 防焦点进卡身。
-    visualBody.toggleAttribute('inert', !storedVisualOpen);
-    updateVisualSub();
+    // 首帧：dataset 在挂载前已写，无过渡；收起时 inert 防焦点进面板。
+    visualPanel.toggleAttribute('inert', !storedVisualOpen);
+    visualEntry.classList.toggle('is-active', storedVisualOpen);
+    visualEntry.setAttribute('aria-expanded', String(storedVisualOpen));
 
     // 封面：img 一直挂着（模糊底要靠它），是否显示由 updateCoverVisibility 定；
     // 套的显隐只看有没有曲 + 词开没开，img 与占位在套里二选一，

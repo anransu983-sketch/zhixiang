@@ -1087,7 +1087,7 @@ body {
     flex-direction: column;
     align-items: center;
     gap: 2px;
-    min-width: 52px;
+    min-width: 44px;
     padding: 6px 4px;
     border: none;
     background: transparent;
@@ -1280,13 +1280,37 @@ body {
     text-shadow: 0 1px 6px rgba(0, 0, 0, 0.45);
 }
 
-/* 播放页视觉磁吸玻璃卡（0.1.52）：复用首页开发者卡的 mag 结构，
-   卡面走歌词卡同款玻璃（梅子暗底 + 白光 + 粉底 + blur 14 saturate 1.6）。
-   padding 挂在 .mag-pad 子层，不挂 .mag-inner——收起时 0fr 轨道压不住
-   带 padding 的夹层，沿用 0.1.49 折叠条的教训。磁砖与头行直接复用
-   .mag-tile / .mag-head（40px、--g-cta），只换 ✦ 字形。 */
-.visual-card {
+/* 播放页视觉面板（0.1.57）：独立磁吸卡撤掉，视觉收进底排——底排末尾
+   ✦ 入口，点开展开玻璃面板（与睡眠选择器同款展开位）。
+   面板沿用歌词卡同款玻璃；折叠走 grid 0fr/1fr + inner 夹层，
+   padding 挂 pad 子层（0.1.49 折叠条教训）。收起时边框透明，
+   不留一条细线。底排 6 项，按钮 min-width 随之 52px → 44px。 */
+.player-visual-tile {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    flex: none;
+    border-radius: 8px;
+    background: var(--g-cta);
+    color: var(--accent-ink);
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.visual-panel {
+    display: grid;
+    grid-template-rows: 0fr;
     width: 100%;
+    border: 1px solid transparent;
+    border-radius: 18px;
+    transition: grid-template-rows 0.26s ease-out, border-color 0.26s ease-out, box-shadow 0.26s ease-out, background-color 0.26s ease-out;
+}
+
+.visual-panel[data-open="true"] {
+    grid-template-rows: 1fr;
     border-color: rgba(255, 255, 255, 0.14);
     background-color: rgba(30, 8, 22, 0.38);
     background-image:
@@ -1294,31 +1318,19 @@ body {
         linear-gradient(rgba(232, 160, 191, 0.14), rgba(232, 160, 191, 0.14));
     -webkit-backdrop-filter: blur(14px) saturate(1.6);
     backdrop-filter: blur(14px) saturate(1.6);
-    transition: box-shadow 0.26s ease-out, border-color 0.26s ease-out;
-}
-
-.visual-card[data-open="true"] {
-    border-color: rgba(232, 160, 191, 0.35);
     box-shadow: 0 0 0 1px var(--accent-line), var(--glow-violet);
 }
 
-.visual-card[data-open="true"] .mag-chevron {
-    transform: rotate(180deg);
+.visual-panel-inner {
+    overflow: hidden;
+    min-height: 0;
 }
 
-.visual-card[data-open="true"] .mag-body {
-    grid-template-rows: 1fr;
-}
-
-.visual-card .mag-inner {
-    padding: 0;
-}
-
-.visual-card .mag-pad {
+.visual-panel-pad {
     padding: 4px 14px 14px;
 }
 
-.visual-card .player-toggle {
+.visual-panel .player-toggle {
     display: flex;
     align-items: center;
     gap: 12px;
@@ -1327,13 +1339,13 @@ body {
     font-size: 15px;
 }
 
-.visual-card .player-toggle input[type="checkbox"] {
+.visual-panel .player-toggle input[type="checkbox"] {
     width: 20px;
     height: 20px;
     accent-color: var(--accent, #e8a0bf);
 }
 
-.visual-card .visual-degraded {
+.visual-panel .visual-degraded {
     margin-top: 10px;
     padding: 8px 10px;
     border-radius: 10px;
@@ -1346,7 +1358,7 @@ body {
     text-shadow: none;
 }
 
-.visual-card .player-wallpaper-btn {
+.visual-panel .player-wallpaper-btn {
     width: 100%;
     height: 44px;
     margin-top: 12px;
