@@ -175,6 +175,13 @@ function buildPlayerPage(): HTMLElement {
     playPauseButton.className = 'player-icon-btn is-main';
     playPauseButton.textContent = '▶︎';
     playPauseButton.addEventListener('click', () => {
+        // 一击光圈：与迷你播放圆同款，box-shadow 扩散 450ms。
+        playPauseButton.classList.remove('burst');
+        void playPauseButton.offsetWidth;
+        playPauseButton.classList.add('burst');
+        window.setTimeout(() => {
+            playPauseButton.classList.remove('burst');
+        }, 450);
         void togglePlay();
     });
     const nextButton = document.createElement('button');

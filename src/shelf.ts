@@ -11,7 +11,7 @@
 
 import { getCurrentState, onTrackChange, playQueue } from './playback';
 import type { PlaybackState } from './playback';
-import { friendlyPosterError, posterFallbackBackground } from './posters';
+import { friendlyPosterError, posterFallbackBackground, posterHue } from './posters';
 import type { PosterSectionDefinition } from './posters';
 import type { Poster } from './types';
 
@@ -94,9 +94,11 @@ export function renderShelfLayer(
             return;
         }
         notice.hidden = true;
-        for (const poster of posters) {
+        for (const [index, poster] of posters.entries()) {
             postersById.set(poster.id, poster);
             const record = renderShelfRecord(poster, playNotice);
+            // 入场 stagger 与海报卡同口径：最多前 8 张。
+            record.style.setProperty('--i', String(Math.min(index, 7)));
             records.set(poster.id, record);
             stage.appendChild(record);
         }
@@ -111,6 +113,8 @@ function renderShelfRecord(poster: Poster, playNotice: HTMLElement): HTMLElement
     const record = document.createElement('button');
     record.type = 'button';
     record.className = 'shelf-record';
+    // 辉光取色：id 哈希色相，与海报占位同一口径。
+    record.style.setProperty('--hue', String(posterHue(poster.id)));
 
     const cover = document.createElement('div');
     cover.className = 'shelf-record-cover';

@@ -4,7 +4,12 @@
 import { getCurrentState, next, onTimeUpdate, onTrackChange, playQueue, previous, runYtmUpstreamExperiment, togglePlay } from './playback';
 import { openPlayerPage } from './player';
 import type { PlaybackState } from './playback';
-import { POSTER_SECTIONS, friendlyPosterError, posterFallbackBackground } from './posters';
+import {
+    POSTER_SECTIONS,
+    friendlyPosterError,
+    posterFallbackBackground,
+    posterHue
+} from './posters';
 import type { PosterSectionDefinition } from './posters';
 import { renderShelfLayer } from './shelf';
 import { clearLogs, copyPlainText, getLogEntries, getLogModules, getLogText, subscribeLogs, type LogEntry } from './logger';
@@ -99,6 +104,30 @@ export function renderHome(): HTMLElement {
     const section = document.createElement('section');
     section.className = 'home';
 
+    // 花里胡哨的节流阀：减动效或低内存机器（deviceMemory<=4）直接进 lite，
+    // CSS 里把光环/闪光/呼吸/入场动画一律关掉，只留静态辉光与渐变。
+    const deviceMemory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
+    if (
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches ||
+        (deviceMemory !== undefined && deviceMemory <= 4)
+    ) {
+        document.documentElement.dataset.fx = 'lite';
+    }
+
+    // 涟漪：一次委托，点哪个按钮就把点击坐标写进该按钮的 --x/--y，
+    // CSS 里 ::after 的径向渐变从该点晕开；海报卡与架子卡不走这套
+    // （它们有自己的闪光/按压），免得两个 ::after 打架。
+    document.addEventListener('pointerdown', (event) => {
+        const target = event.target as HTMLElement | null;
+        const button = target?.closest?.('button');
+        if (!button) {
+            return;
+        }
+        const rect = button.getBoundingClientRect();
+        button.style.setProperty('--x', `${event.clientX - rect.left}px`);
+        button.style.setProperty('--y', `${event.clientY - rect.top}px`);
+    });
+
     const pagesWrap = document.createElement('div');
     pagesWrap.className = 'tab-pages';
     section.appendChild(pagesWrap);
@@ -158,6 +187,13 @@ export function renderHome(): HTMLElement {
     playPauseButton.className = 'np-btn np-play';
     playPauseButton.textContent = '▶';
     playPauseButton.addEventListener('click', () => {
+        // 播放圆一击光圈：box-shadow 扩散 450ms，不用伪元素（涟漪已占 ::after）。
+        playPauseButton.classList.remove('burst');
+        void playPauseButton.offsetWidth;
+        playPauseButton.classList.add('burst');
+        window.setTimeout(() => {
+            playPauseButton.classList.remove('burst');
+        }, 450);
         void togglePlay();
     });
     bar.appendChild(playPauseButton);
@@ -180,9 +216,13 @@ export function renderHome(): HTMLElement {
     };
 
     const refreshBar = (state: PlaybackState): void => {
+        // 暂停态挂 body 上：均衡器、坞辉光呼吸等动画靠它停，不用各处再订阅。
+        document.body.classList.toggle('is-paused', !state.playing);
         if (state.track) {
             infoTitle.textContent = state.track.title;
             status.textContent = state.error ?? state.track.artist;
+            // 坞辉光跟当前曲目走：id 哈希取色相，与海报占位同一口径。
+            bar.style.setProperty('--hue', String(posterHue(state.track.id)));
             if (state.track.coverUrl) {
                 cover.src = state.track.coverUrl;
                 cover.hidden = false;
@@ -272,11 +312,28 @@ export function renderHome(): HTMLElement {
         for (const [id, button] of tabButtons) {
             button.classList.toggle('is-active', id === tabId);
         }
+        // 滑动指示条：按激活按钮实测位置走，不用 25% 估算（padding/gap 会偏）。
+        const activeButton = tabButtons.get(tabId);
+        if (activeButton && tabIndicator) {
+            tabIndicator.style.width = `${activeButton.offsetWidth}px`;
+            tabIndicator.style.transform = `translateX(${activeButton.offsetLeft}px)`;
+        }
         window.scrollTo(0, scrollTops.get(tabId) ?? 0);
+        // 切页后海报开关滑块也要重定位（页刚挂上时量不到宽）。
+        requestAnimationFrame(() => {
+            positionPosterThumbs();
+        });
     }
+
+    window.addEventListener('resize', () => {
+        positionPosterThumbs();
+    });
 
     const tabBar = document.createElement('nav');
     tabBar.className = 'tab-bar';
+    const tabIndicator = document.createElement('div');
+    tabIndicator.className = 'tab-indicator';
+    tabBar.appendChild(tabIndicator);
     const TAB_DEFS: Array<{ id: HomeTabId; label: string }> = [
         { id: 'local', label: '本地' },
         { id: 'netease', label: '网易云' },
@@ -416,32 +473,79 @@ async function runLogUpload(button: HTMLButtonElement): Promise<void> {
 }
 
 function renderDeveloperSection(): HTMLElement {
-    const section = document.createElement('section');
-    section.className = 'developer';
+    // 磁吸折叠卡（Folia 设置页式）：平时只露头行，点整行展开；
+    // 状态持久化，默认收起——你是主要使用者，重开回到上次的状态。
+    const DEV_OPEN_KEY = 'zx.dev.open';
+    let devOpen = localStorage.getItem(DEV_OPEN_KEY) === '1';
 
-    const title = document.createElement('h2');
+    const section = document.createElement('section');
+    section.className = 'developer mag-card dev-card';
+    section.dataset.open = devOpen ? 'true' : 'false';
+
+    const head = document.createElement('button');
+    head.type = 'button';
+    head.className = 'mag-head';
+    head.setAttribute('aria-expanded', devOpen ? 'true' : 'false');
+    head.setAttribute('aria-controls', 'dev-body');
+
+    const tile = document.createElement('span');
+    tile.className = 'mag-tile';
+    tile.textContent = '>_';
+    head.appendChild(tile);
+
+    const headTitles = document.createElement('span');
+    headTitles.className = 'mag-titles';
+    const title = document.createElement('span');
+    title.className = 'mag-title';
     title.textContent = '开发者';
     const debugChip = document.createElement('span');
     debugChip.className = 'dev-debug-chip';
     debugChip.textContent = 'DEBUG';
     title.appendChild(debugChip);
-    section.appendChild(title);
+    headTitles.appendChild(title);
+    const sub = document.createElement('span');
+    sub.className = 'mag-sub';
+    sub.textContent = '运行日志与内存监控';
+    headTitles.appendChild(sub);
+    head.appendChild(headTitles);
+
+    // 收起时头行右侧只露总数徽标；有 ERR 时染红（下面 render 里刷）。
+    const countBadge = document.createElement('span');
+    countBadge.className = 'dev-count-badge';
+    countBadge.textContent = '0';
+    head.appendChild(countBadge);
+
+    const chevron = document.createElement('span');
+    chevron.className = 'mag-chevron';
+    chevron.textContent = '▾';
+    head.appendChild(chevron);
+    section.appendChild(head);
+
+    const body = document.createElement('div');
+    body.className = 'mag-body';
+    body.id = 'dev-body';
+    const inner = document.createElement('div');
+    inner.className = 'mag-inner';
+    body.appendChild(inner);
+    section.appendChild(body);
 
     const hint = document.createElement('p');
     hint.className = 'developer-hint';
     hint.textContent = '运行日志存本机（重启后保留），并自动传到 VPS，不用再手动上传；筛好后点 COPY 可把当前看到的日志发出来定位问题。';
-    section.appendChild(hint);
+    inner.appendChild(hint);
 
-    const actions = document.createElement('div');
-    actions.className = 'developer-actions';
+    // 展开后的顺序（Claude 稿，一个不少）：说明 → CONSOLE 行 → 三测试行 →
+    // 搜索行 → LEVEL/MODULE 双列 → 日志盒。
+    const consoleRow = document.createElement('div');
+    consoleRow.className = 'dev-console-row';
 
     const consoleLabel = document.createElement('span');
     consoleLabel.className = 'dev-console-label';
-    actions.appendChild(consoleLabel);
+    consoleRow.appendChild(consoleLabel);
 
     const copyButton = document.createElement('button');
     copyButton.className = 'login-btn';
-    actions.appendChild(copyButton);
+    consoleRow.appendChild(copyButton);
 
     const clearButton = document.createElement('button');
     clearButton.className = 'login-btn login-btn-ghost';
@@ -449,7 +553,12 @@ function renderDeveloperSection(): HTMLElement {
     clearButton.addEventListener('click', () => {
         clearLogs();
     });
-    actions.appendChild(clearButton);
+    consoleRow.appendChild(clearButton);
+    inner.appendChild(consoleRow);
+
+    const testRow = document.createElement('div');
+    testRow.className = 'dev-test-row';
+    inner.appendChild(testRow);
 
     // 回显测试（Claude 2026-10-25 实验 1）：把 eapi 的原样请求头经桥发到
     // httpbin.org/headers，看服务端实际收到的是什么——先测一次原样头，
@@ -461,7 +570,7 @@ function renderDeveloperSection(): HTMLElement {
     echoButton.addEventListener('click', () => {
         void runEchoTest(echoButton);
     });
-    actions.appendChild(echoButton);
+    testRow.appendChild(echoButton);
 
     // 上传日志（VPS 直读）：把当前全部日志原文发到英国 9929 VPS 的接收服务，
     // 以后不用再 COPY 粘贴。口令由 CI secret 在构建时注入，不进公开仓库源码；
@@ -472,7 +581,7 @@ function renderDeveloperSection(): HTMLElement {
     uploadButton.addEventListener('click', () => {
         void runLogUpload(uploadButton);
     });
-    actions.appendChild(uploadButton);
+    testRow.appendChild(uploadButton);
 
     // 上游复现实验：同一 YTM 直链由代理原生取三段（0-1MiB、0-1MiB、
     // 1MiB-2MiB），区分双载伪影、重放被拒与后续窗口被拒。结果记日志。
@@ -487,8 +596,7 @@ function renderDeveloperSection(): HTMLElement {
             experimentButton.textContent = '上游复现实验';
         });
     });
-    actions.appendChild(experimentButton);
-    section.appendChild(actions);
+    testRow.appendChild(experimentButton);
 
     const filters = document.createElement('div');
     filters.className = 'dev-filters';
@@ -518,11 +626,11 @@ function renderDeveloperSection(): HTMLElement {
     const moduleSelect = document.createElement('select');
     moduleSelect.className = 'dev-select';
     filters.appendChild(moduleSelect);
-    section.appendChild(filters);
+    inner.appendChild(filters);
 
     const box = document.createElement('div');
     box.className = 'developer-log';
-    section.appendChild(box);
+    inner.appendChild(box);
 
     let searchText = '';
     let levelFilter = 'ALL';
@@ -544,8 +652,19 @@ function renderDeveloperSection(): HTMLElement {
         });
     };
 
+    // 收起时不渲染日志 DOM（500 行），只刷头行徽标：总数＋有 ERR 染红；
+    // 展开时再全量渲染——这是折叠卡真正的性能收益。
+    const renderBadge = (all: LogEntry[]): void => {
+        countBadge.textContent = String(all.length);
+        countBadge.classList.toggle('has-err', all.some((entry) => entry.level === 'error'));
+    };
+
     const render = (): void => {
         const all = getLogEntries();
+        renderBadge(all);
+        if (!devOpen) {
+            return;
+        }
         const shown = filtered();
         consoleLabel.textContent = `CONSOLE (${all.length})`;
         copyButton.textContent = `COPY ${shown.length}`;
@@ -624,6 +743,18 @@ function renderDeveloperSection(): HTMLElement {
         window.setTimeout(() => {
             copyButton.textContent = base;
         }, 2000);
+    });
+
+    head.addEventListener('click', () => {
+        devOpen = !devOpen;
+        localStorage.setItem(DEV_OPEN_KEY, devOpen ? '1' : '0');
+        section.dataset.open = devOpen ? 'true' : 'false';
+        head.setAttribute('aria-expanded', devOpen ? 'true' : 'false');
+        if (devOpen) {
+            render();
+            // 展开后把卡顶滚到视口顶，免得日志盒被坞盖住。
+            section.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        }
     });
 
     render();
@@ -1083,20 +1214,46 @@ let currentPosterLayout: PosterLayout = loadPosterLayout();
 const posterModules = new Set<HTMLElement>();
 const posterLayoutButtons: HTMLButtonElement[] = [];
 
+// 海报三向开关的滑动滑块：每组开关一个，按激活按钮实测位置走；
+// 页隐藏时量不到宽，跳过，等切页回来再定位。
+function positionPosterThumbs(): void {
+    for (const switchEl of document.querySelectorAll('.poster-layout-switch')) {
+        const thumb = switchEl.querySelector('.poster-layout-thumb');
+        const active = switchEl.querySelector('.poster-layout-btn.is-active');
+        if (!(thumb instanceof HTMLElement) || !(active instanceof HTMLElement)) {
+            continue;
+        }
+        if (active.offsetWidth === 0) {
+            continue;
+        }
+        thumb.style.width = `${active.offsetWidth}px`;
+        thumb.style.transform = `translateX(${active.offsetLeft}px)`;
+    }
+}
+
 function applyPosterLayout(layout: PosterLayout): void {
     currentPosterLayout = layout;
     localStorage.setItem(POSTER_LAYOUT_KEY, layout);
     for (const module of posterModules) {
         module.dataset.layout = layout;
+        // 入场动画重播：切形态时把 enter 摘掉、强制回流、再挂上，
+        // 卡片 rise 动画重新跑一遍；只在切形态时做，不干扰滚动。
+        module.classList.remove('enter');
+        void module.offsetWidth;
+        module.classList.add('enter');
     }
     for (const button of posterLayoutButtons) {
         button.classList.toggle('is-active', button.dataset.layout === layout);
     }
+    // 滑块跟激活按钮走：按钮位置要等布局稳定，下一帧再量。
+    requestAnimationFrame(() => {
+        positionPosterThumbs();
+    });
 }
 
 function renderPosterModule(definition: PosterSectionDefinition): HTMLElement {
     const module = document.createElement('section');
-    module.className = 'poster-module';
+    module.className = 'poster-module enter';
     module.dataset.layout = currentPosterLayout;
     posterModules.add(module);
 
@@ -1108,6 +1265,10 @@ function renderPosterModule(definition: PosterSectionDefinition): HTMLElement {
 
     const layoutSwitch = document.createElement('div');
     layoutSwitch.className = 'poster-layout-switch';
+    // 滑动滑块：垫在按钮下面，位置由 positionPosterThumbs 按激活按钮实测写。
+    const layoutThumb = document.createElement('div');
+    layoutThumb.className = 'poster-layout-thumb';
+    layoutSwitch.appendChild(layoutThumb);
     for (const layout of POSTER_LAYOUTS) {
         const button = document.createElement('button');
         button.type = 'button';
@@ -1176,9 +1337,11 @@ function renderPosterModule(definition: PosterSectionDefinition): HTMLElement {
             return;
         }
         notice.hidden = true;
-        for (const poster of posters) {
+        for (const [index, poster] of posters.entries()) {
             postersById.set(poster.id, poster);
             const card = renderPosterCard(poster, playNotice);
+            // 入场 rise 的 stagger：最多前 8 张，后面的不再加延迟。
+            card.style.setProperty('--i', String(Math.min(index, 7)));
             cards.set(poster.id, card);
             grid.appendChild(card);
         }
@@ -1192,6 +1355,8 @@ function renderPosterCard(poster: Poster, playNotice: HTMLElement): HTMLElement 
     const card = document.createElement('button');
     card.type = 'button';
     card.className = 'poster-card';
+    // 辉光取色：id 哈希色相，与占位渐变同一口径。
+    card.style.setProperty('--hue', String(posterHue(poster.id)));
 
     const coverWrap = document.createElement('div');
     coverWrap.className = 'poster-cover-wrap';
@@ -1323,6 +1488,8 @@ function renderSourceSection(
                 trackList.hidden = next;
                 if (next) {
                     notice.hidden = true;
+                    emptyIcon.hidden = true;
+                    emptyHint.hidden = true;
                 }
             }
         });
@@ -1334,6 +1501,19 @@ function renderSourceSection(
     notice.className = 'source-notice';
     notice.hidden = true;
     block.appendChild(notice);
+
+    // 空态装饰：同心圆环里的渐变音符，上下浮动；只在空态时出现，
+    // 不跟提示文字抢——图标与提示、副提示同显同隐。
+    const emptyIcon = document.createElement('div');
+    emptyIcon.className = 'source-empty-icon';
+    emptyIcon.textContent = '♪';
+    emptyIcon.hidden = true;
+    block.appendChild(emptyIcon);
+
+    const emptyHint = document.createElement('p');
+    emptyHint.className = 'source-empty-hint';
+    emptyHint.hidden = true;
+    block.appendChild(emptyHint);
 
     const trackList = document.createElement('ul');
     trackList.className = 'track-list';
@@ -1354,6 +1534,8 @@ function renderSourceSection(
             notice.textContent = friendlySearchError(error);
             notice.classList.add('is-error');
             notice.hidden = false;
+            emptyIcon.hidden = true;
+            emptyHint.hidden = true;
             return;
         }
         if (token !== requestToken) {
@@ -1366,16 +1548,28 @@ function renderSourceSection(
         trackList.hidden = hideLocalList;
         if (hideLocalList) {
             notice.hidden = true;
+            emptyIcon.hidden = true;
+            emptyHint.hidden = true;
         }
         const localNotice = source.id === 'local' ? getLocalNotice() : null;
         if (tracks.length === 0 && localNotice) {
             notice.textContent = localNotice;
             notice.hidden = false;
+            emptyIcon.hidden = false;
+            emptyHint.hidden = true;
         } else if (tracks.length === 0) {
             notice.textContent = query.trim() ? '没有匹配的曲目。' : '这里还没有歌曲。';
             notice.hidden = false;
+            emptyIcon.hidden = false;
+            // 副提示：没搜时指引搜，有搜无结果时指引换词；主句保持原样。
+            emptyHint.textContent = query.trim()
+                ? '换个关键词试试。'
+                : '在上面搜一首歌，结果会出现在这里。';
+            emptyHint.hidden = false;
         } else {
             notice.hidden = true;
+            emptyIcon.hidden = true;
+            emptyHint.hidden = true;
         }
     };
 
@@ -1403,6 +1597,8 @@ function renderTracks(list: HTMLElement, tracks: Track[], status: HTMLElement): 
     for (const [index, track] of tracks.entries()) {
         const item = document.createElement('li');
         item.className = 'track-row';
+        // 正在播行的渐变与辉光取色：曲目 id 哈希，与海报同一口径。
+        item.style.setProperty('--hue', String(posterHue(track.id)));
         if (track.id === playingId) {
             item.classList.add('is-playing');
         }

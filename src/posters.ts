@@ -22,8 +22,13 @@ export interface PosterSectionDefinition {
 // 无封面占位：照搬 Folia BravaisTile.fallbackBackground 的思路——按 id 字符和取色相，
 // 每张颜色不同，墙面不显空；但亮度与饱和按 Claude 视觉稿降过（38%→22%、55%），
 // 不用 Folia 原值（58%→18%、68%/62%），免得墙面刺眼。CSS 里的统一紫渐变只作兜底。
+// 同一哈希也供辉光/渐变用（--hue），省得各处重算。
+export function posterHue(id: string): number {
+    return [...id].reduce((sum, character) => sum + character.charCodeAt(0), 0) % 360;
+}
+
 export function posterFallbackBackground(id: string): string {
-    const hue = [...id].reduce((sum, character) => sum + character.charCodeAt(0), 0) % 360;
+    const hue = posterHue(id);
     return `linear-gradient(145deg, hsl(${hue} 55% 38%), hsl(${(hue + 52) % 360} 55% 22%))`;
 }
 

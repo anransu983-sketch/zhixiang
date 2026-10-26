@@ -2,9 +2,20 @@
     color-scheme: dark;
 
     --bg: #09090b;
-    --surface-1: #131316;
-    --surface-2: #1a1a1f;
+    --surface-1: #14121a;
+    --surface-2: #1c1824;
     --surface-3: #232329;
+    /* 0.1.48 花里胡哨 token：上一轮的克制收回，粉/紫/青可以做辉光、边框与渐变。 */
+    --violet: #a78bfa;
+    --cyan: #67e8f9;
+    --gold: #fbbf24;
+    --g-aurora: linear-gradient(120deg, #e8a0bf, #a78bfa 55%, #67e8f9);
+    --g-cta: linear-gradient(135deg, #f3b4cf, #e8a0bf 45%, #c4a0f0);
+    --glass: rgba(255, 255, 255, 0.06);
+    --glass-line: rgba(255, 255, 255, 0.1);
+    --glow-pink: 0 0 18px rgba(232, 160, 191, 0.45);
+    --glow-violet: 0 0 22px rgba(167, 139, 250, 0.4);
+    --ease-pop: cubic-bezier(0.34, 1.56, 0.64, 1);
     --hairline: rgba(255, 255, 255, 0.06);
     --text: #f4f4f5;
     --text-2: #a1a1aa;
@@ -1446,4 +1457,623 @@ body {
     .track-eq i {
         animation: none;
     }
+}
+
+/* ============ 0.1.48 花里胡哨（Claude 第八轮） ============ */
+
+/* 旋转极光边框：@property 角度版。Claude 稿的伪元素法在这里行不通——
+   封面是 absolute inset 0 全覆盖，会把伪元素边框盖在下面；边框盒渐变
+   不存在这问题。只用在特性位与架子首卡两处，每屏最多一个。 */
+@property --ring-angle {
+    syntax: '<angle>';
+    initial-value: 0deg;
+    inherits: false;
+}
+
+@keyframes ring-rotate {
+    to {
+        --ring-angle: 360deg;
+    }
+}
+
+.poster-module[data-layout="wall"] .poster-card:first-child {
+    border: 2px solid transparent;
+    background:
+        linear-gradient(var(--surface-1), var(--surface-1)) padding-box,
+        conic-gradient(from var(--ring-angle), #e8a0bf, #a78bfa, #67e8f9, #e8a0bf) border-box;
+    box-shadow: none;
+    animation: ring-rotate 8s linear infinite;
+}
+
+.shelf-stage .shelf-record:first-child {
+    border: 2px solid transparent;
+    background:
+        linear-gradient(var(--surface-1), var(--surface-1)) padding-box,
+        conic-gradient(from var(--ring-angle), #e8a0bf, #a78bfa, #67e8f9, #e8a0bf) border-box;
+    transform: scale(1.04);
+    animation: ring-rotate 8s linear infinite;
+}
+
+.shelf-stage .shelf-record:first-child:active {
+    transform: scale(1);
+}
+
+/* 海报辉光：每张按 id 色相的静态外辉光（不动画，不耗合成层）。 */
+.poster-card {
+    box-shadow:
+        inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+        0 14px 40px -10px hsl(var(--hue, 330) 85% 55% / 0.55);
+}
+
+.shelf-record {
+    box-shadow: 0 14px 40px -10px hsl(var(--hue, 330) 85% 55% / 0.55);
+}
+
+.shelf-record.is-playing {
+    box-shadow:
+        0 0 0 1px var(--accent),
+        0 14px 40px -10px hsl(var(--hue, 330) 85% 55% / 0.55);
+}
+
+/* 闪光：只扫特性位与架子首卡（每屏最多 2 层动画，性能预算内）；
+   其余卡只有静态辉光。0.2Hz：5s 周期里前 25% 扫过、后 75% 静止。 */
+.poster-module[data-layout="wall"] .poster-card:first-child::after,
+.shelf-stage .shelf-record:first-child .shelf-record-face::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(105deg, transparent 40%, rgba(255, 255, 255, 0.18) 50%, transparent 60%);
+    transform: translateX(-120%);
+    animation: poster-shimmer 5s ease-in-out infinite;
+    pointer-events: none;
+}
+
+@keyframes poster-shimmer {
+    0% {
+        transform: translateX(-120%);
+    }
+
+    25% {
+        transform: translateX(220%);
+    }
+
+    100% {
+        transform: translateX(220%);
+    }
+}
+
+/* 特性位标题：白字＋暗角文字阴影（已是 overlay 渐变底），标题下 3px 极光条。 */
+.poster-title {
+    text-shadow: 0 1px 8px rgba(0, 0, 0, 0.6);
+}
+
+.poster-module[data-layout="wall"] .poster-card:first-child .poster-title {
+    padding-bottom: 4px;
+    border-bottom: 3px solid;
+    border-image: linear-gradient(90deg, #e8a0bf, #a78bfa, #67e8f9) 1;
+}
+
+/* 正在播行：渐变底＋左侧色条（inset 阴影，不占布局、不推文字）＋呼吸辉光。 */
+.track-row {
+    position: relative;
+}
+
+.track-row.is-playing {
+    background: linear-gradient(90deg, hsl(var(--hue, 330) 70% 50% / 0.22), transparent 70%);
+    box-shadow: inset 3px 0 0 hsl(var(--hue, 330) 70% 55%);
+}
+
+.track-row.is-playing::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 12px;
+    box-shadow: 0 0 24px hsl(var(--hue, 330) 80% 60% / 0.35);
+    opacity: 0.35;
+    animation: row-breathe 3s ease-in-out infinite alternate;
+    pointer-events: none;
+}
+
+@keyframes row-breathe {
+    from {
+        opacity: 0.35;
+    }
+
+    to {
+        opacity: 0.8;
+    }
+}
+
+/* 均衡器：三柱不同周期＋底部原点；暂停时定住（body.is-paused 由首页刷新）。 */
+.track-eq i {
+    transform-origin: bottom;
+}
+
+.track-eq i:nth-child(1) {
+    animation-duration: 0.9s;
+}
+
+.track-eq i:nth-child(2) {
+    animation-duration: 1.1s;
+}
+
+.track-eq i:nth-child(3) {
+    animation-duration: 1.3s;
+}
+
+body.is-paused .track-eq i {
+    animation-play-state: paused;
+}
+
+body.is-paused .poster-module[data-layout="wall"] .poster-card:first-child,
+body.is-paused .shelf-stage .shelf-record:first-child,
+body.is-paused .poster-module[data-layout="wall"] .poster-card:first-child::after,
+body.is-paused .shelf-stage .shelf-record:first-child .shelf-record-face::after {
+    animation-play-state: paused;
+}
+
+/* Tab 栏：激活 Tab 极光字（栏里只有文字、没有图标，图标辉光无从附着）；
+   旧 ::after 粉条由滑动指示条取代（位置由 JS 按实测写）。 */
+.tab-btn.is-active {
+    background: var(--g-aurora);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+}
+
+.tab-indicator {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--g-aurora);
+    transition: transform 250ms var(--ease-pop), width 250ms var(--ease-pop);
+    pointer-events: none;
+}
+
+/* 坞：底部 1px 极光线＋跟曲目走的静态辉光＋播放时呼吸的底部辉光。 */
+.now-playing-bar::before {
+    content: '';
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    bottom: 0;
+    height: 1px;
+    background: var(--g-aurora);
+    pointer-events: none;
+}
+
+.now-playing-bar:not(.is-idle) {
+    box-shadow: var(--shadow-float), 0 0 32px hsl(var(--hue, 330) 80% 60% / 0.35);
+}
+
+.now-playing-bar:not(.is-idle)::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 16px;
+    background: radial-gradient(120% 100% at 50% 120%, hsl(var(--hue, 330) 80% 60% / 0.18), transparent 70%);
+    opacity: 0.6;
+    animation: dock-breathe 4s ease-in-out infinite alternate;
+    pointer-events: none;
+}
+
+body.is-paused .now-playing-bar::after {
+    animation-play-state: paused;
+}
+
+@keyframes dock-breathe {
+    from {
+        opacity: 0.3;
+    }
+
+    to {
+        opacity: 0.8;
+    }
+}
+
+/* 迷你播放条进度：极光填充＋ 6px 发光头（track 有 overflow hidden，0% 时头被裁掉）。 */
+.np-progress-fill {
+    position: relative;
+    background: var(--g-aurora);
+}
+
+.np-progress-fill::after {
+    content: '';
+    position: absolute;
+    right: -3px;
+    top: 50%;
+    width: 6px;
+    height: 6px;
+    margin-top: -3px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 0 8px rgba(255, 255, 255, 0.9), 0 0 12px var(--accent);
+}
+
+/* 海报三向开关：滑动滑块（JS 按激活按钮实测定位），激活字深墨色压在渐变上。 */
+.poster-layout-switch {
+    position: relative;
+}
+
+.poster-layout-thumb {
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    left: 0;
+    border-radius: 7px;
+    background: var(--g-cta);
+    box-shadow: var(--glow-pink);
+    transition: transform 250ms var(--ease-pop), width 250ms var(--ease-pop);
+    pointer-events: none;
+}
+
+.poster-layout-btn {
+    position: relative;
+    z-index: 1;
+}
+
+.poster-layout-btn.is-active {
+    background: transparent;
+    color: var(--accent-ink);
+}
+
+/* 入场：切形态或进页时卡片 stagger 上浮（backwards 填充，动画结束即还权，
+   不像 both 那样一直占着 transform、把按压缩放顶掉）。 */
+@keyframes poster-rise {
+    from {
+        transform: translateY(16px);
+        opacity: 0;
+    }
+
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
+.poster-module.enter .poster-card,
+.poster-module.enter .shelf-record {
+    animation: poster-rise 0.45s var(--ease-pop) backwards;
+    animation-delay: calc(var(--i, 0) * 45ms);
+}
+
+/* 按钮层级与按压：primary 渐变＋辉光，secondary 玻璃；按压 0.96/90ms（替掉 0.1.44 的 0.98/130ms）。
+   涟漪：委托 pointerdown 写 --x/--y，::after 径向晕开；海报卡与架子卡不走这套
+   （它们有闪光/辉光，两个 ::after 会打架），Tab 激活态的 ::after 已由指示条取代。 */
+.login-btn.login-btn-primary {
+    background: var(--g-cta);
+    box-shadow: var(--glow-pink);
+}
+
+.np-btn.np-play {
+    background: var(--g-cta);
+    box-shadow: var(--glow-pink);
+}
+
+.login-btn {
+    background: var(--glass);
+    border-color: var(--glass-line);
+}
+
+.login-btn-ghost {
+    background: transparent;
+    border-color: transparent;
+}
+
+button {
+    position: relative;
+}
+
+button:not(.poster-card):not(.shelf-record)::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: radial-gradient(circle at var(--x, -100px) var(--y, -100px), rgba(255, 255, 255, 0.28), transparent 55%);
+    opacity: 0;
+    transition: opacity 500ms;
+    pointer-events: none;
+}
+
+button:not(.poster-card):not(.shelf-record):active::after {
+    opacity: 1;
+    transition: opacity 0s;
+}
+
+.tab-btn.is-active::after {
+    content: none;
+}
+
+.tab-btn,
+.poster-layout-btn,
+.poster-card,
+.track-row,
+.login-btn,
+.np-btn,
+.np-info,
+.shelf-record {
+    transition: transform 90ms ease-out;
+}
+
+.tab-btn:active,
+.poster-layout-btn:active,
+.poster-card:active,
+.track-row:active,
+.login-btn:active,
+.np-btn:active,
+.np-info:active,
+.shelf-record:active {
+    transform: scale(0.96);
+}
+
+@keyframes play-burst {
+    from {
+        box-shadow: 0 0 0 0 rgba(232, 160, 191, 0.6);
+    }
+
+    to {
+        box-shadow: 0 0 0 18px rgba(232, 160, 191, 0);
+    }
+}
+
+.np-btn.np-play.burst,
+.player-icon-btn.is-main.burst {
+    animation: play-burst 450ms ease-out;
+}
+
+/* 页标题与登录区标题：极光字＋进页 1.2s 扫过（Tab 显隐会重启动画，正好当进页扫）。 */
+.home h2,
+.home .login-area > h2 {
+    background: var(--g-aurora);
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: title-sweep 1.2s ease-out;
+}
+
+@keyframes title-sweep {
+    from {
+        background-position: 100% 0;
+    }
+
+    to {
+        background-position: 0 0;
+    }
+}
+
+/* 空态：96px 同心辉光环里的渐变音符，上下浮动；副提示灰字跟在主句下面。 */
+.source-empty-icon {
+    width: 96px;
+    height: 96px;
+    margin: 20px auto 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    font-size: 44px;
+    background: var(--g-aurora);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    box-shadow:
+        0 0 0 1px rgba(232, 160, 191, 0.35),
+        0 0 0 14px rgba(167, 139, 250, 0.18),
+        0 0 0 27px rgba(103, 232, 249, 0.1);
+    animation: empty-float 4s ease-in-out infinite alternate;
+}
+
+.source-empty-icon[hidden] {
+    display: none;
+}
+
+@keyframes empty-float {
+    from {
+        transform: translateY(-6px);
+    }
+
+    to {
+        transform: translateY(6px);
+    }
+}
+
+.source-empty-hint {
+    margin: 6px 0 0;
+    color: var(--text-3);
+    text-align: center;
+    font-size: 13px;
+}
+
+/* 吸顶搜索：上一轮的毛玻璃底按 Claude 第八轮改回实色（backdrop blur 全屏重绘贵）。 */
+.source-search-wrap {
+    background: rgba(9, 9, 11, 0.94);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+}
+
+/* 登录卡与开发者卡共用磁吸卡外观：surface-2＋极光细边；登录卡不折叠。 */
+.login-block {
+    border: 1px solid transparent;
+    background:
+        linear-gradient(var(--surface-2), var(--surface-2)) padding-box,
+        var(--g-aurora) border-box;
+}
+
+.mag-card {
+    border: 1px solid transparent;
+    border-radius: var(--r-card);
+    background:
+        linear-gradient(var(--surface-2), var(--surface-2)) padding-box,
+        var(--g-aurora) border-box;
+}
+
+.dev-card[data-open="true"] {
+    box-shadow: 0 0 0 1px var(--accent-line), var(--glow-violet);
+}
+
+.mag-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    min-height: 64px;
+    padding: 12px 14px;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: transform 130ms ease-out;
+}
+
+.mag-head:active {
+    transform: scale(0.985);
+}
+
+.mag-tile {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    flex: none;
+    border-radius: 10px;
+    background: var(--g-cta);
+    color: var(--accent-ink);
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    font-size: 15px;
+    font-weight: 700;
+}
+
+.mag-titles {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.mag-title {
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.mag-sub {
+    color: var(--text-3);
+    font-size: 12px;
+}
+
+.dev-count-badge {
+    flex: none;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    font-size: 12px;
+}
+
+.dev-count-badge.has-err {
+    background: rgba(248, 113, 113, 0.18);
+    color: var(--err);
+}
+
+.mag-chevron {
+    flex: none;
+    color: var(--text-2);
+    font-size: 20px;
+    transition: transform 220ms ease-out;
+}
+
+.dev-card[data-open="true"] .mag-chevron {
+    transform: rotate(180deg);
+}
+
+.mag-body {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 0.26s var(--ease-pop);
+}
+
+.dev-card[data-open="true"] .mag-body {
+    grid-template-rows: 1fr;
+}
+
+.mag-inner {
+    overflow: hidden;
+    min-height: 0;
+    padding: 0 14px 14px;
+}
+
+.dev-console-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.dev-test-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.dev-console-row .login-btn,
+.dev-test-row .login-btn {
+    height: 34px;
+    padding: 0 14px;
+    border-radius: 10px;
+}
+
+.dev-filters {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+}
+
+.dev-search {
+    grid-column: span 2;
+}
+
+/* 节流：减动效与 lite 模式下新动画一律停（进场/光环/闪光/呼吸/浮动/扫标题）。
+   lite 由 JS 在减动效或 deviceMemory<=4 时挂 html[data-fx="lite"]。 */
+@media (prefers-reduced-motion: reduce) {
+    .poster-module.enter .poster-card,
+    .poster-module.enter .shelf-record,
+    .poster-module[data-layout="wall"] .poster-card:first-child,
+    .shelf-stage .shelf-record:first-child,
+    .poster-module[data-layout="wall"] .poster-card:first-child::after,
+    .shelf-stage .shelf-record:first-child .shelf-record-face::after,
+    .track-row.is-playing::before,
+    .now-playing-bar:not(.is-idle)::after,
+    .source-empty-icon,
+    .home h2,
+    .home .login-area > h2 {
+        animation: none;
+    }
+
+    .tab-indicator,
+    .poster-layout-thumb,
+    .mag-chevron,
+    .mag-body,
+    .mag-head {
+        transition: none;
+    }
+}
+
+html[data-fx="lite"] .poster-module.enter .poster-card,
+html[data-fx="lite"] .poster-module.enter .shelf-record,
+html[data-fx="lite"] .poster-module[data-layout="wall"] .poster-card:first-child,
+html[data-fx="lite"] .shelf-stage .shelf-record:first-child,
+html[data-fx="lite"] .poster-module[data-layout="wall"] .poster-card:first-child::after,
+html[data-fx="lite"] .shelf-stage .shelf-record:first-child .shelf-record-face::after,
+html[data-fx="lite"] .track-row.is-playing::before,
+html[data-fx="lite"] .now-playing-bar:not(.is-idle)::after,
+html[data-fx="lite"] .source-empty-icon,
+html[data-fx="lite"] .home h2,
+html[data-fx="lite"] .home .login-area > h2 {
+    animation: none;
 }
