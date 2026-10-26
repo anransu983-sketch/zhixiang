@@ -526,7 +526,16 @@ async function tryPlayerClient(
         return { stream: null, loginRequired: false, responded: false, responseVisitorData: null };
     }
     // 网络实情：只记协议/TLS/头名，不记任何值；门失败时也有响应，照样记。
-    console.log(`[Ytm] 网络实情：${client.name} 协议 ${response.networkProtocol ?? '?'} / TLS ${response.tlsVersion ?? '?'} ${response.tlsCipher ?? ''} / 发头 [${(response.requestHeaderNames ?? []).join(',')}] / 收头 [${(response.responseHeaderNames ?? []).join(',')}]`);
+    // 注意：Capacitor 传回来的头名不一定是数组（0.1.66 实测 join 直接抛错，
+    // 整条取链在第一个客户端就炸了，门根本没测到），这里按实际类型兜底，
+    // 诊断行绝不能再炸掉取链。
+    const joinNames = (v: unknown): string => {
+        if (Array.isArray(v)) return v.join(',');
+        if (typeof v === 'string') return v;
+        if (v && typeof v === 'object') return Object.values(v as Record<string, unknown>).join(',');
+        return '';
+    };
+    console.log(`[Ytm] 网络实情：${client.name} 协议 ${response.networkProtocol ?? '?'} / TLS ${response.tlsVersion ?? '?'} ${response.tlsCipher ?? ''} / 发头 [${joinNames(response.requestHeaderNames)}] / 收头 [${joinNames(response.responseHeaderNames)}]`);
     if (response.status !== 200) {
         console.log(`[Ytm] ${client.name} 不可用：状态 ${response.status}`);
         return { stream: null, loginRequired: false, responded: true, responseVisitorData: null };
