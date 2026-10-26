@@ -1,6 +1,6 @@
 // 播放页（第 8 块，全新写）：全屏播放页，参考另一 App 的全屏播放页布局。
 //
-// 布局（自上而下）：返回按钮 → 居中大歌词（默认显示）→ 歌名/歌手 →
+// 布局（自上而下）：返回按钮 → 定高可折叠歌词卡（默认显示）→ 歌名/歌手 →
 // 进度条（仅展示，不可拖动：第 5 块没有 seek 口子，不发明）→ 图标控制条 →
 // 底排（循环 / 收藏 / 睡眠定时 / 词 / 音质角标）→ 可折叠「视觉」区。
 // 歌词隐藏时中央改显示大封面；封面模糊底由第 8 块画布画（见 visuals.ts），
@@ -33,6 +33,7 @@ import { openLiveWallpaperPicker, setWallpaperState } from './native/wallpaper-p
 import { loadVisualToggles, saveVisualToggles, VisualStage } from './visuals';
 import type { VisualToggles } from './visuals';
 import { getLocalCoverDataUrl } from './sources/local';
+import { posterFallbackBackground, posterHue } from './posters';
 import { getLastYtmStreamMeta } from './sources/ytm';
 import type { Track } from './types';
 
@@ -40,7 +41,7 @@ let overlay: HTMLElement | null = null;
 let stage: VisualStage | null = null;
 let refreshPage: ((state: PlaybackState) => void) | null = null;
 let renderLyricsPage: ((note: string | null) => void) | null = null;
-let highlightLinePage: ((index: number) => void) | null = null;
+let highlightLinePage: ((index: number, behavior?: ScrollBehavior) => void) | null = null;
 let updateDegradedNotePage: (() => void) | null = null;
 let toggles: VisualToggles = loadVisualToggles();
 let lyricLines: LyricLine[] = [];
@@ -122,16 +123,56 @@ function buildPlayerPage(): HTMLElement {
     });
     content.appendChild(backButton);
 
-    // 中央区：歌词（默认显示）与大封面（二选一，词隐藏时显示封面）。
+    // 中央区：歌词卡（默认显示）与大封面（二选一，词隐藏时显示封面）。
+    // 歌词卡定高 + 折叠：折叠时只露当前行一条，展开恢复居中滚动；
+    // 折叠态存 localStorage，默认展开。无词时不露折叠钮，只显示提示。
+    const lyricCard = document.createElement('section');
+    lyricCard.className = 'lyric-card';
+    const foldButton = document.createElement('button');
+    foldButton.type = 'button';
+    foldButton.className = 'lyric-fold';
+    foldButton.textContent = '⌃';
+    const lyricBarWrap = document.createElement('div');
+    lyricBarWrap.className = 'lyric-bar-wrap';
+    const lyricBar = document.createElement('div');
+    lyricBar.className = 'lyric-bar';
+    lyricBarWrap.appendChild(lyricBar);
+    const lyricCollapse = document.createElement('div');
+    lyricCollapse.className = 'lyric-collapse';
+    const lyricClip = document.createElement('div');
+    lyricClip.className = 'lyric-clip';
     const lyricBox = document.createElement('div');
     lyricBox.className = 'player-lyrics';
-    content.appendChild(lyricBox);
+    lyricClip.appendChild(lyricBox);
+    lyricCollapse.appendChild(lyricClip);
+    lyricCard.append(foldButton, lyricBarWrap, lyricCollapse);
+    // 折叠偏好只在创建时读一次，之后由 applyFoldState 维护；
+    // 这里直接写 dataset，不经过函数，免得撞上后面 const 的初始化顺序。
+    const FOLD_KEY = 'zx.player.lyricsFolded';
+    let lyricsFolded = false;
+    try {
+        lyricsFolded = localStorage.getItem(FOLD_KEY) === '1';
+    } catch {
+        lyricsFolded = false;
+    }
+    lyricCard.dataset.folded = lyricsFolded ? 'true' : 'false';
+    foldButton.setAttribute('aria-expanded', lyricsFolded ? 'false' : 'true');
+    foldButton.setAttribute('aria-label', lyricsFolded ? '展开歌词' : '折叠歌词');
+    content.appendChild(lyricCard);
 
+    // 封面套：img 与占位共用；img 一直挂着（模糊底要靠它），
+    // 是否显示由 updateCoverVisibility 定，无图时露占位不露破图。
+    const coverWrap = document.createElement('div');
+    coverWrap.className = 'player-cover-wrap';
+    coverWrap.hidden = true;
     const cover = document.createElement('img');
     cover.className = 'player-cover';
     cover.alt = '封面';
-    cover.hidden = true;
-    content.appendChild(cover);
+    const coverPlaceholder = document.createElement('div');
+    coverPlaceholder.className = 'player-cover-ph';
+    coverPlaceholder.textContent = '♪';
+    coverWrap.append(cover, coverPlaceholder);
+    content.appendChild(coverWrap);
 
     const title = document.createElement('h2');
     title.className = 'player-title';
@@ -447,16 +488,20 @@ function buildPlayerPage(): HTMLElement {
         visualsButton.textContent = toggleBox.hidden ? '视觉 ▾' : '视觉 ▴';
     });
 
-    // 封面：元素一直挂着（模糊底要靠它），是否显示由 updateCoverVisibility 定；
-    // 加载完成才显示，加载失败隐藏，不露破图与 alt 文字。
+    // 封面：img 一直挂着（模糊底要靠它），是否显示由 updateCoverVisibility 定；
+    // 套的显隐只看有没有曲 + 词开没开，img 与占位在套里二选一，
+    // 加载完成露图，加载失败或无图露占位，不露破图与 alt 文字。
     let coverExpected = '';
     let coverLoaded = false;
     let coverForTrackId: string | null = null;
+    let coverTrackPresent = false;
     const coverCache = new Map<string, string>();
     const updateCoverVisibility = (): void => {
-        const show = !lyricsShown && coverLoaded && coverExpected !== '';
-        cover.hidden = !show;
-        cover.classList.toggle('player-cover-large', show);
+        const showWrap = coverTrackPresent && !lyricsShown;
+        coverWrap.hidden = !showWrap;
+        coverWrap.classList.toggle('player-cover-large', showWrap);
+        coverWrap.classList.toggle('has-img', coverLoaded);
+        cover.hidden = !coverLoaded;
     };
     cover.addEventListener('load', () => {
         coverLoaded = true;
@@ -485,7 +530,15 @@ function buildPlayerPage(): HTMLElement {
         updateCoverVisibility();
     };
     const applyCover = (track: Track | null): void => {
-        if (!track || !track.coverUrl) {
+        if (!track) {
+            coverForTrackId = null;
+            coverTrackPresent = false;
+            hideCover();
+            return;
+        }
+        coverTrackPresent = true;
+        coverPlaceholder.style.background = posterFallbackBackground(track.id);
+        if (!track.coverUrl) {
             coverForTrackId = null;
             hideCover();
             return;
@@ -533,7 +586,7 @@ function buildPlayerPage(): HTMLElement {
 
     lyricsButton.addEventListener('click', () => {
         lyricsShown = !lyricsShown;
-        lyricBox.hidden = !lyricsShown;
+        lyricCard.hidden = !lyricsShown;
         updateLyricsButton();
         updateCoverVisibility();
         stage?.poke();
@@ -614,20 +667,69 @@ function buildPlayerPage(): HTMLElement {
             lyricBox.appendChild(lineEl);
         });
         currentLineIndex = -1;
+        // 折叠条默认露首行；纯文本没有当前行，条就一直是首行。
+        lyricBar.textContent = lyricLines[0]?.text ?? '';
+        if (lyricLines.length === 0) {
+            // 无词：不露折叠钮，卡片保持展开只显示提示，不改存档偏好。
+            foldButton.hidden = true;
+            applyFoldState(false, false);
+        } else {
+            foldButton.hidden = false;
+            applyFoldState(lyricsFolded, false);
+        }
     };
     renderLyricsPage = renderLyrics;
 
-    const highlightLine = (index: number): void => {
+    const highlightLine = (index: number, behavior: ScrollBehavior = 'smooth'): void => {
         const children = lyricBox.querySelectorAll('.player-lyric-line');
         children.forEach((child, childIndex) => {
             child.classList.toggle('is-active', childIndex === index);
         });
-        if (index >= 0) {
-            const active = children[index] as HTMLElement | undefined;
-            active?.scrollIntoView({ block: 'center' });
+        if (index < 0) {
+            return;
         }
+        const active = children[index] as HTMLElement | undefined;
+        if (!active) {
+            return;
+        }
+        if (lyricsFolded) {
+            // 折叠时不滚，只更新单行条；展开时 applyFoldState 会用 auto 复位。
+            lyricBar.textContent = lyricLines[index]?.text ?? '';
+            return;
+        }
+        // 手动居中：scrollIntoView 会连带滚外层播放页，只滚歌词盒本身。
+        lyricBox.scrollTo({
+            top: active.offsetTop - lyricBox.clientHeight / 2 + active.offsetHeight / 2,
+            behavior
+        });
     };
     highlightLinePage = highlightLine;
+
+    // 折叠状态机：展开时若已有当前行，用 auto 一步复位居中，
+    // 不让用户看到从旧位置平滑扫过去；renderLyrics 调时 currentLineIndex
+    // 已是 -1，不会误触。
+    const applyFoldState = (folded: boolean, persist: boolean): void => {
+        lyricsFolded = folded;
+        lyricCard.dataset.folded = folded ? 'true' : 'false';
+        foldButton.setAttribute('aria-expanded', folded ? 'false' : 'true');
+        foldButton.setAttribute('aria-label', folded ? '展开歌词' : '折叠歌词');
+        if (persist) {
+            try {
+                localStorage.setItem(FOLD_KEY, folded ? '1' : '0');
+            } catch {
+                // 存档写不进就当次有效，下次默认展开。
+            }
+        }
+        if (!folded && currentLineIndex >= 0) {
+            highlightLine(currentLineIndex, 'auto');
+        }
+    };
+    foldButton.addEventListener('click', () => {
+        applyFoldState(!lyricsFolded, true);
+    });
+    lyricBar.addEventListener('click', () => {
+        applyFoldState(false, true);
+    });
 
     window.addEventListener('resize', () => {
         if (!page.hidden) {
@@ -709,7 +811,8 @@ function refreshFromState(state: PlaybackState): void {
         renderLyrics(result.note);
         const index = findCurrentLineIndex(lyricLines, getCurrentState().currentTime * 1000);
         currentLineIndex = index;
-        highlightLinePage?.(index);
+        // 重开页直接定位，不平滑扫过去。
+        highlightLinePage?.(index, 'auto');
         void pushWallpaperState();
     });
     void pushWallpaperState();

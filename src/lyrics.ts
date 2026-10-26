@@ -12,7 +12,10 @@
 //   （标题＋歌手＋时长一次查到；同步词按 LRC 解析，纯文本只展示不高亮）。
 //   timedtext 本是视频字幕轨，很多歌曲根本没有这条轨——两顺位都没拿到时
 //   仍回说明，不编歌词。歌词只记条数与来源，从不记正文。
-// - 本地歌曲没有歌词源，同样只显示歌名与歌手。
+// - 本地歌曲（0.1.49 起接）：走 LRCLIB /search，不走 /get——/search 才能
+//   按时长 ±3 秒筛掉 DJ 剪辑版、按 instrumental 过滤纯音乐；
+//   命中才回词，没命中仍回原提示，不编词。命中与干净 miss 缓存 7 天，
+//   网络失败不缓存。歌词只记条数与来源，从不记正文。
 //
 // 歌词行只展示、不做点击跳转：本模块不提供 seek 口子，播放页也不给
 // 歌词行绑任何点击处理。
@@ -249,8 +252,185 @@ async function fetchYtmLyrics(track: Track): Promise<LyricResult> {
     return { lines: [], note: noLyricNote };
 }
 
+// 本地标题常带 DJ/抖音装饰（(DJ版)、_-_抖音…），查词库前先去掉，
+// 只去装饰，不改歌名本身。
+function cleanLocalTitle(title: string): string {
+    return title
+        .replace(/\s*[（(][^）)]*(DJ|抖音|Remix|REMIX)[^）)]*[）)]/g, '')
+        .replace(/\s*[-_]+抖音.*$/u, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+// 本地 LRCLIB 缓存：命中与干净 miss 都存，7 天过期，最多 200 条；
+// 纯文本行的时间记 Infinity，JSON 存不下 Infinity，所以分 kind 存：
+// synced 存 texts + times，plain 只存 texts，恢复时再拼 Infinity。
+interface LocalLyricCacheEntry {
+    at: number;
+    kind: 'synced' | 'plain' | 'miss';
+    texts?: string[];
+    times?: number[];
+}
+
+const LOCAL_LYRIC_CACHE_KEY = 'zx_lrclib_local_v1';
+const LOCAL_LYRIC_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const LOCAL_LYRIC_CACHE_MAX = 200;
+
+function loadLocalLyricCache(): Record<string, LocalLyricCacheEntry> {
+    try {
+        const raw = localStorage.getItem(LOCAL_LYRIC_CACHE_KEY);
+        const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            return parsed as Record<string, LocalLyricCacheEntry>;
+        }
+    } catch {
+        // 存档损坏时当空缓存。
+    }
+    return {};
+}
+
+function saveLocalLyricCache(cache: Record<string, LocalLyricCacheEntry>): void {
+    try {
+        const keys = Object.keys(cache);
+        if (keys.length > LOCAL_LYRIC_CACHE_MAX) {
+            // 按写入时间踢掉最旧的，只留 200 条。
+            keys.sort((a, b) => (cache[a]?.at ?? 0) - (cache[b]?.at ?? 0));
+            for (const key of keys.slice(0, keys.length - LOCAL_LYRIC_CACHE_MAX)) {
+                delete cache[key];
+            }
+        }
+        localStorage.setItem(LOCAL_LYRIC_CACHE_KEY, JSON.stringify(cache));
+    } catch {
+        // 写不进就当次有效。
+    }
+}
+
+async function fetchLocalLyrics(track: Track): Promise<LyricResult | null> {
+    const title = cleanLocalTitle(track.title);
+    if (!title) {
+        return null;
+    }
+    // 未知歌手：本地源默认填“未知歌手”，MediaStore 有时给 <unknown>，
+    // 两个都当空歌手，只按标题查。
+    const artist =
+        track.artist === '未知歌手' || track.artist === '<unknown>' ? '' : track.artist;
+    const durationSec =
+        track.durationMs && track.durationMs > 0 ? Math.round(track.durationMs / 1000) : null;
+    const key = `${artist}|${title}|${durationSec ?? ''}`;
+    const cache = loadLocalLyricCache();
+    const cached = cache[key];
+    if (cached && Date.now() - cached.at < LOCAL_LYRIC_CACHE_TTL_MS) {
+        if (cached.kind === 'miss') {
+            return null;
+        }
+        const texts = cached.texts ?? [];
+        if (texts.length === 0) {
+            return null;
+        }
+        if (cached.kind === 'plain') {
+            return {
+                lines: texts.map((text) => ({ timeMs: Number.POSITIVE_INFINITY, text })),
+                note: null
+            };
+        }
+        const times = cached.times ?? [];
+        const lines = texts
+            .map((text, i) => ({ timeMs: times[i] ?? 0, text }))
+            .filter((line) => line.text.length > 0);
+        return lines.length > 0 ? { lines, note: null } : null;
+    }
+    const params = new URLSearchParams();
+    if (artist) {
+        params.set('track_name', title);
+        params.set('artist_name', artist);
+    } else {
+        params.set('q', title);
+    }
+    let response;
+    try {
+        response = await httpGet(`https://lrclib.net/api/search?${params.toString()}`);
+    } catch {
+        // 网络失败不缓存，下次重查。
+        return null;
+    }
+    if (response.status !== 200) {
+        return null;
+    }
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(response.body);
+    } catch {
+        return null;
+    }
+    if (!Array.isArray(parsed)) {
+        return null;
+    }
+    // 匹配：先滤纯音乐，再按时长 ±3 秒筛（DJ 剪辑版长度对不上，
+    // 直接 miss 是对的——错时同步词比没词更糟）；无时长时取首个非纯音乐结果。
+    let best: Record<string, unknown> | null = null;
+    let bestDiff = Number.POSITIVE_INFINITY;
+    for (const raw of parsed as Array<Record<string, unknown>>) {
+        if (raw.instrumental === true) {
+            continue;
+        }
+        const duration = typeof raw.duration === 'number' ? raw.duration : null;
+        const diff =
+            durationSec !== null && duration !== null ? Math.abs(duration - durationSec) : 0;
+        if (durationSec !== null && duration !== null && diff > 3) {
+            continue;
+        }
+        if (diff < bestDiff) {
+            bestDiff = diff;
+            best = raw;
+        }
+    }
+    if (!best) {
+        cache[key] = { at: Date.now(), kind: 'miss' };
+        saveLocalLyricCache(cache);
+        return null;
+    }
+    const synced = typeof best.syncedLyrics === 'string' ? best.syncedLyrics : '';
+    if (synced.trim()) {
+        const lines = parseLrc(synced);
+        if (lines.length > 0) {
+            console.log(`[Lyrics] 本地 LRCLIB 同步词 ${lines.length} 行`);
+            cache[key] = {
+                at: Date.now(),
+                kind: 'synced',
+                texts: lines.map((line) => line.text),
+                times: lines.map((line) => line.timeMs)
+            };
+            saveLocalLyricCache(cache);
+            return { lines, note: null };
+        }
+    }
+    const plain = typeof best.plainLyrics === 'string' ? best.plainLyrics : '';
+    if (plain.trim()) {
+        const texts = plain
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter((line) => line.length > 0);
+        if (texts.length > 0) {
+            console.log(`[Lyrics] 本地 LRCLIB 纯文本 ${texts.length} 行`);
+            cache[key] = { at: Date.now(), kind: 'plain', texts };
+            saveLocalLyricCache(cache);
+            return {
+                lines: texts.map((text) => ({ timeMs: Number.POSITIVE_INFINITY, text })),
+                note: null
+            };
+        }
+    }
+    cache[key] = { at: Date.now(), kind: 'miss' };
+    saveLocalLyricCache(cache);
+    return null;
+}
+
 export async function fetchLyrics(track: Track): Promise<LyricResult> {
     if (track.source === 'local') {
+        const local = await fetchLocalLyrics(track);
+        if (local) {
+            return local;
+        }
         return { lines: [], note: '本地歌曲暂无歌词，只显示歌名与歌手。' };
     }
     if (track.source === 'ytm') {
