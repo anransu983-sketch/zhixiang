@@ -520,7 +520,12 @@ function buildPlayerPage(): HTMLElement {
         }
         if (open) {
             window.setTimeout(() => {
-                visualPanel.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                // nearest 只保证“露一点就够”：面板顶已在屏内时几乎不滚，
+                // 面板身子就留在屏底之外。底超屏时才滚到底对齐，整块露出来。
+                const rect = visualPanel.getBoundingClientRect();
+                if (rect.bottom > window.innerHeight) {
+                    visualPanel.scrollIntoView({ block: 'end', behavior: 'smooth' });
+                }
             }, 280);
         }
     };
