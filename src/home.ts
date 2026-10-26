@@ -438,7 +438,7 @@ async function runEchoTest(button: HTMLButtonElement): Promise<void> {
     }
 }
 
-const LOG_UPLOAD_URL = 'https://probe.suanran9527.com/zhixiang-logs/upload';
+const LOG_UPLOAD_URL = 'http://38.59.249.99:18091/upload';
 const LOG_UPLOAD_TOKEN = import.meta.env.VITE_ZHIXIANG_LOG_TOKEN as string | undefined;
 
 async function runLogUpload(button: HTMLButtonElement): Promise<void> {

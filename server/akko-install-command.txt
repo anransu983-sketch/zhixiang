@@ -1,0 +1,9 @@
+Akko（圣何塞 38.59.249.99）芷湘日志接收服务一键安装命令（JuiceSSH root 下整条粘贴回车执行）：
+
+mkdir -p /opt/zhixiang-logs/logs && curl -fsSL https://raw.githubusercontent.com/anransu983-sketch/zhixiang/main/server/zhixiang-logs-receiver.py -o /opt/zhixiang-logs/receiver.py && sed -i 's/127\.0\.0\.1/0.0.0.0/' /opt/zhixiang-logs/receiver.py && python3 -m py_compile /opt/zhixiang-logs/receiver.py && UP=$(openssl rand -hex 16) && RD=$(openssl rand -hex 16) && printf 'UPLOAD_TOKEN=%s\nREAD_TOKEN=%s\n' "$UP" "$RD" > /opt/zhixiang-logs/tokens.txt && chmod 600 /opt/zhixiang-logs/tokens.txt && printf '[Unit]\nDescription=Zhixiang log receiver (Akko)\nAfter=network.target\n\n[Service]\nExecStart=/usr/bin/python3 /opt/zhixiang-logs/receiver.py\nEnvironment=ZX_PORT=18091\nEnvironment=ZX_DIR=/opt/zhixiang-logs/logs\nEnvironment=ZX_UPLOAD_TOKEN=%s\nEnvironment=ZX_READ_TOKEN=%s\nRestart=always\n\n[Install]\nWantedBy=multi-user.target\n' "$UP" "$RD" > /etc/systemd/system/zhixiang-logs.service && systemctl daemon-reload && systemctl enable --now zhixiang-logs && if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q active; then ufw allow 18091/tcp >/dev/null; fi && sleep 1 && systemctl is-active zhixiang-logs && curl -s http://127.0.0.1:18091/health && echo && curl -s "http://127.0.0.1:18091/read?token=$RD" | head -3 && echo "UPLOAD_TOKEN=$UP" && echo "READ_TOKEN=$RD" && echo "READ_URL=http://38.59.249.99:18091/read?token=$RD"
+
+说明：
+- 不用 nginx：Akko 上没有 probe 站点可挂反代，接收服务直接绑 0.0.0.0:18091（MyProbe 备份占 17234、s-ui 占 2095/2096/443，均不冲突）。
+- 口令由服务端现生、不进任何公开仓库：UPLOAD_TOKEN 填 GitHub secret ZHIXIANG_LOG_TOKEN（App 构建时注入），READ_TOKEN 只发给助手用来自动读日志。
+- 口令同时存 /opt/zhixiang-logs/tokens.txt（600 权限），以后轮换改这份文件 + unit + GitHub secret 即可。
+- 跑完应看到 active + ok + (no logs yet) + 两枚口令；缺任一项就把整段输出贴回。
