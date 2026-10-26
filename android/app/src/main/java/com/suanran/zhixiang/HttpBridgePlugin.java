@@ -103,9 +103,38 @@ public class HttpBridgePlugin extends Plugin {
             Request.Builder builder = new Request.Builder().url(urlText);
             String contentType = null;
             if (headers != null) {
+                // 发头顺序与 Folia 桥一致：头顺序是 YouTube 可见的指纹之一，
+                // 之前桥按 JSObject 键序发，与 Folia（UA、Name、Version、Content-Type）
+                // 不一致；这里按固定顺序先发已知头，其余按原键序补发。
+                String[] orderedNames = {
+                    "User-Agent", "X-YouTube-Client-Name", "X-YouTube-Client-Version",
+                    "Content-Type", "Cookie", "Authorization", "X-Goog-AuthUser"
+                };
+                java.util.Set<String> emitted = new java.util.HashSet<>();
+                for (String ordered : orderedNames) {
+                    Iterator<String> keys = headers.keys();
+                    while (keys.hasNext()) {
+                        String name = keys.next();
+                        if (!name.equalsIgnoreCase(ordered) || emitted.contains(name)) {
+                            continue;
+                        }
+                        String value = headers.optString(name, null);
+                        if (value != null) {
+                            builder.header(name, sanitizeHeaderValue(value));
+                            if (name.equalsIgnoreCase("Content-Type")) {
+                                contentType = value;
+                            }
+                            emitted.add(name);
+                        }
+                        break;
+                    }
+                }
                 Iterator<String> names = headers.keys();
                 while (names.hasNext()) {
                     String name = names.next();
+                    if (emitted.contains(name)) {
+                        continue;
+                    }
                     String value = headers.optString(name, null);
                     if (value != null) {
                         builder.header(name, sanitizeHeaderValue(value));

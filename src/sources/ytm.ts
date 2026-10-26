@@ -409,11 +409,11 @@ interface PlayerAttempt {
 // 播放链专用的 client 上下文：Folia 桥同款——全腿 en/US、
 // androidSdkVersion（>0 才带）、visitorData（有才带）。
 function playerClientContext(client: InnertubeClient, visitorData: string | null): Record<string, unknown> {
+    // 字段顺序与 Folia 桥一致（device/sdk 在前，hl/gl 在后，visitorData 最后）；
+    // JSON 解析不看顺序，对齐只为消掉最后一个体层差别。
     const context: Record<string, unknown> = {
         clientName: client.name,
-        clientVersion: client.version,
-        hl: 'en',
-        gl: 'US'
+        clientVersion: client.version
     };
     if (client.deviceMake) {
         context.deviceMake = client.deviceMake;
@@ -430,6 +430,8 @@ function playerClientContext(client: InnertubeClient, visitorData: string | null
     if (client.androidSdkVersion) {
         context.androidSdkVersion = client.androidSdkVersion;
     }
+    context.hl = 'en';
+    context.gl = 'US';
     if (visitorData) {
         context.visitorData = visitorData;
     }
@@ -510,11 +512,11 @@ async function tryPlayerClient(
         const bodyObject: Record<string, unknown> = {
             context,
             videoId,
-            racyCheckOk: true,
-            contentCheckOk: true,
             playbackContext: {
                 contentPlaybackContext: { vis: 0, splay: false, lactMilliseconds: '-1' }
-            }
+            },
+            racyCheckOk: true,
+            contentCheckOk: true
         };
         const body = JSON.stringify(bodyObject);
         response = await httpPost(`${PLAYER_URL}&key=${client.apiKey ?? INNERTUBE_KEY}`, body, headers);
@@ -537,7 +539,7 @@ async function tryPlayerClient(
         return { stream: null, loginRequired: false, responded: true, responseVisitorData: null };
     }
     const root = parsed as {
-        playabilityStatus?: { status?: unknown } | null;
+        playabilityStatus?: { status?: unknown; reason?: unknown; subreason?: unknown } | null;
         streamingData?: { adaptiveFormats?: unknown } | null;
         captions?: {
             playerCaptionsTracklistRenderer?: { captionTracks?: unknown } | null;
@@ -550,8 +552,13 @@ async function tryPlayerClient(
             : null;
     if (root?.playabilityStatus?.status !== 'OK') {
         // LOGIN_REQUIRED / UNPLAYABLE / ERROR 等都不是可用流，换下一客户端。
+        // reason/subreason 是 YouTube 的通用提示文案（不含凭证），记下来区分
+        // 机器人门还是别的 LOGIN_REQUIRED 成因。
         const status = String(root?.playabilityStatus?.status ?? '未知');
-        console.log(`[Ytm] ${client.name} 不可用：playability=${status}`);
+        const reason = typeof root?.playabilityStatus?.reason === 'string' ? root.playabilityStatus.reason : '';
+        const subreason = typeof root?.playabilityStatus?.subreason === 'string' ? root.playabilityStatus.subreason : '';
+        const psKeys = root?.playabilityStatus && typeof root.playabilityStatus === 'object' ? Object.keys(root.playabilityStatus).join(',') : '';
+        console.log(`[Ytm] ${client.name} 不可用：playability=${status} reason=${reason} subreason=${subreason} 字段[${psKeys}]`);
         return { stream: null, loginRequired: status === 'LOGIN_REQUIRED', responded: true, responseVisitorData };
     }
     // 字幕轨与音频流同一次返回：只记条数与语种，不记地址与正文。
