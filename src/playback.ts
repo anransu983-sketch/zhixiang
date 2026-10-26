@@ -51,7 +51,7 @@
 
 import { Capacitor } from '@capacitor/core';
 import { getSource } from './sources/index';
-import { resolveYtmStream } from './sources/ytm';
+import { isYtmGateError, resolveYtmStream } from './sources/ytm';
 import {
     ensureStreamProxy,
     startPlaybackService,
@@ -636,6 +636,11 @@ async function tryPlayFrom(
             console.log(
                 `[Playback] 跳过 ${track.title}：${error instanceof Error ? error.message : '未知原因'}`
             );
+            // 登录门：立即停跳，不再连跳整单续门（Claude 第十五轮）。
+            if (isYtmGateError(error)) {
+                console.log('[Playback] 撞登录门，停止自动跳歌');
+                break;
+            }
             if (failed >= MAX_CONSECUTIVE_SKIPS) {
                 console.log(`[Playback] 连续失败 ${failed} 首，停止自动跳歌`);
                 break;

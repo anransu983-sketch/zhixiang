@@ -204,30 +204,6 @@ export function sapisidHash(cookie: string): string | null {
 }
 
 // 有会话时补 Cookie 与同源 UA；无会话时原样返回，不动匿名请求。
-// SAPISID 与 __Secure-3PAPISID 是否两值不一致：标准会话两值相同；
-// 不同则签名取哪一个就有讲究（现取 plain SAPISID）。只返回布尔值，不记值。
-export function sapisidPairMismatched(): boolean {
-    const session = loadYtmSession();
-    if (!session) {
-        return false;
-    }
-    let plain: string | null = null;
-    let secure: string | null = null;
-    for (const pair of session.cookie.split(';')) {
-        const split = pair.indexOf('=');
-        if (split <= 0) {
-            continue;
-        }
-        const name = pair.slice(0, split).trim();
-        if (name === 'SAPISID' && plain === null) {
-            plain = pair.slice(split + 1).trim();
-        } else if (name === '__Secure-3PAPISID' && secure === null) {
-            secure = pair.slice(split + 1).trim();
-        }
-    }
-    return plain !== null && secure !== null && plain !== secure;
-}
-
 export function withYtmSession(headers: Record<string, string>): Record<string, string> {
     const session = loadYtmSession();
     if (!session) {

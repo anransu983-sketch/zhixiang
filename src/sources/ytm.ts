@@ -43,7 +43,7 @@
 // 由第 5 块的播放引擎实现（MSE 分块加载或本地 Range 代理均可，第 5 块定）。
 
 import { httpPost } from '../native/http';
-import { loadYtmSession, sapisidPairMismatched, withYtmSession } from './ytm-session';
+import { withYtmSession } from './ytm-session';
 import type { AudioSource, Poster, SourceId, Track } from '../types';
 
 const SEARCH_URL = 'https://music.youtube.com/youtubei/v1/search';
@@ -53,7 +53,7 @@ const INNERTUBE_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
 const SEARCH_LIMIT = 20;
 
 const HEADERS: Record<string, string> = {
-    'Content-Type': 'application/json'
+    'Content-Type': 'application/json; charset=utf-8'
 };
 
 // 有会话时补 Cookie、同源 UA 与 SAPISIDHASH 签名（见 ytm-session.ts），
@@ -358,7 +358,7 @@ class YtmSource implements AudioSource {
             context: { client: clientContext(SEARCH_CLIENT, false, 'US') },
             query: keyword
         });
-        const response = await httpPost(`${SEARCH_URL}?key=${INNERTUBE_KEY}`, body, requestHeaders());
+        const response = await httpPost(`${SEARCH_URL}?key=${INNERTUBE_KEY}`, body, { ...HEADERS });
         if (response.status !== 200) {
             throw new Error(`YTM 搜索失败（HTTP ${response.status}）`);
         }
@@ -399,14 +399,6 @@ class YtmSource implements AudioSource {
     }
 }
 
-// YTM 会话可疑标志：连续 LOGIN_REQUIRED 熔断时置位，取链成功时清零。
-// 播放层据此把跳歌文案换成“重新登录或换网络”的提示，不静默跳歌。
-let ytmSessionSuspect = false;
-
-export function isYtmSessionSuspect(): boolean {
-    return ytmSessionSuspect;
-}
-
 interface PlayerAttempt {
     stream: YtmStream | null;
     loginRequired: boolean;
@@ -445,12 +437,13 @@ function playerClientContext(client: InnertubeClient, visitorData: string | null
 }
 
 // visitor_id 端点（Folia 桥同款 WEB 参数；WEB key 与共享 key 是同一把）。
-// 匿名那份只存内存、冷启重取；登录那份与 cookie 同源、每次登录链现换、
-// 不缓存。取不到回 null，不拦路（缺了照样发 player 请求，只是更容易被挡）。
+// 匿名那份只存内存、冷启重取。取不到回 null，不拦路（缺了照样发 player
+// 请求，只是更容易被挡）。播放取链 0.1.63 起不再带会话，登录那份已随
+// 登录链一起删。
 const VISITOR_URL = 'https://www.youtube.com/youtubei/v1/visitor_id';
 const WEB_CLIENT_VERSION = '2.20260623.01.00';
 
-async function fetchVisitorId(signed: boolean): Promise<string | null> {
+async function fetchVisitorId(): Promise<string | null> {
     try {
         const body = JSON.stringify({
             context: {
@@ -462,7 +455,7 @@ async function fetchVisitorId(signed: boolean): Promise<string | null> {
                 }
             }
         });
-        const headers = signed ? withYtmSession(HEADERS) : { ...HEADERS };
+        const headers = { ...HEADERS };
         const response = await httpPost(`${VISITOR_URL}?prettyPrint=false&key=${INNERTUBE_KEY}`, body, headers);
         if (response.status !== 200) {
             return null;
@@ -481,7 +474,7 @@ async function ensureAnonymousVisitorData(): Promise<string | null> {
     if (anonymousVisitorData) {
         return anonymousVisitorData;
     }
-    const fresh = await fetchVisitorId(false);
+    const fresh = await fetchVisitorId();
     if (fresh) {
         anonymousVisitorData = fresh;
     }
@@ -666,7 +659,40 @@ async function runChain(
     return { stream: null, sawLoginGate, sawResponse };
 }
 
-export async function resolveYtmStream(track: Track): Promise<YtmStream> {
+// 登录门错误标记：播放层据此立即停跳（不再连跳整单续门）。
+// 不靠文案匹配——文案随时可改，标记跟错误走。
+const YTM_GATE_MARK = 'ytmGate';
+
+export function isYtmGateError(error: unknown): boolean {
+    return (
+        error instanceof Error &&
+        (error as Error & Record<string, unknown>)[YTM_GATE_MARK] === true
+    );
+}
+
+function gateError(message: string): Error {
+    const error = new Error(message);
+    (error as Error & Record<string, unknown>)[YTM_GATE_MARK] = true;
+    return error;
+}
+
+// 取链串行化（Folia 桥同款）：预取与播放可能同时问，一首一首答，
+// 不再并发取链刷屏——并发是 0.1.62 日志里连点风暴的来源之一。
+let resolveQueue: Promise<unknown> = Promise.resolve();
+
+// 登录门限流：撞门即计 strike，退避 [10,20,40,60] 分钟；成功清零。
+// 退避期内不再发请求（直接抛门错），不再拿新请求续门。
+let gateStrikes = 0;
+let gatedUntil = 0;
+const GATE_BACKOFF_MINUTES = [10, 20, 40, 60];
+
+export function resolveYtmStream(track: Track): Promise<YtmStream> {
+    const run = resolveQueue.then(() => doResolveYtmStream(track));
+    resolveQueue = run.catch(() => {});
+    return run;
+}
+
+async function doResolveYtmStream(track: Track): Promise<YtmStream> {
     if (track.streamUrl) {
         // 已有直链时不再取链；mimeType 与 contentLength 只有取链响应才给得出。
         lastYtmStream = { url: track.streamUrl, mimeType: '' };
@@ -677,47 +703,31 @@ export async function resolveYtmStream(track: Track): Promise<YtmStream> {
         throw new Error('这首歌不是 YTM 的曲目');
     }
     const videoId = track.id.slice(prefix.length);
+    // 退避期内：不发请求，直接抛门错（播放层据此停跳）。
+    if (Date.now() < gatedUntil) {
+        console.log('[Ytm] 限流保护中，跳过本次取链（未发请求）');
+        throw gateError('YTM 限流保护中，稍后再试');
+    }
     console.log(`[Ytm] 取链 ${track.title}`);
-    const session = loadYtmSession();
-    // 第一程：匿名链（Folia 桥同款结构）。匿名 visitorData 现取现缓存，
-    // 不带 cookie、不带签名——先证明匿名身份本身过不过得了门。
-    // 旧逻辑从第一次请求就带 cookie，且复用搜索响应的旧 visitorData；
-    // 所谓“裸重试”只去了 Cookie、没换 visitorData，测得并不干净。
+    // 只剩匿名链：VISIONOS/ANDROID_VR 不认 web cookie 签名（Claude 第十五轮），
+    // 登录链与匿名链实测同败，留着只会翻倍流量——0.1.63 起播放取链不再带会话。
+    // 榜单仍走会话头（见 requestHeaders），登录本身不动。
     const anonVisitor = await ensureAnonymousVisitorData();
     if (!anonVisitor) {
         console.log('[Ytm] 匿名 visitorData 未取到，继续裸发');
     }
     const anon = await runChain(videoId, HEADERS, anonVisitor, true);
     if (anon.stream) {
-        ytmSessionSuspect = false;
+        gateStrikes = 0;
+        gatedUntil = 0;
         return anon.stream;
     }
-    // 第二程：第一程撞了登录门、且手里有会话，才走登录链。登录 visitorData
-    // 与 cookie 同源现换、不缓存；头含 Cookie＋SAPISIDHASH＋AuthUser。
-    if (anon.sawLoginGate && session) {
-        const signedVisitor = await fetchVisitorId(true);
-        const signedHeaders = withYtmSession(HEADERS);
-        // 只记签名在不在，不记签名值；只记 SAPISID 条数，不记值。
-        if (signedHeaders['Authorization']) {
-            console.log('[Ytm] 登录链带 SAPISIDHASH 签名');
-        }
-        if (sapisidPairMismatched()) {
-            console.log('[Ytm] SAPISID 与 __Secure-3PAPISID 值不一致');
-        }
-        const signed = await runChain(videoId, signedHeaders, signedVisitor, false);
-        if (signed.stream) {
-            ytmSessionSuspect = false;
-            return signed.stream;
-        }
-        if (signed.sawLoginGate) {
-            ytmSessionSuspect = true;
-            throw new Error('YTM 会话可能失效（LOGIN_REQUIRED），请重新登录或换网络再试');
-        }
-    }
     if (anon.sawLoginGate) {
-        // 匿名撞门、无会话可走登录链：唯一解是登录或换网络。
-        ytmSessionSuspect = true;
-        throw new Error('YTM 会话可能失效（LOGIN_REQUIRED），请重新登录或换网络再试');
+        gateStrikes += 1;
+        const minutes = GATE_BACKOFF_MINUTES[Math.min(gateStrikes, GATE_BACKOFF_MINUTES.length) - 1]!;
+        gatedUntil = Date.now() + minutes * 60 * 1000;
+        console.log(`[Ytm] 撞登录门，限流保护 ${minutes} 分钟（连续 ${gateStrikes} 次）`);
+        throw gateError('YTM 触发登录门（LOGIN_REQUIRED），请换网络或稍后再试');
     }
     console.log(`[Ytm] 全部客户端失败 ${track.title}`);
     if (!anon.sawResponse) {
