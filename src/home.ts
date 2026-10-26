@@ -839,6 +839,9 @@ function renderNeteaseLoginBlock(): HTMLElement {
     // 当前码生成时刻（毫秒）：801 状态里显示“码已生成 Xs”，让短命码
     // 在界面上就能看出来，不用翻日志算。
     let keyBornAt = 0;
+    // 上次轮询完成时刻（毫秒）：回前台时若离上次轮询已久，说明切出
+    // 去期间计时器被冻结，再约一次补查，盖住网络未恢复的空查。
+    let lastPollDoneAt = 0;
     let qrVisibilityHandler: (() => void) | null = null;
     const stopPoll = (): void => {
         if (pollTimer !== undefined) {
@@ -1019,6 +1022,7 @@ function renderNeteaseLoginBlock(): HTMLElement {
                 return;
             } finally {
                 polling = false;
+                lastPollDoneAt = Date.now();
             }
             // 请求回来时流程已换代时同样丢弃：旧 tick 的 800 分支绝不能
             // 杀掉新轮询器、也不能再调度一次换码。
@@ -1114,12 +1118,23 @@ function renderNeteaseLoginBlock(): HTMLElement {
         qrVisibilityHandler = () => {
             if (document.visibilityState === 'visible') {
                 void tick();
+                // 切出去期间计时器可能被系统冻结（00:54 授权成功却没
+                // 拿到 803 就是这么错过的）：上次轮询是很久以前时，
+                // 再约一次补查，盖住回前台瞬间网络还没恢复的那次空查。
+                if (Date.now() - lastPollDoneAt > 20000) {
+                    window.setTimeout(() => {
+                        if (qrToken === token) {
+                            void tick();
+                        }
+                    }, 2000);
+                }
             }
         };
         document.addEventListener('visibilitychange', qrVisibilityHandler);
-        // 自调度链：802（已扫码待确认）后 1.5 秒一查，其余 3 秒；上轮
-        // 跑完才约下轮，不重叠。链的代次用本轮 token 守：新流程开始后
-        // 旧链的 finally 看到令牌已换就不再续约，不会双链并跑。
+        // 自调度链：Folia 同款 2 秒一查（802 已扫码待确认后 1.5 秒快查，
+        // 抢在用户点确认后第一时间拿到 803）；上轮跑完才约下轮，不重叠。
+        // 链的代次用本轮 token 守：新流程开始后旧链的 finally 看到令牌
+        // 已换就不再续约，不会双链并跑。
         const armPoll = (): void => {
             pollTimer = window.setTimeout(() => {
                 void tick().finally(() => {
@@ -1127,7 +1142,7 @@ function renderNeteaseLoginBlock(): HTMLElement {
                         armPoll();
                     }
                 });
-            }, lastPollCode === 802 ? 1500 : 3000);
+            }, lastPollCode === 802 ? 1500 : 2000);
         };
         armPoll();
     };

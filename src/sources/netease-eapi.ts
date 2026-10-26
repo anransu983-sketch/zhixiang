@@ -27,6 +27,10 @@
 //   PKCS#7 自己补齐，再逐块加密、拼起来。MD5 同样没有 WebCrypto，
 //   这里按 RFC 1321 全新实现（K 表由 sin 定义现算，不抄表）。
 // - 只给扫码登录用（unikey / client/login），其余接口不动。
+// - 0.1.68 套 Folia 扫码：Folia 与芷湘的 eapi 请求逐项对过无差别
+//   （同 key、同 UA、同 header 块、同 type:3），差在桥的 cookie
+//   持久化与轮询节奏——本版按 Folia 补齐 cookie 回写（见下），
+//   轮询改 2 秒（home.ts）。
 
 import { httpPost, type HttpResponse } from '../native/http';
 
@@ -87,28 +91,99 @@ function loadDeviceState(): EapiDeviceState {
     return next;
 }
 
-function rememberNmtid(setCookies: string[] | undefined): void {
-    if (!setCookies) {
+// Folia 桥同款 cookie 回写（0.1.68 套 Folia 扫码时补上）：Folia 的 eapi
+// 请求会把服务端响应里 Set-Cookie 的会话值带回后续请求（它的桥有
+// cookie 持久化，见 Folia eapi.js 的 EAPI_COOKIE_KEYS 与 NMTID 回写）。
+// 芷湘桥不配 CookieJar，之前只回写 NMTID 一个值——且手机上响应里
+// 从没出现过 NMTID，等于没回写。改成全量回写：每次 eapi 响应都把
+// Set-Cookie 的名值对存下来（日志只记名不记值），下次请求时按
+// Folia 的规则补进 header 块里缺失的项（已有生成值的不覆盖，设备
+// 身份 deviceId/_ntes_nuid/WNMCID/_ntes_nnid 永远用本地生成的）。
+const EAPI_COOKIE_KEYS = [
+    'MUSIC_U',
+    'MUSIC_A',
+    '__csrf',
+    'NMTID',
+    'WNMCID',
+    'WEVNSM',
+    '_ntes_nuid',
+    '_ntes_nnid',
+    'MUSIC_R_U',
+    'deviceId',
+    'sDeviceId',
+    'WM_TID',
+    'WM_NI',
+    'WM_NIKE'
+];
+const EAPI_COOKIE_STORAGE_KEY = 'zx_eapi_cookies_v1';
+
+let memoryCookies: Record<string, string> | null = null;
+
+function loadEapiCookies(): Record<string, string> {
+    if (memoryCookies) {
+        return memoryCookies;
+    }
+    let stored: Record<string, string> | null = null;
+    try {
+        const raw = localStorage.getItem(EAPI_COOKIE_STORAGE_KEY);
+        stored = raw ? (JSON.parse(raw) as Record<string, string>) : null;
+    } catch {
+        stored = null;
+    }
+    memoryCookies = stored && typeof stored === 'object' ? stored : {};
+    return memoryCookies;
+}
+
+function rememberEapiCookies(setCookies: string[] | undefined): void {
+    if (!setCookies || setCookies.length === 0) {
         return;
     }
+    const store = loadEapiCookies();
+    let changed = false;
+    const names: string[] = [];
     for (const entry of setCookies) {
-        const match = entry.match(/(?:^|;\s*)NMTID=([^;]+)/);
-        const value = match?.[1]?.trim();
-        if (!value) {
+        const pair = entry.split(';', 1)[0]?.trim();
+        if (!pair) {
             continue;
         }
-        const state = loadDeviceState();
-        if (state.nmtid === value) {
-            return;
+        const eq = pair.indexOf('=');
+        if (eq <= 0) {
+            continue;
         }
-        state.nmtid = value;
-        try {
-            localStorage.setItem(DEVICE_STORAGE_KEY, JSON.stringify(state));
-        } catch {
-            // 忽略：内存里的已更新。
+        const name = pair.slice(0, eq).trim();
+        const value = pair.slice(eq + 1).trim();
+        if (!name || !value) {
+            continue;
         }
+        names.push(name);
+        if (store[name] !== value) {
+            store[name] = value;
+            changed = true;
+        }
+    }
+    if (!changed) {
         return;
     }
+    try {
+        localStorage.setItem(EAPI_COOKIE_STORAGE_KEY, JSON.stringify(store));
+    } catch {
+        // 存不下也不中断：内存里的本会话内照样用。
+    }
+    // NMTID 同步进设备态：hasEapiNmtid 与 header 里的 NMTID 都认它。
+    const nmtid = store.NMTID;
+    if (nmtid) {
+        const state = loadDeviceState();
+        if (state.nmtid !== nmtid) {
+            state.nmtid = nmtid;
+            try {
+                localStorage.setItem(DEVICE_STORAGE_KEY, JSON.stringify(state));
+            } catch {
+                // 忽略：内存里的已更新。
+            }
+        }
+    }
+    // 只记名不记值：下次再看不到 NMTID，就说明服务端确实没下发。
+    console.log(`[Netease] eapi 回写：${[...new Set(names)].join(',')}`);
 }
 
 // ---- MD5（RFC 1321，输入按 UTF-8 编码，输出小写十六进制） ----
@@ -266,6 +341,17 @@ function buildEapiHeader(): Record<string, string> {
     if (state.nmtid) {
         header.NMTID = state.nmtid;
     }
+    // Folia 规则：只补缺失项，不覆盖已有值。设备身份四项已有生成值，
+    // 不会被回写覆盖；NMTID/MUSIC_A/__csrf/sDeviceId 这类服务端下发的
+    // 值在这里补进 header 块，随后 formatCookieHeader 也会把它带进
+    // Cookie 头（与 Folia 的 header 即 Cookie 串同一做法）。
+    const stored = loadEapiCookies();
+    for (const key of EAPI_COOKIE_KEYS) {
+        const value = stored[key];
+        if (header[key] === undefined && value) {
+            header[key] = value;
+        }
+    }
     return header;
 }
 
@@ -330,7 +416,7 @@ export async function eapiRequest(path: string, data: Record<string, unknown>): 
             ),
             timeout
         ]);
-        rememberNmtid(response.setCookies);
+        rememberEapiCookies(response.setCookies);
         return response;
     } finally {
         if (timer !== undefined) {
