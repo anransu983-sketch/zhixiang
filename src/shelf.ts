@@ -11,7 +11,7 @@
 
 import { getCurrentState, onTrackChange, playQueue } from './playback';
 import type { PlaybackState } from './playback';
-import { friendlyPosterError } from './posters';
+import { friendlyPosterError, posterFallbackBackground } from './posters';
 import type { PosterSectionDefinition } from './posters';
 import type { Poster } from './types';
 
@@ -120,6 +120,7 @@ function renderShelfRecord(poster: Poster, playNotice: HTMLElement): HTMLElement
     face.className = 'shelf-record-face';
     const placeholder = document.createElement('div');
     placeholder.className = 'shelf-record-placeholder';
+    placeholder.style.background = posterFallbackBackground(poster.id);
     face.appendChild(placeholder);
     if (poster.coverUrl) {
         const image = document.createElement('img');

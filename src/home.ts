@@ -4,7 +4,7 @@
 import { getCurrentState, next, onTrackChange, playQueue, previous, runYtmUpstreamExperiment, togglePlay } from './playback';
 import { openPlayerPage } from './player';
 import type { PlaybackState } from './playback';
-import { POSTER_SECTIONS, friendlyPosterError } from './posters';
+import { POSTER_SECTIONS, friendlyPosterError, posterFallbackBackground } from './posters';
 import type { PosterSectionDefinition } from './posters';
 import { renderShelfLayer } from './shelf';
 import { clearLogs, copyPlainText, getLogEntries, getLogModules, getLogText, subscribeLogs, type LogEntry } from './logger';
@@ -1158,6 +1158,7 @@ function renderPosterCard(poster: Poster, playNotice: HTMLElement): HTMLElement 
     // 纯色占位在下层：封面缺失或加载失败时露出来，不贴图。
     const placeholder = document.createElement('div');
     placeholder.className = 'poster-cover-placeholder';
+    placeholder.style.background = posterFallbackBackground(poster.id);
     coverWrap.appendChild(placeholder);
     if (poster.coverUrl) {
         const cover = document.createElement('img');
