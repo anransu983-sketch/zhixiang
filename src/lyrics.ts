@@ -4,13 +4,14 @@
 // - 网易云 GET https://music.163.com/api/song/lyric?id=<歌曲 id>&lv=-1&kv=-1&tv=-1
 //   回 200 JSON，lrc.lyric 就是标准 LRC 文本（含 [00:40.66] 这类时间标签），
 //   无歌词的曲返回空串或缺 lrc 字段。本模块只读 lrc.lyric，不读翻译与逐字。
-// - YTM（2026-10-26 起接）：取链那步的 player 返回里带
+// - YTM（2026-10-26 起接）：第一顺位是取链那步 player 返回里的
 //   captions.playerCaptionsTracklistRenderer.captionTracks，取链时已由
 //   ytm.ts 按 videoId 缓存，本模块不另发 player 请求。选轨偏好中文、
 //   其次英文、其余随缘，同语种内优先非自动生成轨；拉 baseUrl&fmt=json3，
-//   events 的 tStartMs＋segs 文本拼成歌词行。timedtext 本是视频字幕轨，
-//   并非音乐同步歌词，很多歌曲根本没有这条轨——无轨、无行、拉取失败时
-//   仍回说明，不编歌词。
+//   events 的 tStartMs＋segs 文本拼成歌词行。第二顺位是 LRCLIB 公开词库
+//   （标题＋歌手＋时长一次查到；同步词按 LRC 解析，纯文本只展示不高亮）。
+//   timedtext 本是视频字幕轨，很多歌曲根本没有这条轨——两顺位都没拿到时
+//   仍回说明，不编歌词。歌词只记条数与来源，从不记正文。
 // - 本地歌曲没有歌词源，同样只显示歌名与歌手。
 //
 // 歌词行只展示、不做点击跳转：本模块不提供 seek 口子，播放页也不给
@@ -157,36 +158,95 @@ function parseTimedtextJson3(text: string): LyricLine[] {
     return lines;
 }
 
+// YTM 标题常带视频装饰（【動態歌詞】、副标题、Official Audio 等），
+// 查词库前先去掉，否则标题对不上：只去装饰，不改歌名本身。
+function cleanYtmTitle(title: string): string {
+    return title
+        .replace(/【[^】]*】/g, '')
+        .replace(/『[^』]*』/g, '')
+        .replace(/\s*\((Official Audio|Official Video|Lyric Video|Audio|Video)\)\s*$/i, '')
+        .trim();
+}
+
+// LRCLIB（免费公开词库，无需登录）：标题＋歌手＋时长（有才带）一次查到。
+// 同步词是标准 LRC，直接解析；只有纯文本时行时间记 Infinity——
+// 播放页只展示不高亮，绝不编造时间轴。无匹配／失败回 null，调用方回原提示。
+async function fetchLrclibLyrics(track: Track): Promise<LyricResult | null> {
+    const params = new URLSearchParams({
+        artist_name: track.artist,
+        track_name: cleanYtmTitle(track.title)
+    });
+    if (track.durationMs && track.durationMs > 0) {
+        params.set('duration', String(Math.round(track.durationMs / 1000)));
+    }
+    let response;
+    try {
+        response = await httpGet(`https://lrclib.net/api/get?${params.toString()}`);
+    } catch {
+        return null;
+    }
+    if (response.status !== 200) {
+        return null;
+    }
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(response.body);
+    } catch {
+        return null;
+    }
+    const data = parsed as { syncedLyrics?: unknown; plainLyrics?: unknown };
+    if (typeof data.syncedLyrics === 'string' && data.syncedLyrics.trim()) {
+        const lines = parseLrc(data.syncedLyrics);
+        if (lines.length > 0) {
+            console.log(`[Lyrics] LRCLIB 同步词 ${lines.length} 行`);
+            return { lines, note: null };
+        }
+    }
+    if (typeof data.plainLyrics === 'string' && data.plainLyrics.trim()) {
+        const lines = data.plainLyrics
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter((line) => line.length > 0)
+            .map((text) => ({ timeMs: Number.POSITIVE_INFINITY, text }));
+        if (lines.length > 0) {
+            console.log(`[Lyrics] LRCLIB 纯文本 ${lines.length} 行`);
+            return { lines, note: null };
+        }
+    }
+    return null;
+}
+
 async function fetchYtmLyrics(track: Track): Promise<LyricResult> {
     const prefix = 'ytm:';
     const noLyricNote = '该音源暂无歌词，只显示歌名与歌手。';
     if (!track.id.startsWith(prefix) || track.id.length === prefix.length) {
         return { lines: [], note: noLyricNote };
     }
+    // 第一顺位：视频自带的字幕轨（最准，无需另查）。
     const videoId = track.id.slice(prefix.length);
     const tracks = getYtmCaptions(videoId);
-    if (!tracks || tracks.length === 0) {
-        return { lines: [], note: noLyricNote };
-    }
-    const picked = pickYtmCaptionTrack(tracks);
-    if (!picked) {
-        return { lines: [], note: noLyricNote };
-    }
-    try {
-        const separator = picked.baseUrl.includes('?') ? '&' : '?';
-        const response = await httpGet(`${picked.baseUrl}${separator}fmt=json3`);
-        if (response.status !== 200) {
-            return { lines: [], note: '歌词暂时拿不到，只显示歌名与歌手。' };
+    const picked = tracks && tracks.length > 0 ? pickYtmCaptionTrack(tracks) : null;
+    if (picked) {
+        try {
+            const separator = picked.baseUrl.includes('?') ? '&' : '?';
+            const response = await httpGet(`${picked.baseUrl}${separator}fmt=json3`);
+            if (response.status === 200) {
+                const lines = parseTimedtextJson3(response.body);
+                if (lines.length > 0) {
+                    console.log(`[Lyrics] YTM 字幕 ${picked.languageCode} ${lines.length} 行`);
+                    return { lines, note: null };
+                }
+            }
+        } catch {
+            // 字幕拉取失败就往下走词库，不把一次失败当成没词。
         }
-        const lines = parseTimedtextJson3(response.body);
-        if (lines.length === 0) {
-            return { lines: [], note: '这首歌暂无歌词。' };
-        }
-        console.log(`[Lyrics] YTM 字幕 ${picked.languageCode} ${lines.length} 行`);
-        return { lines, note: null };
-    } catch {
-        return { lines: [], note: '歌词暂时拿不到，只显示歌名与歌手。' };
     }
+    // 第二顺位：LRCLIB（标题＋歌手＋时长）。都没拿到才回原提示，不编词。
+    const lrclib = await fetchLrclibLyrics(track);
+    if (lrclib) {
+        return lrclib;
+    }
+    return { lines: [], note: noLyricNote };
 }
 
 export async function fetchLyrics(track: Track): Promise<LyricResult> {

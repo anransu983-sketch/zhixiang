@@ -489,14 +489,30 @@ let loadCounter = 0;
 // 最近一次 YTM 取链结果（目标与铸链 UA），供开发者区原生复现实验用。
 let lastYtmStream: { url: string; userAgent?: string } | null = null;
 
-async function startTrack(track: Track, crossfade: boolean): Promise<void> {
+// 播放意图：每次新起歌（点播／上下首／播完自动推进／停止）都加一。
+// 旧的起歌与跳歌循环凭它认出自己已过时，直接退出而不跳歌——2026-10-26
+// 四季予你连锁失败的根因：重叠的两次起歌共用同一槽，后一次设地址打断
+// 前一次待决的 play()，而前一次的失败又触发跳歌再起新 load，循环打断。
+let playIntent = 0;
+
+// 起歌结果：'ok'＝已接管当前槽；'stale'＝取链／播放期间已有更新的起歌，
+// 本尝试已过时——调用方不得把它当失败跳歌，也不得动播放状态。
+async function startTrack(track: Track, crossfade: boolean): Promise<'ok' | 'stale'> {
     const loadId = ++loadCounter;
     const oldSlot = activeSlot;
-    const newSlot = otherSlot(oldSlot);
     const resolved = await resolvePlayUrl(track);
+    // 取链期间已有更新的起歌：连槽都不碰，直接过时退出。
+    if (loadId !== loadCounter) {
+        console.log(`[Playback] 起歌已过时 lid=${loadId}（取链期间被新起歌取代）`);
+        return 'stale';
+    }
+    // 槽必须在 await 之后才选：await 之前选的槽是旧 activeSlot 的对面，
+    // 重叠的两起歌会算出同一个槽，后一次设地址即打断前一次的 play()。
+    const newSlot = otherSlot(activeSlot);
     if (resolved.viaProxy) {
         resolved.url += `&lid=${loadId}`;
     }
+    console.log(`[Playback] 起歌 lid=${loadId} 槽=${newSlot === slotA ? 'A' : 'B'} ${track.title}`);
     clearFadeTimers(newSlot);
     ensureSlotGraph(newSlot, resolved.needsGraph);
     const audio = newSlot.audio;
@@ -510,6 +526,11 @@ async function startTrack(track: Track, crossfade: boolean): Promise<void> {
     try {
         await audio.play();
     } catch (error) {
+        // 被更新的起歌打断：不是真失败，不拉 /last、不跳歌，让新 load 赢。
+        if (loadId !== loadCounter) {
+            console.log(`[Playback] 起歌已过时 lid=${loadId}（播放被新 load 打断）`);
+            return 'stale';
+        }
         // 新歌起不来时旧歌不受影响：旧槽还没淡出，状态保持原样。
         console.log(
             `[Playback] audio.play 失败：${error instanceof Error ? `${error.name} ${error.message}` : String(error)}`
@@ -546,6 +567,11 @@ async function startTrack(track: Track, crossfade: boolean): Promise<void> {
         }
         throw new Error('播放失败，请换一首试试');
     }
+    // play 成功后又被更新的起歌抢先：不接管 activeSlot，让新 load 赢。
+    if (loadId !== loadCounter) {
+        console.log(`[Playback] 起歌已过时 lid=${loadId}（play 成功后被新起歌取代）`);
+        return 'stale';
+    }
     const previousTrack = currentTrack;
     const wasPlaying = playing;
     activeSlot = newSlot;
@@ -573,6 +599,7 @@ async function startTrack(track: Track, crossfade: boolean): Promise<void> {
     } else {
         fadeSlotTo(newSlot, 1, FADE_IN_MS);
     }
+    return 'ok';
 }
 
 // 队列内跳过失败曲目：从 startIdx 沿 step 方向逐首试 startTrack，直到播出
@@ -584,17 +611,26 @@ async function tryPlayFrom(
     startIdx: number,
     crossfade: boolean,
     step: 1 | -1
-): Promise<{ played: boolean; failed: number }> {
+): Promise<{ played: boolean; failed: number; stale: boolean }> {
+    // 跳歌循环也认意图：循环期间有新起歌，立即停，不再起新 load
+    // （否则旧循环的起歌会用 ++loadCounter 杀掉合法那首的 play）。
+    const intent = playIntent;
     let failed = 0;
     for (let i = startIdx; step === 1 ? i < queue.length : i >= 0; i += step) {
+        if (intent !== playIntent) {
+            return { played: false, failed, stale: true };
+        }
         const track = queue[i];
         if (!track) {
             continue;
         }
         try {
-            await startTrack(track, crossfade);
+            const result = await startTrack(track, crossfade);
+            if (result === 'stale') {
+                return { played: false, failed, stale: true };
+            }
             queueIndex = i;
-            return { played: true, failed };
+            return { played: true, failed, stale: false };
         } catch (error) {
             failed += 1;
             console.log(
@@ -606,7 +642,7 @@ async function tryPlayFrom(
             }
         }
     }
-    return { played: false, failed };
+    return { played: false, failed, stale: false };
 }
 
 // 全部失败时的提示：单首失败保留旧文案，多首才注明跳过了几首。
@@ -621,11 +657,15 @@ function skipAllMessage(failed: number): string {
 }
 
 async function advanceAfterEnded(): Promise<void> {
+    ++playIntent;
     const mode = getRepeatMode();
     // 单曲循环：重播当前这首（自然播完，无重叠，短淡入）；重播失败直接停，不往后跳。
     if (mode === 'one' && currentTrack) {
         try {
-            await startTrack(currentTrack, false);
+            const result = await startTrack(currentTrack, false);
+            if (result === 'stale') {
+                return;
+            }
             return;
         } catch {
             playing = false;
@@ -648,6 +688,9 @@ async function advanceAfterEnded(): Promise<void> {
         // 列表循环：队尾播完回到队首；队首起全播不了时按播完处理并提示。
         if (mode === 'queue' && queue.length > 0) {
             const result = await tryPlayFrom(0, false, 1);
+            if (result.stale) {
+                return;
+            }
             if (result.played) {
                 return;
             }
@@ -670,6 +713,9 @@ async function advanceAfterEnded(): Promise<void> {
     }
     // 旧首已自然播完，无重叠可言，新首用短淡入；中途失败自动往后跳。
     const result = await tryPlayFrom(queueIndex + 1, false, 1);
+    if (result.stale) {
+        return;
+    }
     if (!result.played) {
         // 剩余曲目全播不了：按播完处理，停前台服务与代理。
         playing = false;
@@ -713,11 +759,17 @@ export async function playQueue(tracks: Track[], startIndex: number): Promise<vo
     }
     inFlightPlayKey = playKey;
     try {
+        // 意图加一必须在去重之后：被忽略的重 tap 不能杀掉在途那首。
+        ++playIntent;
         const crossfade = playing && activeSlot !== null && currentTrack !== null;
         queue = [...tracks];
         queueIndex = clamped;
         // 从起始下标向前逐首试：中途失败自动往后跳，全部失败才抛错。
         const result = await tryPlayFrom(clamped, crossfade, 1);
+        if (result.stale) {
+            // 已被更新的起歌取代：静默退出，不抛错、不提示。
+            return;
+        }
         if (!result.played) {
             throw new Error(skipAllMessage(result.failed));
         }
@@ -758,11 +810,15 @@ export async function next(): Promise<void> {
     if (queue.length === 0 || !currentTrack) {
         return;
     }
+    ++playIntent;
     if (queueIndex >= queue.length - 1) {
         // 队尾手动下一首：列表循环回队首，单曲循环重播当前，其它模式不动。
         const mode = getRepeatMode();
         if (mode === 'queue') {
             const result = await tryPlayFrom(0, playing, 1);
+            if (result.stale) {
+                return;
+            }
             if (!result.played) {
                 playing = false;
                 lastError = skipAllMessage(result.failed);
@@ -772,7 +828,10 @@ export async function next(): Promise<void> {
         }
         if (mode === 'one') {
             try {
-                await startTrack(currentTrack, playing);
+                const result = await startTrack(currentTrack, playing);
+                if (result === 'stale') {
+                    return;
+                }
             } catch {
                 playing = false;
                 lastError = '播放失败，请换一首试试';
@@ -783,6 +842,9 @@ export async function next(): Promise<void> {
         return;
     }
     const result = await tryPlayFrom(queueIndex + 1, playing, 1);
+    if (result.stale) {
+        return;
+    }
     if (!result.played) {
         // 全部失败：下标不前移（仍可重试），只停播放并提示。
         playing = false;
@@ -803,7 +865,11 @@ export async function previous(): Promise<void> {
         }
         return;
     }
+    ++playIntent;
     const result = await tryPlayFrom(queueIndex - 1, playing, -1);
+    if (result.stale) {
+        return;
+    }
     if (!result.played) {
         // 全部失败：下标不动（仍可重试），只停播放并提示。
         playing = false;
@@ -858,8 +924,12 @@ export async function togglePlay(): Promise<void> {
     if (queue.length > 0) {
         const target = queue[queueIndex];
         if (target) {
+            ++playIntent;
             try {
-                await startTrack(target, false);
+                const result = await startTrack(target, false);
+                if (result === 'stale') {
+                    return;
+                }
             } catch (error) {
                 lastError = error instanceof Error ? error.message : '播放失败，请换一首试试';
                 emitTrackChange();
@@ -869,6 +939,8 @@ export async function togglePlay(): Promise<void> {
 }
 
 export async function stop(): Promise<void> {
+    // 停止也是新意图：在途的起歌与跳歌循环凭它过时退出，不再起新 load。
+    ++playIntent;
     if (activeSlot) {
         fadeOutAndPause(activeSlot, FADE_OUT_MS);
     }
