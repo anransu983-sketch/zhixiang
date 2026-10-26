@@ -925,8 +925,15 @@ body {
     gap: 12px;
 }
 
+/* 返回钮改幽灵（0.1.51，参考图无此钮，但退出播放页还得靠它，留着只去灰底）。 */
 .player-back-btn {
     align-self: flex-start;
+    background: transparent;
+    border: none;
+    color: rgba(255, 255, 255, 0.8);
+    font-size: 15px;
+    min-height: 44px;
+    padding: 0 12px;
 }
 
 /* 封面套：尺寸挂在套上，img 与占位共用；无图时露 id 色相渐变 + ♪，
@@ -1077,7 +1084,7 @@ body {
     padding: 6px 4px;
     border: none;
     background: transparent;
-    color: rgba(255, 255, 255, 0.85);
+    color: rgba(255, 255, 255, 0.6);
     font-size: 22px;
     line-height: 1;
     text-shadow: 0 1px 6px rgba(0, 0, 0, 0.45);
@@ -1142,8 +1149,12 @@ body {
     flex: 0 0 auto;
     border-radius: 18px;
     overflow: hidden;
-    /* 上层白渐变 + 粉底（0.1.50，照参考图），saturate 提亮背后的封面。 */
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.10), transparent 45%), rgba(232, 160, 191, 0.32);
+    /* 加深（0.1.51）：底层梅子暗底 + 粉 + 上层白光，浅色封面也不发虚；
+       淡白 .55 不动，提亮度会压掉当前行与非当前行的层次。 */
+    background-color: rgba(30, 8, 22, 0.40);
+    background-image:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0) 45%),
+        linear-gradient(rgba(232, 160, 191, 0.30), rgba(232, 160, 191, 0.30));
     backdrop-filter: blur(14px) saturate(1.6);
     -webkit-backdrop-filter: blur(14px) saturate(1.6);
 }
@@ -1157,6 +1168,16 @@ body {
     scrollbar-width: none;
     padding-inline: 14px 24px;
     padding-block: calc(var(--lyric-h) / 2 - 18px);
+}
+
+/* 纯文本词（0.1.51）：去 spacer padding，从顶正常排；无高亮层次，
+   行色直接给 .88，不用淡白。双 class 压过单 class 的 spacer 规则。 */
+.player-lyrics.is-plain {
+    padding-block: 12px 16px;
+}
+
+.player-lyrics.is-plain .player-lyric-line {
+    color: rgba(255, 255, 255, 0.88);
 }
 
 /* 折叠：两行 grid 0fr/1fr 互换，与开发者磁吸卡同款套路；
@@ -1244,6 +1265,11 @@ body {
     color: #fff;
     font-weight: 700;
     font-size: 22px;
+}
+
+/* 行投影（0.1.51）：浅色封面上的可读性兜底；若滚动发顿就先砍这条。 */
+.player-lyrics .player-lyric-line {
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
 }
 
 .player-lyric-note {

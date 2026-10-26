@@ -281,11 +281,10 @@ function buildPlayerPage(): HTMLElement {
     heartButton.className = 'player-bottom-btn';
     heartButton.textContent = '♥';
     const updateHeart = (track: Track | null): void => {
-        if (!track) {
-            heartButton.classList.remove('is-active');
-            return;
-        }
-        heartButton.classList.toggle('is-active', loadFavorites().has(favoriteKey(track)));
+        // 闲置空心、收藏实心（参考图的样子）；之前两种状态都是实心只变颜色。
+        const favorited = track ? loadFavorites().has(favoriteKey(track)) : false;
+        heartButton.classList.toggle('is-active', favorited);
+        heartButton.textContent = favorited ? '♥' : '♡';
     };
     heartButton.addEventListener('click', () => {
         const track = getCurrentState().track;
@@ -674,6 +673,12 @@ function buildPlayerPage(): HTMLElement {
             lineEl.textContent = line.text;
             lyricBox.appendChild(lineEl);
         });
+        // 纯文本词没有可居中的当前行：去 spacer padding，从顶正常排，
+        // 否则首行被顶到卡片中央、上面空一半；上一首定时词留下的滚动位置也要清零。
+        // 半定时半纯文本按定时算（some 有限时间即定时，往安全方向）。
+        const timed = lyricLines.some((line) => Number.isFinite(line.timeMs));
+        lyricBox.classList.toggle('is-plain', lyricLines.length > 0 && !timed);
+        lyricBox.scrollTop = 0;
         currentLineIndex = -1;
         // 折叠条默认露首行；纯文本没有当前行，条就一直是首行。
         lyricBar.textContent = lyricLines[0]?.text ?? '';
