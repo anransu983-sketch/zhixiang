@@ -56,7 +56,8 @@ const HEADERS: Record<string, string> = {
     'Content-Type': 'application/json'
 };
 
-// 有会话时补 Cookie 与同源 UA、无会话时原样返回；URL、client 与参数一律不动。
+// 有会话时补 Cookie、同源 UA 与 SAPISIDHASH 签名（见 ytm-session.ts），
+// 无会话时原样返回；URL、client 与参数一律不动。
 function requestHeaders(): Record<string, string> {
     return withYtmSession(HEADERS);
 }
@@ -526,6 +527,10 @@ export async function resolveYtmStream(track: Track): Promise<YtmStream> {
     console.log(`[Ytm] 取链 ${track.title}`);
     // 铸链头一次算好、各客户端共用：成功那次实际发出的 UA 就是取流时要复用的 UA。
     const sentHeaders = requestHeaders();
+    // 只记签名在不在，不记签名值。
+    if (sentHeaders['Authorization']) {
+        console.log('[Ytm] 取链带 SAPISIDHASH 签名');
+    }
     const sessionAttached = sentHeaders['Cookie'] !== undefined;
     let sawResponse = false;
     let loginRequiredCount = 0;

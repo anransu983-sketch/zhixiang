@@ -101,6 +101,103 @@ export async function signInYtm(): Promise<YtmSignInResult> {
     }
 }
 
+// ---- SHA-1（FIPS 180-1，输入按 UTF-8 编码，输出小写十六进制） ----
+// 与 netease-eapi.ts 的 md5Hex 同一写法；只给下面的 sapisidHash 用。
+
+function sha1Hex(text: string): string {
+    const bytes = new TextEncoder().encode(text);
+    const bitLength = bytes.length * 8;
+    const paddedLength = Math.ceil((bytes.length + 9) / 64) * 64;
+    const padded = new Uint8Array(paddedLength);
+    padded.set(bytes);
+    padded[bytes.length] = 0x80;
+    const view = new DataView(padded.buffer);
+    // SHA-1 用大端 64 位长度。
+    view.setUint32(padded.length - 8, Math.floor(bitLength / 0x100000000), false);
+    view.setUint32(padded.length - 4, bitLength & 0xffffffff, false);
+    const rotateLeft = (value: number, bits: number): number =>
+        ((value << bits) | (value >>> (32 - bits))) >>> 0;
+    const add = (...values: number[]): number => {
+        let sum = 0;
+        for (const value of values) {
+            sum = (sum + (value >>> 0)) >>> 0;
+        }
+        return sum >>> 0;
+    };
+    let h0 = 0x67452301;
+    let h1 = 0xefcdab89;
+    let h2 = 0x98badcfe;
+    let h3 = 0x10325476;
+    let h4 = 0xc3d2e1f0;
+    for (let offset = 0; offset < padded.length; offset += 64) {
+        const words: number[] = [];
+        for (let i = 0; i < 16; i += 1) {
+            words.push(view.getUint32(offset + i * 4, false));
+        }
+        for (let i = 16; i < 80; i += 1) {
+            // 下标恒在范围内（i < 80，前项均已算出）：noUncheckedIndexedAccess 下用 ! 断言。
+            words.push(rotateLeft(words[i - 3]! ^ words[i - 8]! ^ words[i - 14]! ^ words[i - 16]!, 1));
+        }
+        let a = h0;
+        let b = h1;
+        let c = h2;
+        let d = h3;
+        let e = h4;
+        for (let i = 0; i < 80; i += 1) {
+            let f: number;
+            let k: number;
+            if (i < 20) {
+                f = (b & c) | (~b & d);
+                k = 0x5a827999;
+            } else if (i < 40) {
+                f = b ^ c ^ d;
+                k = 0x6ed9eba1;
+            } else if (i < 60) {
+                f = (b & c) | (b & d) | (c & d);
+                k = 0x8f1bbcdc;
+            } else {
+                f = b ^ c ^ d;
+                k = 0xca62c1d6;
+            }
+            const temp = add(rotateLeft(a, 5), f, e, k, words[i]!);
+            e = d;
+            d = c;
+            c = rotateLeft(b, 30);
+            b = a;
+            a = temp;
+        }
+        h0 = add(h0, a);
+        h1 = add(h1, b);
+        h2 = add(h2, c);
+        h3 = add(h3, d);
+        h4 = add(h4, e);
+    }
+    return [h0, h1, h2, h3, h4].map((value) => (value >>> 0).toString(16).padStart(8, '0')).join('');
+}
+
+// SAPISIDHASH（Folia 桥同款算法）：`SAPISIDHASH <unix秒>_<sha1("<unix秒> <SAPISID> https://www.youtube.com")>`。
+// cookie 里没有 SAPISID（或它的 __Secure- 形态）就回 null，请求只带 Cookie。
+// 签名现算现用，不记日志、不落盘。
+export function sapisidHash(cookie: string): string | null {
+    let sapisid: string | null = null;
+    for (const pair of cookie.split(';')) {
+        const split = pair.indexOf('=');
+        if (split <= 0) {
+            continue;
+        }
+        const name = pair.slice(0, split).trim();
+        if (name === 'SAPISID' || name === '__Secure-3PAPISID') {
+            sapisid = pair.slice(split + 1).trim();
+            break;
+        }
+    }
+    if (!sapisid) {
+        return null;
+    }
+    const seconds = Math.floor(Date.now() / 1000);
+    return `SAPISIDHASH ${seconds}_${sha1Hex(`${seconds} ${sapisid} https://www.youtube.com`)}`;
+}
+
 // 有会话时补 Cookie 与同源 UA；无会话时原样返回，不动匿名请求。
 export function withYtmSession(headers: Record<string, string>): Record<string, string> {
     const session = loadYtmSession();
@@ -110,6 +207,15 @@ export function withYtmSession(headers: Record<string, string>): Record<string, 
     const next: Record<string, string> = { ...headers, Cookie: session.cookie };
     if (session.userAgent) {
         next['User-Agent'] = session.userAgent;
+    }
+    // Folia 桥同款登录态三件套：Cookie 之外再带 SAPISIDHASH 签名与
+    // X-Goog-AuthUser。门收紧时（IP 信誉低）只带 Cookie 的请求会被
+    // LOGIN_REQUIRED 拦下，带全套签名的才过——2026-10-26 晚 Folia
+    // 能播、芷湘不能播，差的就是这两项。
+    const authorization = sapisidHash(session.cookie);
+    if (authorization) {
+        next['Authorization'] = authorization;
+        next['X-Goog-AuthUser'] = '0';
     }
     return next;
 }
