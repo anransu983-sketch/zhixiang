@@ -17,7 +17,7 @@ import { clearLogs, copyPlainText, getLogEntries, getLogModules, getLogText, sub
 import { SOURCES } from './sources/index';
 import { getLocalCoverDataUrl, getLocalNotice } from './sources/local';
 import { fetchNeteaseDailySongs } from './sources/netease';
-import { fetchYtmDailyTracks } from './sources/ytm';
+import { fetchYtmDailyTracks, probeYtmHome } from './sources/ytm';
 import {
     checkQr,
     clearSession as clearNeteaseSession,
@@ -474,9 +474,9 @@ async function runEchoTest(button: HTMLButtonElement): Promise<void> {
         }
         checkEcho('回显2', sent, second.body);
     } catch (error) {
-        console.error(`[Netease] 回显测试失败：${error instanceof Error ? error.message : '未知原因'}`);
+        console.error(`[Netease] 回声测试失败：${error instanceof Error ? error.message : '未知原因'}`);
     } finally {
-        button.textContent = '回显测试';
+        button.textContent = '回声测试';
         button.disabled = false;
     }
 }
@@ -512,7 +512,7 @@ async function runLogUpload(button: HTMLButtonElement): Promise<void> {
     } catch (error) {
         console.error(`[app] 日志上传失败：${error instanceof Error ? error.message : '未知原因'}`);
     } finally {
-        button.textContent = '上传日志';
+        button.textContent = '上传现场';
         button.disabled = false;
     }
 }
@@ -542,7 +542,7 @@ function renderDeveloperSection(): HTMLElement {
     headTitles.className = 'mag-titles';
     const title = document.createElement('span');
     title.className = 'mag-title';
-    title.textContent = '开发者';
+    title.textContent = '调音台';
     const debugChip = document.createElement('span');
     debugChip.className = 'dev-debug-chip';
     debugChip.textContent = 'DEBUG';
@@ -576,7 +576,7 @@ function renderDeveloperSection(): HTMLElement {
 
     const hint = document.createElement('p');
     hint.className = 'developer-hint';
-    hint.textContent = '运行日志存本机（重启后保留），并自动传到 VPS，不用再手动上传；筛好后点 COPY 可把当前看到的日志发出来定位问题。';
+    hint.textContent = '运行日志存本机（重启后保留），并自动传到 VPS，不用再手动上传；筛好后点 复制 可把当前看到的日志发出来定位问题。';
     inner.appendChild(hint);
 
     // 展开后的顺序（Claude 稿，一个不少）：说明 → CONSOLE 行 → 三测试行 →
@@ -594,7 +594,7 @@ function renderDeveloperSection(): HTMLElement {
 
     const clearButton = document.createElement('button');
     clearButton.className = 'login-btn login-btn-ghost';
-    clearButton.textContent = 'CLEAR';
+    clearButton.textContent = '清空';
     clearButton.addEventListener('click', () => {
         clearLogs();
     });
@@ -611,7 +611,7 @@ function renderDeveloperSection(): HTMLElement {
     // 了我们设的 Cookie 头。日志里只记指纹与是否一致，不记任何原始值。
     const echoButton = document.createElement('button');
     echoButton.className = 'login-btn';
-    echoButton.textContent = '回显测试';
+    echoButton.textContent = '回声测试';
     echoButton.addEventListener('click', () => {
         void runEchoTest(echoButton);
     });
@@ -622,7 +622,7 @@ function renderDeveloperSection(): HTMLElement {
     // 本地构建（无 secret）时按钮只记一行提示，不发请求。
     const uploadButton = document.createElement('button');
     uploadButton.className = 'login-btn';
-    uploadButton.textContent = '上传日志';
+    uploadButton.textContent = '上传现场';
     uploadButton.addEventListener('click', () => {
         void runLogUpload(uploadButton);
     });
@@ -632,13 +632,13 @@ function renderDeveloperSection(): HTMLElement {
     // 1MiB-2MiB），区分双载伪影、重放被拒与后续窗口被拒。结果记日志。
     const experimentButton = document.createElement('button');
     experimentButton.className = 'login-btn';
-    experimentButton.textContent = '上游复现实验';
+    experimentButton.textContent = '上游复现';
     experimentButton.addEventListener('click', () => {
         experimentButton.disabled = true;
         experimentButton.textContent = '实验中…';
         void runYtmUpstreamExperiment().finally(() => {
             experimentButton.disabled = false;
-            experimentButton.textContent = '上游复现实验';
+            experimentButton.textContent = '上游复现';
         });
     });
     testRow.appendChild(experimentButton);
@@ -647,16 +647,30 @@ function renderDeveloperSection(): HTMLElement {
     // 只变一个量，判 UA / Referer / Range / scheme / 重放哪一个翻 403。
     const neteaseProbeButton = document.createElement('button');
     neteaseProbeButton.className = 'login-btn';
-    neteaseProbeButton.textContent = '网易云取流探针';
+    neteaseProbeButton.textContent = '取流探针';
     neteaseProbeButton.addEventListener('click', () => {
         neteaseProbeButton.disabled = true;
         neteaseProbeButton.textContent = '探针中…';
         void runNeteaseProbe().finally(() => {
             neteaseProbeButton.disabled = false;
-            neteaseProbeButton.textContent = '网易云取流探针';
+            neteaseProbeButton.textContent = '取流探针';
         });
     });
     testRow.appendChild(neteaseProbeButton);
+
+    // YTM 首页探针（0.1.82）：FEmusic_home 多臂分测，见 ytm.ts probeYtmHome。
+    const ytmHomeProbeButton = document.createElement('button');
+    ytmHomeProbeButton.className = 'login-btn';
+    ytmHomeProbeButton.textContent = 'YTM 首页探针';
+    ytmHomeProbeButton.addEventListener('click', () => {
+        ytmHomeProbeButton.disabled = true;
+        ytmHomeProbeButton.textContent = '探针中…';
+        void probeYtmHome().finally(() => {
+            ytmHomeProbeButton.disabled = false;
+            ytmHomeProbeButton.textContent = 'YTM 首页探针';
+        });
+    });
+    testRow.appendChild(ytmHomeProbeButton);
 
     const filters = document.createElement('div');
     filters.className = 'dev-filters';
@@ -726,8 +740,8 @@ function renderDeveloperSection(): HTMLElement {
             return;
         }
         const shown = filtered();
-        consoleLabel.textContent = `CONSOLE (${all.length})`;
-        copyButton.textContent = `COPY ${shown.length}`;
+        consoleLabel.textContent = `现场日志 (${all.length})`;
+        copyButton.textContent = `复制 ${shown.length}`;
 
         // 模块下拉随日志里出现过的模块补齐，选中项还在就保留。
         const modules = getLogModules();
@@ -798,7 +812,7 @@ function renderDeveloperSection(): HTMLElement {
     copyButton.addEventListener('click', async () => {
         const lines = filtered().map((e) => `[${e.time}] ${e.level.toUpperCase()} ${e.text}`);
         const ok = await copyPlainText(lines.join('\n') || '暂无日志');
-        const base = `COPY ${filtered().length}`;
+        const base = `复制 ${filtered().length}`;
         copyButton.textContent = ok ? '已复制' : '复制失败，请长按日志手动复制';
         window.setTimeout(() => {
             copyButton.textContent = base;
@@ -837,7 +851,7 @@ function renderFootprintEntry(): HTMLElement {
     main.className = 'footprint-entry-main';
     const titleText = document.createElement('span');
     titleText.className = 'footprint-entry-title';
-    titleText.textContent = '音乐足迹';
+    titleText.textContent = '旋律手记';
     const sub = document.createElement('span');
     sub.className = 'footprint-entry-sub';
     sub.textContent = '收听时长 · 唱片墙 · TOP 歌曲';
@@ -855,18 +869,78 @@ function renderFootprintEntry(): HTMLElement {
 // 0.1.80 排布工坊（我的页单独做）：每个音源的海报排布单独选，
 // 跟随全局 / 磁带馆 / 星卷 / 黑胶 / 巨幕五档，点选即时生效到已挂载
 // 的海报模块，未挂载的页下次进页时按选择渲染。
+// 0.1.82 版式配方（原排布工坊）：平时只露头行与当前配方，点开才见
+// 预设 chips 与每音源的单选行。预设映射：混搭推荐=本地磁带馆+网易云
+// 黑胶+YTM 星卷；其余三档是三源同版式全套。
 function renderLayoutMixSection(): HTMLElement {
     const section = document.createElement('section');
     section.className = 'layout-mix';
 
-    const heading = document.createElement('h2');
-    heading.textContent = '排布工坊';
-    section.appendChild(heading);
-    const sub = document.createElement('p');
-    sub.className = 'layout-mix-sub';
-    sub.textContent = '每个音源的海报排布可以单独选，混搭着用';
-    section.appendChild(sub);
+    const head = document.createElement('button');
+    head.type = 'button';
+    head.className = 'layout-mix-head';
+    const headTitle = document.createElement('span');
+    headTitle.className = 'layout-mix-head-title';
+    headTitle.textContent = '版式配方';
+    const headCurrent = document.createElement('span');
+    headCurrent.className = 'layout-mix-head-current';
+    const headChev = document.createElement('span');
+    headChev.className = 'layout-mix-head-chev';
+    headChev.textContent = '▾';
+    head.append(headTitle, headCurrent, headChev);
+    section.appendChild(head);
 
+    const body = document.createElement('div');
+    body.className = 'layout-mix-body';
+    body.hidden = true;
+    section.appendChild(body);
+
+    const presets: Array<{ id: string; label: string; mix: Record<string, PosterLayoutMixValue> }> = [
+        { id: 'mix-rec', label: '混搭推荐', mix: { local: 'tape', netease: 'vinyl', ytm: 'scroll' } },
+        { id: 'tape-all', label: '磁带馆全套', mix: { local: 'tape', netease: 'tape', ytm: 'tape' } },
+        { id: 'vinyl-night', label: '黑胶之夜', mix: { local: 'vinyl', netease: 'vinyl', ytm: 'vinyl' } },
+        { id: 'scroll-roam', label: '星卷漫游', mix: { local: 'scroll', netease: 'scroll', ytm: 'scroll' } },
+    ];
+    const currentPresetLabel = (): string => {
+        for (const preset of presets) {
+            const match = (['local', 'netease', 'ytm'] as const).every(
+                (key) => (posterLayoutMix[key] ?? 'follow') === preset.mix[key]
+            );
+            if (match) {
+                return preset.label;
+            }
+        }
+        return '自定义混搭';
+    };
+    const presetButtons: HTMLButtonElement[] = [];
+    const refreshPreset = (): void => {
+        const label = currentPresetLabel();
+        headCurrent.textContent = `当前：${label} · 点开换配方`;
+        for (const [index, button] of presetButtons.entries()) {
+            button.classList.toggle('is-active', presets[index]?.label === label);
+        }
+    };
+
+    const presetRow = document.createElement('div');
+    presetRow.className = 'layout-mix-presets';
+    for (const preset of presets) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'layout-mix-preset-btn';
+        button.textContent = preset.label;
+        button.addEventListener('click', () => {
+            for (const key of ['local', 'netease', 'ytm'] as const) {
+                applyPosterLayoutMix(key, preset.mix[key] as PosterLayoutMixValue);
+            }
+            refreshMixRows();
+            refreshPreset();
+        });
+        presetButtons.push(button);
+        presetRow.appendChild(button);
+    }
+    body.appendChild(presetRow);
+
+    const mixRows: Array<{ key: string; buttons: HTMLButtonElement[] }> = [];
     for (const definition of POSTER_SECTIONS) {
         const row = document.createElement('div');
         row.className = 'layout-mix-row';
@@ -892,12 +966,32 @@ function renderLayoutMixSection(): HTMLElement {
                 for (const other of buttons) {
                     other.classList.toggle('is-active', other === button);
                 }
+                refreshPreset();
             });
             buttons.push(button);
             row.appendChild(button);
         }
-        section.appendChild(row);
+        mixRows.push({ key: definition.key, buttons });
+        body.appendChild(row);
     }
+    const refreshMixRows = (): void => {
+        for (const entry of mixRows) {
+            const current = posterLayoutMix[entry.key] ?? 'follow';
+            for (const button of entry.buttons) {
+                const option = POSTER_LAYOUTS.find((layout) => layout.label === button.textContent);
+                const id: PosterLayoutMixValue = button.textContent === '跟随全局'
+                    ? 'follow'
+                    : (option?.id ?? 'follow');
+                button.classList.toggle('is-active', current === id);
+            }
+        }
+    };
+    refreshPreset();
+
+    head.addEventListener('click', () => {
+        body.hidden = !body.hidden;
+        headChev.textContent = body.hidden ? '▾' : '▴';
+    });
     return section;
 }
 
@@ -906,8 +1000,13 @@ function renderLoginArea(): HTMLElement {
     area.className = 'login-area';
 
     const heading = document.createElement('h2');
-    heading.textContent = '登录';
+    heading.textContent = '听歌钥匙';
     area.appendChild(heading);
+
+    const loginSub = document.createElement('p');
+    loginSub.className = 'login-area-sub';
+    loginSub.textContent = '双源登录 · 一处管理';
+    area.appendChild(loginSub);
 
     area.appendChild(renderNeteaseLoginBlock());
     area.appendChild(renderYtmLoginBlock());
@@ -1701,6 +1800,9 @@ function renderPosterCard(poster: Poster, playNotice: HTMLElement): HTMLElement 
 // 0.1.81 可折叠 + YTM 通用化：默认只露前 3 首，点“展开全部”才露全 list，
 // 播放全部不受折叠影响（永远播整单）；同一函数供网易云每日推荐与
 // YTM 今日星荐两路复用，只换标题/副标题/取数函数/登录判断。
+// 0.1.82 每日推荐整页（网易云+YTM 同款）：Tab 上只留一张卡片，
+// 点开进独立整页（日期头 + 口味副标题 + 播放全部 + 不折叠的全列表）。
+// 旧 0.1.81 的 Tab 内折叠（前 3 首 + 展开）已废弃，不再用。
 function renderDailySection(
     titleText: string,
     subText: string,
@@ -1729,37 +1831,73 @@ function renderDailySection(
     playAll.disabled = true;
     section.appendChild(playAll);
 
-    const toggle = document.createElement('button');
-    toggle.type = 'button';
-    toggle.className = 'login-btn';
-    toggle.hidden = true;
-    section.appendChild(toggle);
+    const openPageButton = document.createElement('button');
+    openPageButton.type = 'button';
+    openPageButton.className = 'login-btn';
+    openPageButton.textContent = '打开完整歌单 ›';
+    openPageButton.disabled = true;
+    section.appendChild(openPageButton);
 
     const notice = document.createElement('p');
     notice.className = 'source-notice';
     notice.textContent = '正在加载…';
     section.appendChild(notice);
 
-    const trackList = document.createElement('ul');
-    trackList.className = 'track-list';
-    section.appendChild(trackList);
-
     let tracks: Track[] = [];
-    let expanded = false;
-    const renderList = (): void => {
-        renderTracks(trackList, expanded ? tracks : tracks.slice(0, 3), notice);
-        toggle.textContent = expanded ? '收起 ▲' : `展开全部 ${tracks.length} 首 ▼`;
-        toggle.hidden = tracks.length <= 3;
+    const openDailyPage = (): void => {
+        if (tracks.length === 0) {
+            return;
+        }
+        const now = new Date();
+        const page = document.createElement('div');
+        page.className = 'daily-page';
+        const pageHead = document.createElement('div');
+        pageHead.className = 'daily-page-head';
+        const back = document.createElement('button');
+        back.type = 'button';
+        back.className = 'daily-page-back';
+        back.textContent = '返回';
+        back.addEventListener('click', () => {
+            page.remove();
+        });
+        pageHead.appendChild(back);
+        const pageTitle = document.createElement('h2');
+        pageTitle.textContent = titleText;
+        pageHead.appendChild(pageTitle);
+        page.appendChild(pageHead);
+
+        const date = document.createElement('div');
+        date.className = 'daily-page-date';
+        date.textContent = `${now.getMonth() + 1}月${now.getDate()}日`;
+        page.appendChild(date);
+        const pageSub = document.createElement('p');
+        pageSub.className = 'daily-page-sub';
+        pageSub.textContent = subText;
+        page.appendChild(pageSub);
+        const pagePlayAll = document.createElement('button');
+        pagePlayAll.type = 'button';
+        pagePlayAll.className = 'login-btn';
+        pagePlayAll.textContent = '▶ 播放全部';
+        pagePlayAll.addEventListener('click', () => {
+            void playQueue(tracks, 0);
+        });
+        page.appendChild(pagePlayAll);
+        const pageNotice = document.createElement('p');
+        pageNotice.className = 'source-notice';
+        pageNotice.textContent = `共 ${tracks.length} 首`;
+        page.appendChild(pageNotice);
+        const trackList = document.createElement('ul');
+        trackList.className = 'track-list';
+        page.appendChild(trackList);
+        renderTracks(trackList, tracks, pageNotice);
+        document.body.appendChild(page);
     };
     playAll.addEventListener('click', () => {
         if (tracks.length > 0) {
             void playQueue(tracks, 0);
         }
     });
-    toggle.addEventListener('click', () => {
-        expanded = !expanded;
-        renderList();
-    });
+    openPageButton.addEventListener('click', openDailyPage);
     void (async () => {
         if (!isLoggedIn()) {
             notice.textContent = loginNotice;
@@ -1770,16 +1908,16 @@ function renderDailySection(
         } catch (error) {
             notice.textContent = error instanceof Error && /[\u4e00-\u9fff]/.test(error.message)
                 ? error.message
-                : '每日推荐暂时拿不到，请稍后再试';
+                : '今日推荐暂时拿不到，请稍后再试';
             return;
         }
         if (tracks.length === 0) {
-            notice.textContent = '今天还没有每日推荐';
+            notice.textContent = `今天还没有${titleText}`;
             return;
         }
         notice.textContent = `共 ${tracks.length} 首`;
         playAll.disabled = false;
-        renderList();
+        openPageButton.disabled = false;
     })();
 
     return section;
@@ -1787,11 +1925,11 @@ function renderDailySection(
 
 function renderNeteaseDailySection(): HTMLElement {
     return renderDailySection(
-        '每日推荐',
+        '今日乐荐',
         '根据你的听歌口味，每日更新',
         fetchNeteaseDailySongs,
         () => loadNeteaseSession() !== null,
-        '登录网易云后可看每日推荐'
+        '登录网易云后可看今日乐荐'
     );
 }
 

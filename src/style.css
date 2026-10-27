@@ -259,9 +259,10 @@ body {
     width: 100%;
     height: 44px;
     padding: 0 16px 0 44px;
-    border: 1px solid rgba(255, 255, 255, 0.20);
+    border: 2px solid transparent;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.10);
+    background: linear-gradient(rgba(20, 20, 30, 0.95), rgba(20, 20, 30, 0.95)) padding-box,
+        linear-gradient(135deg, #ff7eb6, #8b5cf6) border-box;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
     color: inherit;
     font-family: inherit;
@@ -274,17 +275,23 @@ body {
 
 .source-search:focus {
     outline: none;
-    border-color: var(--accent-line);
-    box-shadow: 0 0 0 3px var(--accent-soft);
+    box-shadow: 0 0 0 3px rgba(255, 126, 182, 0.35);
 }
 
 .source-search-icon {
     position: absolute;
-    left: 28px;
+    left: 24px;
     top: 50%;
     transform: translateY(-50%);
-    color: var(--text-3);
-    font-size: 16px;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #ff7eb6, #f43f5e);
+    color: #fff;
+    font-size: 15px;
     pointer-events: none;
 }
 
@@ -2078,8 +2085,7 @@ body {
 .dev-search:focus,
 .dev-select:focus {
     outline: none;
-    border-color: var(--accent-line);
-    box-shadow: 0 0 0 3px var(--accent-soft);
+    box-shadow: 0 0 0 3px rgba(255, 126, 182, 0.35);
 }
 
 .developer-actions {
@@ -2795,7 +2801,7 @@ button:not(.poster-card):not(.shelf-record):active::after {
 
 .dev-test-row {
     display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-columns: 1fr 1fr;
     gap: 8px;
     margin-bottom: 10px;
 }
@@ -2854,4 +2860,143 @@ html[data-fx="lite"] .source-empty-icon,
 html[data-fx="lite"] .home h2,
 html[data-fx="lite"] .home .login-area > h2 {
     animation: none;
+}
+
+/* 0.1.82 改名集 + 每日整页：听歌钥匙副标题、版式配方折叠头与预设、
+   每日整页（复用足迹页的 fixed 页口径）、旋律手记渐变大数字。 */
+.login-area-sub {
+    color: var(--text-3);
+    font-size: 13px;
+    margin: 0 0 12px;
+}
+
+.layout-mix-head {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: var(--r-card);
+    background: rgba(255, 255, 255, 0.08);
+    box-shadow: 0 10px 22px rgba(0, 0, 0, 0.35);
+    color: inherit;
+    text-align: left;
+}
+
+.layout-mix-head-title {
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.layout-mix-head-current {
+    flex: 1;
+    min-width: 0;
+    color: var(--text-3);
+    font-size: 12px;
+}
+
+.layout-mix-head-chev {
+    color: var(--text-3);
+    font-size: 18px;
+}
+
+.layout-mix-body {
+    margin-top: 10px;
+}
+
+.layout-mix-presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.layout-mix-preset-btn {
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+    color: inherit;
+    padding: 6px 14px;
+}
+
+.layout-mix-preset-btn.is-active {
+    border-color: transparent;
+    background: linear-gradient(135deg, #ff7eb6, #8b5cf6);
+    color: #fff;
+}
+
+.daily-page {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    overflow-y: auto;
+    background: var(--bg);
+    padding: 20px 16px calc(20px + env(safe-area-inset-bottom));
+    box-sizing: border-box;
+}
+
+.daily-page-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.daily-page-back {
+    background: transparent;
+    border: none;
+    color: rgba(255, 255, 255, 0.8);
+    font-size: 15px;
+    min-height: 44px;
+    padding: 0 12px;
+    margin-left: -12px;
+}
+
+.daily-page h2 {
+    margin: 0;
+    font-size: 20px;
+}
+
+.daily-page-date {
+    margin: 12px 0 4px;
+    font-size: 36px;
+    font-weight: 700;
+    background: linear-gradient(135deg, #ff7eb6, #8b5cf6);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+}
+
+.daily-page-sub {
+    color: var(--text-3);
+    font-size: 13px;
+    margin: 0 0 16px;
+}
+
+.daily-page .login-btn {
+    margin-bottom: 12px;
+}
+
+.footprint-hero-time {
+    font-size: 36px;
+    background: linear-gradient(135deg, #ff7eb6, #8b5cf6);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+}
+
+.footprint-section {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 16px;
+    padding: 12px;
+}
+
+.footprint-wall-item {
+    border-radius: 12px;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+}
+
+.footprint-source-fill {
+    background: linear-gradient(90deg, #2dd4bf, #f472b6);
 }

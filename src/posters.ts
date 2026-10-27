@@ -91,23 +91,23 @@ export async function loadLocalAlbumPosters(): Promise<Poster[]> {
 export const POSTER_SECTIONS: PosterSectionDefinition[] = [
     {
         key: 'local',
-        label: '本地专辑',
+        label: '本地藏碟',
         load: withPosterCache('local', loadLocalAlbumPosters),
         emptyNotice: '本地还没有专辑，导入歌曲后这里会按专辑出现。',
-        failureNotice: '本地专辑暂时加载不出来，请确认已授予读取音频文件的权限后重试。'
+        failureNotice: '本地藏碟暂时加载不出来，请确认已授予读取音频文件的权限后重试。'
     },
     {
         key: 'netease',
-        label: '网易云榜单',
+        label: '云端榜单',
         load: withPosterCache('netease', fetchNeteaseChartPosters),
-        emptyNotice: '网易云榜单暂时没有内容，请稍后重试。',
-        failureNotice: '网易云榜单暂时加载不出来，请稍后重试。'
+        emptyNotice: '云端榜单暂时没有内容，请稍后重试。',
+        failureNotice: '云端榜单暂时加载不出来，请稍后重试。'
     },
     {
         key: 'ytm',
-        label: 'YTM 热门专辑',
+        label: 'YTM 热碟',
         load: withPosterCache('ytm', fetchYtmChartPosters),
-        emptyNotice: 'YTM 热门专辑暂时没有内容，请稍后重试。',
-        failureNotice: 'YTM 热门专辑暂时加载不出来，请稍后重试。'
+        emptyNotice: 'YTM 热碟暂时没有内容，请稍后重试。',
+        failureNotice: 'YTM 热碟暂时加载不出来，请稍后重试。'
     }
 ];

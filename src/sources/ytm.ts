@@ -1058,8 +1058,104 @@ export async function fetchYtmChartPosters(): Promise<Poster[]> {
 // （playlistItemData.videoId + flexColumns 标题/歌手 + 缩略图组）两路并行
 // 收集、按 videoId 去重、上限 30 首；首页拿不到任何单曲即抛错，
 // 调用方只显示中文提示，不拿榜单专辑冒充每日推荐。
+// 0.1.82 YTM 首页探针：FEmusic_home 在 ANDROID/IOS 会话下同回 400，
+// 而榜单 FEmusic_charts 同函数同会话头能通——先分臂测，不改每日取数。
+// 臂只变一个量：client / 会话头 / 地区 / visitorData；每臂只记状态与
+// 是否含单曲项，不记任何会话值；全部臂跑完才算完成，单臂异常不中断。
+export async function probeYtmHome(): Promise<void> {
+    const android = PLAYER_CLIENTS.find((client) => client.name === 'ANDROID');
+    const ios = PLAYER_CLIENTS.find((client) => client.name === 'IOS');
+    type Arm = {
+        label: string;
+        client: InnertubeClient;
+        session: boolean;
+        hl: string;
+        gl: string;
+        visitor: boolean;
+    };
+    const arms: Arm[] = [];
+    if (android) {
+        arms.push({ label: 'ANDROID·会话·CN', client: android, session: true, hl: 'zh-CN', gl: 'CN', visitor: false });
+        arms.push({ label: 'ANDROID·匿名·CN', client: android, session: false, hl: 'zh-CN', gl: 'CN', visitor: false });
+        arms.push({ label: 'ANDROID·会话·US', client: android, session: true, hl: 'en-US', gl: 'US', visitor: false });
+    }
+    if (ios) {
+        arms.push({ label: 'IOS·会话·CN', client: ios, session: true, hl: 'zh-CN', gl: 'CN', visitor: false });
+    }
+    arms.push({ label: 'WEB_REMIX·会话·CN（对照，榜单已证 400）', client: SEARCH_CLIENT, session: true, hl: 'zh-CN', gl: 'CN', visitor: false });
+    console.log(`[Ytm] 首页探针：开始（FEmusic_home，共 ${arms.length} 臂）`);
+    for (const arm of arms) {
+        const contextClient: Record<string, unknown> = {
+            clientName: arm.client.name,
+            clientVersion: arm.client.version,
+            hl: arm.hl,
+            gl: arm.gl
+        };
+        if (arm.client.deviceMake) {
+            contextClient.deviceMake = arm.client.deviceMake;
+        }
+        if (arm.client.deviceModel) {
+            contextClient.deviceModel = arm.client.deviceModel;
+        }
+        if (arm.client.osName) {
+            contextClient.osName = arm.client.osName;
+        }
+        if (arm.client.osVersion) {
+            contextClient.osVersion = arm.client.osVersion;
+        }
+        const body = JSON.stringify({
+            context: { client: contextClient },
+            browseId: 'FEmusic_home'
+        });
+        try {
+            const response = await httpPost(
+                `${BROWSE_URL}?key=${INNERTUBE_KEY}`,
+                body,
+                arm.session ? requestHeaders() : HEADERS
+            );
+            const hasItems = response.body.includes('musicResponsiveListItemRenderer')
+                || response.body.includes('playlistVideoRenderer');
+            console.log(`[Ytm] 首页探针 ${arm.label}：status=${response.status} len=${response.body.length} 单曲项=${hasItems ? '有' : '无'}`);
+        } catch (error) {
+            console.log(`[Ytm] 首页探针 ${arm.label}：异常 ${error instanceof Error ? error.message : '未知原因'}`);
+        }
+    }
+    if (android && cachedVisitorData) {
+        const contextClient: Record<string, unknown> = {
+            clientName: android.name,
+            clientVersion: android.version,
+            hl: 'zh-CN',
+            gl: 'CN',
+            visitorData: cachedVisitorData
+        };
+        try {
+            const response = await httpPost(
+                `${BROWSE_URL}?key=${INNERTUBE_KEY}`,
+                JSON.stringify({ context: { client: contextClient }, browseId: 'FEmusic_home' }),
+                requestHeaders()
+            );
+            console.log(`[Ytm] 首页探针 ANDROID·会话·CN·缓存 visitorData：status=${response.status} len=${response.body.length}`);
+        } catch (error) {
+            console.log(`[Ytm] 首页探针 ANDROID·会话·CN·缓存 visitorData：异常 ${error instanceof Error ? error.message : '未知原因'}`);
+        }
+    } else {
+        console.log('[Ytm] 首页探针 ANDROID·会话·CN·缓存 visitorData：跳过（无缓存）');
+    }
+    console.log('[Ytm] 首页探针：完成');
+}
+
 export async function fetchYtmDailyTracks(): Promise<Track[]> {
-    const home = await browseYtm('FEmusic_home');
+    // 0.1.82：browseYtm 的报错文案是榜单共用的“YTM 榜单加载失败”，
+    // 每日推荐这里翻成“YTM 今日星荐加载失败”，不再让每日失败顶着榜单名。
+    let home: unknown;
+    try {
+        home = await browseYtm('FEmusic_home');
+    } catch (error) {
+        if (error instanceof Error && error.message.startsWith('YTM 榜单加载失败')) {
+            throw new Error(error.message.replace('YTM 榜单加载失败', 'YTM 今日星荐加载失败'));
+        }
+        throw error;
+    }
     const tracks: Track[] = [];
     const seen = new Set<string>();
     const pushTrack = (track: Track | null): void => {

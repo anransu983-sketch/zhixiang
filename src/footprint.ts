@@ -67,7 +67,7 @@ function buildFootprintPage(year: number, month: number): HTMLElement {
     });
     head.appendChild(back);
     const title = document.createElement('h2');
-    title.textContent = '音乐足迹';
+    title.textContent = '旋律手记';
     head.appendChild(title);
     page.appendChild(head);
 
