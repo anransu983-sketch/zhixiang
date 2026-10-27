@@ -462,7 +462,12 @@ async function resolvePlayUrl(track: Track): Promise<ResolvedPlay> {
                 throw new Error('该音源尚未接上');
             }
             target = await source.resolveStream(track);
-        }
+            if (track.source === 'netease' && target.includes('authSecret')) {
+                // 0.1.75：带签名曲才记为探针目标。当前曲目会随自动跳歌/
+                // 循环回到可播曲（如我们的晴天），探针若只认当前曲目，
+                // 永远探不到真正失败的带签名地址。
+                lastSignedNeteaseTrack = track;
+            }
         const proxyUrl = `http://127.0.0.1:${port}/proxy?u=${encodeURIComponent(target)}`;
         return {
             url: proxyUserAgent ? `${proxyUrl}&ua=${encodeURIComponent(proxyUserAgent)}` : proxyUrl,
@@ -489,6 +494,9 @@ async function resolvePlayUrl(track: Track): Promise<ResolvedPlay> {
 let loadCounter = 0;
 // 最近一次 YTM 取链结果（目标与铸链 UA），供开发者区原生复现实验用。
 let lastYtmStream: { url: string; userAgent?: string } | null = null;
+// 最近一次带 authSecret 的网易云曲目（播放时 resolvePlayUrl 记下），
+// 供探针用：探针目标必须是它，不能是当前曲目。
+let lastSignedNeteaseTrack: Track | null = null;
 
 // 播放意图：每次新起歌（点播／上下首／播完自动推进／停止）都加一。
 // 旧的起歌与跳歌循环凭它认出自己已过时，直接退出而不跳歌——2026-10-26
@@ -813,10 +821,16 @@ export async function runYtmUpstreamExperiment(): Promise<void> {
 }
 
 export async function runNeteaseProbe(): Promise<void> {
-    if (!currentTrack || currentTrack.source !== 'netease') {
-        console.log('[Playback] 网易云取流探针：当前不是网易云曲目，先播一首网易云再试');
+    // 0.1.75：优先用最近一次带签名曲，当前曲目只作回落。
+    // 之前两次探针都撞上我们的晴天，就是因为当前曲目在失败后循环回了
+    // 可播曲，探针根本没探到失败类地址。
+    const probeTrack = lastSignedNeteaseTrack
+        ?? (currentTrack && currentTrack.source === 'netease' ? currentTrack : null);
+    if (!probeTrack) {
+        console.log('[Playback] 网易云取流探针：还没有带签名网易云曲目记录，先播一首带签名曲（宝船等）让它失败一次再试');
         return;
     }
+    console.log(`[Playback] 网易云探针：曲目=${probeTrack.title}${lastSignedNeteaseTrack ? '（最近一次带签名曲）' : '（当前网易云曲目，无签名记录）'}`);
     try {
         // 探针取新链：不经 audio 播放，令牌在 7 臂里第一次被用的是第 1 臂，
         // 第 7 臂复用同一地址，验的就是重放。
@@ -825,7 +839,7 @@ export async function runNeteaseProbe(): Promise<void> {
             console.log('[Playback] 网易云取流探针：网易云音源尚未接上');
             return;
         }
-        const httpsUrl = await source.resolveStream(currentTrack);
+        const httpsUrl = await source.resolveStream(probeTrack);
         const port = await ensureStreamProxy();
         const url = `http://127.0.0.1:${port}/netease-probe?u=${encodeURIComponent(httpsUrl)}` +
             `&mintUa=${encodeURIComponent(NETEASE_MINT_UA)}`;
