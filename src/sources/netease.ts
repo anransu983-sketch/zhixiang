@@ -84,7 +84,9 @@ class NeteaseSource implements AudioSource {
 
     async resolveStream(track: Track): Promise<string> {
         if (track.streamUrl) {
-            return track.streamUrl;
+            // Folia 同款：网易云给 http 明文地址，代理 OkHttp 会被网络
+            // 安全策略拦（0.1.72 实证 CLEARTEXT not permitted），一律升 https。
+            return track.streamUrl.replace(/^http:/, 'https:');
         }
         const songId = this.parseSongId(track.id);
         const params = new URLSearchParams({
@@ -103,7 +105,12 @@ class NeteaseSource implements AudioSource {
         }
         const items = (parsed as { data?: unknown } | null)?.data;
         const first = Array.isArray(items) ? (items[0] as NeteaseRawStream | undefined) : undefined;
-        const url = typeof first?.url === 'string' && first.url ? first.url : null;
+        let url = typeof first?.url === 'string' && first.url ? first.url : null;
+        // 0.1.73 修复：网易云取链给 http，代理 OkHttp 明文被网络安全
+        // 策略拦（0.1.72 实证），Folia 同款升 https，签名参数不动。
+        if (url) {
+            url = url.replace(/^http:/, 'https:');
+        }
         // 0.1.72 诊断：只记取链码、地址 host 与协议、长度与查询参数名，
         // 不记完整地址与签名，供分流是取链本身还是代理取上游的问题。
         try {
