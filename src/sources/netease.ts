@@ -104,6 +104,21 @@ class NeteaseSource implements AudioSource {
         const items = (parsed as { data?: unknown } | null)?.data;
         const first = Array.isArray(items) ? (items[0] as NeteaseRawStream | undefined) : undefined;
         const url = typeof first?.url === 'string' && first.url ? first.url : null;
+        // 0.1.72 诊断：只记取链码、地址 host 与协议、长度与查询参数名，
+        // 不记完整地址与签名，供分流是取链本身还是代理取上游的问题。
+        try {
+            if (url) {
+                const parsedUrl = new URL(url);
+                const paramNames = [...new URLSearchParams(parsedUrl.search).keys()].join(',');
+                console.log(
+                    `[Netease] 取链码=${first?.code} host=${parsedUrl.hostname} 协议=${parsedUrl.protocol} 长度=${url.length} 参数=[${paramNames}]`
+                );
+            } else {
+                console.log(`[Netease] 取链码=${first?.code} 无地址`);
+            }
+        } catch {
+            console.log(`[Netease] 取链码=${first?.code} 地址解析失败`);
+        }
         if (first?.code !== 200 || !url) {
             throw new Error('这首歌在网易云上暂时播不了，可能是需要会员或没有版权，请换一首试试');
         }

@@ -82,6 +82,16 @@ public class StreamProxyServer {
     private final Deque<String> lastRecords = new ArrayDeque<>();
     private long recordSeq = 0;
 
+    // 0.1.72 诊断：上游抛异常时原来不记记录，/last 仍是 none，
+    // Web 层无法区分“没打到代理”还是“代理取上游抛了”。异常也记一条。
+    private synchronized void addErrorRecord(String lid, String error) {
+        recordSeq += 1;
+        lastRecords.addLast("lid=" + lid + " seq=" + recordSeq + " error=" + error);
+        while (lastRecords.size() > MAX_RECORDS) {
+            lastRecords.removeFirst();
+        }
+    }
+
     private synchronized void addRecord(String lid, int status, String type, long len,
             String range, long written, boolean aborted) {
         recordSeq += 1;
@@ -159,6 +169,7 @@ public class StreamProxyServer {
         boolean responseStarted = false;
         // 本次取流的诊断字段：finally 里记一条记录，body 没写完即 aborted。
         String fetchLid = "-";
+        String fetchError = null;
         int fetchStatus = -1;
         String fetchType = "";
         long fetchLen = -1;
@@ -220,8 +231,13 @@ public class StreamProxyServer {
                             line.substring(colon + 1).trim());
                 }
             }
+            String lidEarly = queryParam(parts[1], "lid");
+            if (lidEarly != null && !lidEarly.isEmpty()) {
+                fetchLid = lidEarly;
+            }
             String rawTarget = queryParam(parts[1], "u");
             if (rawTarget == null || rawTarget.isEmpty()) {
+                fetchError = "400 missing u";
                 writeSimple(client, 400, "Bad Request");
                 return;
             }
@@ -231,11 +247,13 @@ public class StreamProxyServer {
             try {
                 target = new URL(rawTarget);
             } catch (Exception e) {
+                fetchError = "400 bad url " + e.getClass().getSimpleName();
                 writeSimple(client, 400, "Bad Request");
                 return;
             }
             String protocol = target.getProtocol();
             if (!"http".equalsIgnoreCase(protocol) && !"https".equalsIgnoreCase(protocol)) {
+                fetchError = "400 bad protocol " + protocol;
                 writeSimple(client, 400, "Bad Request");
                 return;
             }
@@ -315,6 +333,13 @@ public class StreamProxyServer {
         } catch (Exception e) {
             // 客户端断开、上游超时等：安静关闭连接，不记目标地址。
             // 响应头已发出时不再补写错误头，避免污染已开始的流。
+            // 0.1.72：异常名与前 200 字记进 fetchError，finally 里进 /last，
+            // 否则 Web 层看到 none 会误判为没打到代理。
+            String msg = e.getMessage() != null ? e.getMessage() : "";
+            if (msg.length() > 200) {
+                msg = msg.substring(0, 200);
+            }
+            fetchError = e.getClass().getSimpleName() + ": " + msg;
             if (responseStarted) {
                 fetchAborted = true;
             } else {
@@ -328,6 +353,8 @@ public class StreamProxyServer {
             if (fetchStatus >= 0) {
                 addRecord(fetchLid, fetchStatus, fetchType, fetchLen,
                         fetchRange, fetchWritten, fetchAborted);
+            } else if (fetchError != null) {
+                addErrorRecord(fetchLid, fetchError);
             }
             if (upstream != null) {
                 upstream.close();
