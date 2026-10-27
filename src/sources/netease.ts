@@ -28,6 +28,17 @@ const STREAM_URL = 'https://music.163.com/api/song/enhance/player/url';
 const SEARCH_LIMIT = 20;
 const STREAM_BITRATE = 128000;
 
+// 0.1.79 封面修复：网易云接口给的 picUrl/coverImgUrl 一律是 http，
+// WebView 的 <img> 会被 Android 明文策略拦（与 0.1.72 取流被拦同款），
+// YTM 封面是 https 所以一直正常。Folia 同款：封面全量升 https。
+// 取链升 https 已在 0.1.73 做过，这里只补封面。
+function toHttpsCover(url: string | undefined): string | undefined {
+    if (!url) {
+        return undefined;
+    }
+    return url.replace(/^http:/, 'https:');
+}
+
 // 有会话时补 Cookie、无会话时原样返回；URL 与参数一律不动。
 function requestHeaders(): Record<string, string> {
     return withSessionCookie(HEADERS);
@@ -223,7 +234,7 @@ class NeteaseSource implements AudioSource {
             artist: artists.length > 0 ? artists.join('、') : '未知歌手',
             album: typeof album === 'string' && album ? album : undefined,
             durationMs: duration !== undefined && duration > 0 ? duration : undefined,
-            coverUrl: typeof cover === 'string' && cover ? cover : undefined,
+            coverUrl: toHttpsCover(typeof cover === 'string' && cover ? cover : undefined),
             source: 'netease'
         };
     }
@@ -266,7 +277,7 @@ function chartSongToTrack(raw: NeteaseChartSong): Track {
         artist: artists.length > 0 ? artists.join('、') : '未知歌手',
         album: typeof album?.name === 'string' && album.name ? album.name : undefined,
         durationMs: duration !== undefined && duration > 0 ? duration : undefined,
-        coverUrl: typeof album?.picUrl === 'string' && album.picUrl ? album.picUrl : undefined,
+        coverUrl: toHttpsCover(typeof album?.picUrl === 'string' && album.picUrl ? album.picUrl : undefined),
         source: 'netease'
     };
 }
@@ -303,10 +314,11 @@ export async function fetchNeteaseChartPosters(): Promise<Poster[]> {
                     typeof result?.name === 'string' && result.name
                         ? result.name
                         : '网易云榜单',
-                coverUrl:
+                coverUrl: toHttpsCover(
                     typeof result?.coverImgUrl === 'string' && result.coverImgUrl
                         ? result.coverImgUrl
-                        : undefined,
+                        : undefined
+                ),
                 source: 'netease',
                 tracks
             });
@@ -316,4 +328,81 @@ export async function fetchNeteaseChartPosters(): Promise<Poster[]> {
         }
     }
     return posters;
+}
+
+// 0.1.79 每日推荐：需登录会话（与扫码登录同一 Cookie）。
+// 先走 eapi v3（Folia 后端同款路径），返回的 dailySongs 字段与榜单曲
+// 形状相近（artists/album/duration），同时兼容搜索形状（ar/al/dt）
+// 与 NeteaseCloudMusicApi 后端的 data.dailySongs/data.songs 两种包法。
+// eapi 失败时回落公开 GET /api/recommend/songs；两路都拿不到即抛错，
+// 调用方只显示中文提示，不让整页挂掉。
+export async function fetchNeteaseDailySongs(): Promise<Track[]> {
+    const toTrack = (raw: Record<string, unknown>): Track => {
+        const id = typeof raw.id === 'number' ? raw.id : Number(raw.id);
+        const artists = Array.isArray(raw.artists)
+            ? (raw.artists as { name?: unknown }[])
+                .map((artist) => (typeof artist.name === 'string' ? artist.name : ''))
+                .filter((name) => name)
+            : Array.isArray(raw.ar)
+              ? (raw.ar as { name?: unknown }[])
+                .map((artist) => (typeof artist.name === 'string' ? artist.name : ''))
+                .filter((name) => name)
+              : [];
+        const albumRaw = (raw.album ?? raw.al) as { name?: unknown; picUrl?: unknown } | null;
+        const durationRaw = raw.duration ?? raw.dt;
+        const duration = typeof durationRaw === 'number' ? durationRaw : undefined;
+        return {
+            id: `netease:${Number.isFinite(id) ? id : 0}`,
+            title: typeof raw.name === 'string' && raw.name ? raw.name : '未知曲名',
+            artist: artists.length > 0 ? artists.join('、') : '未知歌手',
+            album: typeof albumRaw?.name === 'string' && albumRaw.name ? albumRaw.name : undefined,
+            durationMs: duration !== undefined && duration > 0 ? duration : undefined,
+            coverUrl: toHttpsCover(
+                typeof albumRaw?.picUrl === 'string' && albumRaw.picUrl ? albumRaw.picUrl : undefined
+            ),
+            source: 'netease'
+        };
+    };
+    const pickSongs = (parsed: Record<string, unknown>): unknown[] => {
+        const data = parsed.data as Record<string, unknown> | null;
+        const candidates = [
+            data?.dailySongs,
+            data?.songs,
+            parsed.recommendData,
+            parsed.songs
+        ];
+        for (const candidate of candidates) {
+            if (Array.isArray(candidate) && candidate.length > 0) {
+                return candidate;
+            }
+        }
+        const recommendData = parsed.recommendData as Record<string, unknown> | null;
+        if (Array.isArray(recommendData?.dailySongs)) {
+            return recommendData.dailySongs as unknown[];
+        }
+        return [];
+    };
+    let lastError: unknown = null;
+    try {
+        const v3 = await eapiRequest('/api/v3/discovery/recommend/songs', {});
+        const parsedV3 = JSON.parse(v3.body) as Record<string, unknown>;
+        const songs = pickSongs(parsedV3);
+        if (songs.length > 0) {
+            return (songs as Record<string, unknown>[]).map(toTrack);
+        }
+        lastError = new Error(`v3 每日推荐无歌，码=${parsedV3.code}`);
+    } catch (error) {
+        lastError = error;
+    }
+    const response = await httpGet('https://music.163.com/api/recommend/songs', requestHeaders());
+    if (response.status !== 200) {
+        throw new Error('每日推荐暂时拿不到，请登录后再试');
+    }
+    const parsed = JSON.parse(response.body) as Record<string, unknown>;
+    const songs = pickSongs(parsed);
+    if (songs.length === 0) {
+        console.log(`[Netease] 每日推荐两路均无歌，v3 错=${lastError instanceof Error ? lastError.message : String(lastError)}，GET 码=${parsed.code}`);
+        throw new Error('每日推荐暂时拿不到，请登录后再试');
+    }
+    return (songs as Record<string, unknown>[]).map(toTrack);
 }

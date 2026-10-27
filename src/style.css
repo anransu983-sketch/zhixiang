@@ -1370,6 +1370,24 @@ body {
 
 /* 音乐足迹（0.1.54）：我的页入口行 + 足迹页。足迹页是独立 fixed 页，
    关闭直接 remove，不用 hidden（0.1.53 的教训）。 */
+/* 每日推荐（0.1.79）：网易云 Tab 海报区下方一段，复用搜索结果的
+   track-row 样式，只补标题行与副标题的排版，不另起一套列表样式。 */
+.daily-section {
+    margin: 16px 0;
+}
+.daily-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+}
+.daily-head h2 {
+    margin: 0;
+}
+.daily-sub {
+    color: var(--text-3);
+    font-size: 13px;
+}
+
 .footprint-entry {
     display: flex;
     align-items: center;

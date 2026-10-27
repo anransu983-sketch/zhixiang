@@ -15,7 +15,8 @@ import type { PosterSectionDefinition } from './posters';
 import { renderShelfLayer } from './shelf';
 import { clearLogs, copyPlainText, getLogEntries, getLogModules, getLogText, subscribeLogs, type LogEntry } from './logger';
 import { SOURCES } from './sources/index';
-import { getLocalNotice } from './sources/local';
+import { getLocalCoverDataUrl, getLocalNotice } from './sources/local';
+import { fetchNeteaseDailySongs } from './sources/netease';
 import {
     checkQr,
     clearSession as clearNeteaseSession,
@@ -159,6 +160,11 @@ export function renderHome(): HTMLElement {
     coverPlaceholder.textContent = '♪';
     bar.appendChild(coverPlaceholder);
 
+    // 0.1.79 本地迷你条封面：content:// 不能直接塞 <img>（WebView 渲染不了），
+    // 播放页同款按专辑 id 调原生转 data URL，取到后缓存复用，取不到仍占位。
+    const miniLocalCoverCache = new Map<string, string>();
+    let miniCoverTrackId: string | null = null;
+
     const info = document.createElement('button');
     info.type = 'button';
     info.className = 'np-info';
@@ -225,9 +231,36 @@ export function renderHome(): HTMLElement {
             // 坞辉光跟当前曲目走：id 哈希取色相，与海报占位同一口径。
             bar.style.setProperty('--hue', String(posterHue(state.track.id)));
             if (state.track.coverUrl) {
-                cover.src = state.track.coverUrl;
-                cover.hidden = false;
-                coverPlaceholder.hidden = true;
+                const coverUrl = state.track.coverUrl;
+                if (coverUrl.startsWith('content://')) {
+                    miniCoverTrackId = state.track.id;
+                    const cached = miniLocalCoverCache.get(state.track.id);
+                    if (cached) {
+                        cover.src = cached;
+                        cover.hidden = false;
+                        coverPlaceholder.hidden = true;
+                    } else {
+                        cover.hidden = true;
+                        coverPlaceholder.hidden = false;
+                        const last = coverUrl.split('/').pop() ?? '';
+                        const albumId = Number(last);
+                        if (Number.isInteger(albumId) && albumId > 0) {
+                            void getLocalCoverDataUrl(albumId).then((dataUrl) => {
+                                if (!dataUrl || miniCoverTrackId !== state.track?.id) {
+                                    return;
+                                }
+                                miniLocalCoverCache.set(state.track.id, dataUrl);
+                                cover.src = dataUrl;
+                                cover.hidden = false;
+                                coverPlaceholder.hidden = true;
+                            });
+                        }
+                    }
+                } else {
+                    cover.src = coverUrl;
+                    cover.hidden = false;
+                    coverPlaceholder.hidden = true;
+                }
             } else {
                 cover.hidden = true;
                 coverPlaceholder.hidden = false;
@@ -287,6 +320,10 @@ export function renderHome(): HTMLElement {
         page.appendChild(head);
 
         page.appendChild(renderPosterModule(definition));
+
+        if (tabId === 'netease') {
+            page.appendChild(renderNeteaseDailySection());
+        }
 
         const { block, search } = renderSourceSection(source, status, (query) => {
             // 有查询时海报区收成细条（只剩标题＋切换行），结果接管页面。
@@ -907,7 +944,7 @@ function renderNeteaseLoginBlock(): HTMLElement {
         if (session.avatarUrl) {
             const avatar = document.createElement('img');
             avatar.className = 'login-avatar';
-            avatar.src = session.avatarUrl;
+            avatar.src = session.avatarUrl.replace(/^http:/, 'https:');
             avatar.alt = '';
             row.appendChild(avatar);
         }
@@ -1538,6 +1575,71 @@ function renderPosterCard(poster: Poster, playNotice: HTMLElement): HTMLElement 
 
 // 音源区（0.1.42）：页头由 Tab 页自己画，这里只出吸顶搜索＋提示＋歌曲行；
 // onQuery 供 Tab 页在有查询时把海报区收成细条。返回搜索框给 Tab 再点回顶时聚焦。
+// 0.1.79 每日推荐：网易云 Tab 海报区下方一段，列表复用搜索结果同款
+// track-row（封面/歌名/歌手/时长，点行即从该首起播）。需登录会话，
+// 未登录只留一句提示不发请求；加载失败也只留提示，不影响海报与搜索。
+function renderNeteaseDailySection(): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'daily-section';
+
+    const head = document.createElement('div');
+    head.className = 'daily-head';
+    const heading = document.createElement('h2');
+    heading.textContent = '每日推荐';
+    head.appendChild(heading);
+    const sub = document.createElement('span');
+    sub.className = 'daily-sub';
+    sub.textContent = '根据你的听歌口味，每日更新';
+    head.appendChild(sub);
+    section.appendChild(head);
+
+    const playAll = document.createElement('button');
+    playAll.type = 'button';
+    playAll.className = 'login-btn';
+    playAll.textContent = '▶ 播放全部';
+    playAll.disabled = true;
+    section.appendChild(playAll);
+
+    const notice = document.createElement('p');
+    notice.className = 'source-notice';
+    notice.textContent = '正在加载…';
+    section.appendChild(notice);
+
+    const trackList = document.createElement('ul');
+    trackList.className = 'track-list';
+    section.appendChild(trackList);
+
+    let tracks: Track[] = [];
+    playAll.addEventListener('click', () => {
+        if (tracks.length > 0) {
+            void playQueue(tracks, 0);
+        }
+    });
+    void (async () => {
+        if (!loadNeteaseSession()) {
+            notice.textContent = '登录网易云后可看每日推荐';
+            return;
+        }
+        try {
+            tracks = await fetchNeteaseDailySongs();
+        } catch (error) {
+            notice.textContent = error instanceof Error && /[\u4e00-\u9fff]/.test(error.message)
+                ? error.message
+                : '每日推荐暂时拿不到，请稍后再试';
+            return;
+        }
+        if (tracks.length === 0) {
+            notice.textContent = '今天还没有每日推荐';
+            return;
+        }
+        notice.textContent = `共 ${tracks.length} 首`;
+        playAll.disabled = false;
+        renderTracks(trackList, tracks, notice);
+    })();
+
+    return section;
+}
+
 function renderSourceSection(
     source: AudioSource,
     status: HTMLElement,
