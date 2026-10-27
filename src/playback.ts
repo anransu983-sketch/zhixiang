@@ -52,6 +52,7 @@
 import { Capacitor } from '@capacitor/core';
 import { getSource } from './sources/index';
 import { NETEASE_MINT_UA } from './sources/netease';
+import { eapiRequest } from './sources/netease-eapi';
 import { isYtmGateError, resolveYtmStream } from './sources/ytm';
 import {
     ensureStreamProxy,
@@ -850,6 +851,58 @@ export async function runNeteaseProbe(): Promise<void> {
             if (line) {
                 console.log(`[Playback] 网易云探针：${line}`);
             }
+        }
+        // 0.1.76 v1 对比：同一首歌用 eapi v1 再取一次链（Folia 同款
+        // /api/song/enhance/player/url/v1，level=exhigh, encodeType=flac），
+        // 对 v1 地址也跑同一套探针臂。老接口全 403 时，v1 通就是端点问题，
+        // v1 也 403 就不是端点问题。只记码/host/协议/长度/参数名，不记地址。
+        try {
+            const songId = probeTrack.id.startsWith('netease:')
+                ? probeTrack.id.slice('netease:'.length)
+                : probeTrack.id;
+            const v1 = await eapiRequest('/api/song/enhance/player/url/v1', {
+                ids: `[${songId}]`,
+                level: 'exhigh',
+                encodeType: 'flac'
+            });
+            let v1Url: string | null = null;
+            let v1Code: unknown = null;
+            try {
+                const parsed = JSON.parse(v1.body) as { code?: unknown; data?: unknown };
+                v1Code = parsed.code;
+                const first = Array.isArray(parsed.data) ? (parsed.data[0] as { url?: unknown } | undefined) : undefined;
+                v1Url = typeof first?.url === 'string' && first.url ? first.url : null;
+            } catch {
+                console.log(`[Playback] 网易云探针 v1：返回不是 JSON，HTTP=${v1.status}`);
+            }
+            if (v1Url) {
+                const origProtocol = v1Url.startsWith('https:') ? 'https:' : v1Url.startsWith('http:') ? 'http:' : '?';
+                const v1Https = v1Url.replace(/^http:/, 'https:');
+                try {
+                    const parsedUrl = new URL(v1Https);
+                    const paramNames = [...new URLSearchParams(parsedUrl.search).keys()].join(',');
+                    console.log(
+                        `[Playback] 网易云探针 v1：取链码=${v1Code} host=${parsedUrl.hostname} 原协议=${origProtocol} 长度=${v1Https.length} 参数=[${paramNames}]`
+                    );
+                } catch {
+                    console.log(`[Playback] 网易云探针 v1：取链码=${v1Code} 地址解析失败`);
+                }
+                const v1ProbeUrl = `http://127.0.0.1:${port}/netease-probe?u=${encodeURIComponent(v1Https)}` +
+                    `&mintUa=${encodeURIComponent(NETEASE_MINT_UA)}`;
+                const v1Res = await fetch(v1ProbeUrl);
+                const v1Text = (await v1Res.text()).trim();
+                for (const line of v1Text.split('\n')) {
+                    if (line) {
+                        console.log(`[Playback] 网易云探针 v1：${line}`);
+                    }
+                }
+            } else {
+                console.log(`[Playback] 网易云探针 v1：取链码=${v1Code} 无地址，HTTP=${v1.status}`);
+            }
+        } catch (error) {
+            console.log(
+                `[Playback] 网易云探针 v1 失败：${error instanceof Error ? `${error.name} ${error.message}` : String(error)}`
+            );
         }
     } catch (error) {
         console.log(
