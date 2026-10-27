@@ -468,6 +468,7 @@ async function resolvePlayUrl(track: Track): Promise<ResolvedPlay> {
                 // 永远探不到真正失败的带签名地址。
                 lastSignedNeteaseTrack = track;
             }
+        }
         const proxyUrl = `http://127.0.0.1:${port}/proxy?u=${encodeURIComponent(target)}`;
         return {
             url: proxyUserAgent ? `${proxyUrl}&ua=${encodeURIComponent(proxyUserAgent)}` : proxyUrl,
