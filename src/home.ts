@@ -1,7 +1,7 @@
 // 首页组装：按音源注册表渲染各音源的浏览区，尚未实现的块留在清单里。
 // 本文件只做组装与界面接线，不放音源与播放逻辑。
 
-import { getCurrentState, next, onTimeUpdate, onTrackChange, playQueue, previous, runYtmUpstreamExperiment, togglePlay } from './playback';
+import { getCurrentState, next, onTimeUpdate, onTrackChange, playQueue, previous, runNeteaseProbe, runYtmUpstreamExperiment, togglePlay } from './playback';
 import { openPlayerPage } from './player';
 import { openFootprintPage } from './footprint';
 import type { PlaybackState } from './playback';
@@ -599,6 +599,21 @@ function renderDeveloperSection(): HTMLElement {
         });
     });
     testRow.appendChild(experimentButton);
+
+    // 网易云取流探针（0.1.74）：当前网易云曲目取新链后，原生 7 臂矩阵
+    // 只变一个量，判 UA / Referer / Range / scheme / 重放哪一个翻 403。
+    const neteaseProbeButton = document.createElement('button');
+    neteaseProbeButton.className = 'login-btn';
+    neteaseProbeButton.textContent = '网易云取流探针';
+    neteaseProbeButton.addEventListener('click', () => {
+        neteaseProbeButton.disabled = true;
+        neteaseProbeButton.textContent = '探针中…';
+        void runNeteaseProbe().finally(() => {
+            neteaseProbeButton.disabled = false;
+            neteaseProbeButton.textContent = '网易云取流探针';
+        });
+    });
+    testRow.appendChild(neteaseProbeButton);
 
     const filters = document.createElement('div');
     filters.className = 'dev-filters';

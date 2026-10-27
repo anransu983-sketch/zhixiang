@@ -29,10 +29,13 @@ function requestHeaders(): Record<string, string> {
     return withSessionCookie(HEADERS);
 }
 
+// 铸链时实际发出的 UA：探针第 2/3 臂用它，判断 CDN 是否按铸链 UA 认人。
+export const NETEASE_MINT_UA =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
+
 const HEADERS: Record<string, string> = {
     Referer: 'https://music.163.com/',
-    'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
+    'User-Agent': NETEASE_MINT_UA
 };
 
 interface NeteaseRawSong {

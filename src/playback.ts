@@ -51,6 +51,7 @@
 
 import { Capacitor } from '@capacitor/core';
 import { getSource } from './sources/index';
+import { NETEASE_MINT_UA } from './sources/netease';
 import { isYtmGateError, resolveYtmStream } from './sources/ytm';
 import {
     ensureStreamProxy,
@@ -807,6 +808,37 @@ export async function runYtmUpstreamExperiment(): Promise<void> {
     } catch (error) {
         console.log(
             `[Playback] 上游复现实验失败：${error instanceof Error ? `${error.name} ${error.message}` : String(error)}`
+        );
+    }
+}
+
+export async function runNeteaseProbe(): Promise<void> {
+    if (!currentTrack || currentTrack.source !== 'netease') {
+        console.log('[Playback] 网易云取流探针：当前不是网易云曲目，先播一首网易云再试');
+        return;
+    }
+    try {
+        // 探针取新链：不经 audio 播放，令牌在 7 臂里第一次被用的是第 1 臂，
+        // 第 7 臂复用同一地址，验的就是重放。
+        const source = getSource('netease');
+        if (!source) {
+            console.log('[Playback] 网易云取流探针：网易云音源尚未接上');
+            return;
+        }
+        const httpsUrl = await source.resolveStream(currentTrack);
+        const port = await ensureStreamProxy();
+        const url = `http://127.0.0.1:${port}/netease-probe?u=${encodeURIComponent(httpsUrl)}` +
+            `&mintUa=${encodeURIComponent(NETEASE_MINT_UA)}`;
+        const res = await fetch(url);
+        const text = (await res.text()).trim();
+        for (const line of text.split('\n')) {
+            if (line) {
+                console.log(`[Playback] 网易云探针：${line}`);
+            }
+        }
+    } catch (error) {
+        console.log(
+            `[Playback] 网易云取流探针失败：${error instanceof Error ? `${error.name} ${error.message}` : String(error)}`
         );
     }
 }

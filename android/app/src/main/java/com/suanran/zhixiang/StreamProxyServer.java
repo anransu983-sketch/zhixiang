@@ -3,11 +3,13 @@ package com.suanran.zhixiang;
 import android.util.Log;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
@@ -20,6 +22,7 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.zip.GZIPInputStream;
 
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -74,6 +77,16 @@ public class StreamProxyServer {
             .retryOnConnectionFailure(false)
             .connectTimeout(CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             .readTimeout(READ_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .build();
+
+    // 0.1.74 探针专用：不跟跳转（手动记跳数与最终 host），超时收紧，
+    // 与 /proxy 的 UPSTREAM 分开，避免探针改动正常取流行为。
+    private static final OkHttpClient PROBE_CLIENT = new OkHttpClient.Builder()
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .retryOnConnectionFailure(false)
+            .connectTimeout(10000, TimeUnit.MILLISECONDS)
+            .readTimeout(10000, TimeUnit.MILLISECONDS)
             .build();
 
     // 上游取流诊断记录（/last 用；不含目标地址）。单条 last 会被并发/连续
@@ -204,7 +217,8 @@ public class StreamProxyServer {
             // 只记路由标签，不记路径与查询串（查询串里有目标地址与 UA）。
             String route = "/ping".equals(pathOnly) ? "ping"
                     : "/last".equals(pathOnly) ? "last"
-                    : "/experiment".equals(pathOnly) ? "experiment" : "proxy";
+                    : "/experiment".equals(pathOnly) ? "experiment"
+                    : "/netease-probe".equals(pathOnly) ? "netease-probe" : "proxy";
             Log.i(TAG, "hit route=" + route);
             if ("/ping".equals(pathOnly)) {
                 writePing(client);
@@ -232,6 +246,12 @@ public class StreamProxyServer {
                 }
             }
             String lidEarly = queryParam(parts[1], "lid");
+            if ("/netease-probe".equals(pathOnly)) {
+                // 探针要元素 UA：JS fetch 发来的 User-Agent 即 WebView UA，
+                // 与 audio 元素同源，基线臂用它，不另传参数。
+                writeNeteaseProbe(client, parts[1], headers.get("user-agent"));
+                return;
+            }
             if (lidEarly != null && !lidEarly.isEmpty()) {
                 fetchLid = lidEarly;
             }
@@ -442,6 +462,308 @@ public class StreamProxyServer {
         out.write(response.getBytes(StandardCharsets.UTF_8));
         out.write(body);
         out.flush();
+    }
+
+    // 0.1.74 网易云取流探针：同一新取链地址，7 臂每臂只变一个量。
+    // 基线 = 现在代理真实送的东西（元素 UA、https、bytes=0-1MiB-1、无 Referer）。
+    // 1 基线 2 铸链 UA 3 铸链 UA+Referer 4 基线去 Range 5 基线 bytes=0-1
+    // 6 raw Socket http 同头（绕过平台明文检查，不改安全配置）
+    // 7 复用第 1 臂地址重放（验一次性令牌；若第 1 臂已耗令牌则全臂受影响，
+    //   探针入口取的是新链，播放前未被 audio 用过）。
+    // 只记状态/类型/头长度/Server/Via/X-Cache/体前 120 字（去地址）/
+    // 跳数/最终 host/地址长度，绝不记完整地址与签名。
+    private void writeNeteaseProbe(Socket client, String rawPath, String elementUa) throws IOException {
+        String httpsUrl = queryParam(rawPath, "u");
+        String mintUa = queryParam(rawPath, "mintUa");
+        StringBuilder text = new StringBuilder();
+        if (httpsUrl == null || httpsUrl.isEmpty() || mintUa == null || mintUa.isEmpty()) {
+            writeSimple(client, 400, "Bad Request");
+            return;
+        }
+        String element = (elementUa != null && !elementUa.isEmpty()) ? elementUa : "Mozilla/5.0";
+        String host = "";
+        try {
+            host = new URL(httpsUrl).getHost();
+        } catch (Exception ignored) {
+        }
+        text.append("开始 urlLen=").append(httpsUrl.length())
+                .append(" host=").append(host)
+                .append(" elementUaLen=").append(element.length())
+                .append(" mintUaLen=").append(mintUa.length()).append("\n");
+        String range1m = "bytes=0-" + (CHUNK_BYTES - 1);
+        String httpUrl = httpsUrl.replaceFirst("^https:", "http:");
+        text.append(probeOkHttpArm(1, "基线", httpsUrl, element, null, range1m)).append("\n");
+        text.append(probeOkHttpArm(2, "铸链UA", httpsUrl, mintUa, null, range1m)).append("\n");
+        text.append(probeOkHttpArm(3, "铸链UA+Referer", httpsUrl, mintUa, "https://music.163.com/", range1m)).append("\n");
+        text.append(probeOkHttpArm(4, "基线去Range", httpsUrl, element, null, null)).append("\n");
+        text.append(probeOkHttpArm(5, "基线bytes=0-1", httpsUrl, element, null, "bytes=0-1")).append("\n");
+        text.append(probeRawSocketArm(6, "rawSocket-http同头", httpUrl, element, range1m)).append("\n");
+        text.append(probeOkHttpArm(7, "复用第1臂地址重放", httpsUrl, element, null, range1m)).append("\n");
+        text.append("完成\n");
+        byte[] body = text.toString().getBytes(StandardCharsets.UTF_8);
+        String response = "HTTP/1.1 200 OK\r\n"
+                + "Access-Control-Allow-Origin: *\r\n"
+                + "Content-Type: text/plain\r\n"
+                + "Content-Length: " + body.length + "\r\n"
+                + "Connection: close\r\n"
+                + "\r\n";
+        OutputStream out = client.getOutputStream();
+        out.write(response.getBytes(StandardCharsets.UTF_8));
+        out.write(body);
+        out.flush();
+        Log.i(TAG, "netease-probe done urlLen=" + httpsUrl.length());
+    }
+
+    private String probeOkHttpArm(int arm, String label, String url, String ua, String referer, String range) {
+        String current = url;
+        int hops = 0;
+        try {
+            for (int hop = 0; hop <= 5; hop++) {
+                Request.Builder builder = new Request.Builder()
+                        .url(current)
+                        .header("User-Agent", ua);
+                if (referer != null) {
+                    builder.header("Referer", referer);
+                }
+                if (range != null) {
+                    builder.header("Range", range);
+                }
+                Response resp = PROBE_CLIENT.newCall(builder.build()).execute();
+                try {
+                    int status = resp.code();
+                    String location = resp.header("Location");
+                    String finalHost = "";
+                    try {
+                        finalHost = new URL(current).getHost();
+                    } catch (Exception ignored) {
+                    }
+                    if ((status == 301 || status == 302 || status == 303 || status == 307 || status == 308)
+                            && location != null && !location.isEmpty() && hop < 5) {
+                        hops++;
+                        current = resolveRedirect(current, location);
+                        continue;
+                    }
+                    String snippet = probeBodySnippet(resp.body());
+                    String type = resp.header("Content-Type");
+                    String len = resp.header("Content-Length");
+                    return "arm" + arm + " " + label + " status=" + status
+                            + " type=" + (type != null ? type : "")
+                            + " len=" + (len != null ? len : "")
+                            + " range=" + (range != null ? range : "-")
+                            + " hops=" + hops + " finalHost=" + finalHost
+                            + " server=" + headerOrEmpty(resp, "Server")
+                            + " via=" + headerOrEmpty(resp, "Via")
+                            + " xcache=" + headerOrEmpty(resp, "X-Cache")
+                            + " body=" + snippet;
+                } finally {
+                    resp.close();
+                }
+            }
+            return "arm" + arm + " " + label + " error=tooManyRedirects";
+        } catch (Exception e) {
+            return "arm" + arm + " " + label + " error=" + e.getClass().getSimpleName()
+                    + ":" + shortMsg(e.getMessage());
+        }
+    }
+
+    private String probeRawSocketArm(int arm, String label, String httpUrl, String ua, String range) {
+        try {
+            URL target = new URL(httpUrl);
+            String path = target.getFile();
+            if (path == null || path.isEmpty()) {
+                path = "/";
+            }
+            int port = target.getPort() > 0 ? target.getPort() : 80;
+            Socket socket = new Socket();
+            socket.connect(new InetSocketAddress(target.getHost(), port), 10000);
+            socket.setSoTimeout(10000);
+            try {
+                String req = "GET " + path + " HTTP/1.1\r\n"
+                        + "Host: " + target.getHost() + "\r\n"
+                        + "User-Agent: " + ua + "\r\n"
+                        + "Range: " + range + "\r\n"
+                        + "Accept-Encoding: gzip\r\n"
+                        + "Connection: close\r\n\r\n";
+                socket.getOutputStream().write(req.getBytes(StandardCharsets.UTF_8));
+                socket.getOutputStream().flush();
+                byte[] raw = readAllLimited(socket.getInputStream(), 65536);
+                String headerEnd = "\r\n\r\n";
+                int split = indexOfBytes(raw, headerEnd.getBytes(StandardCharsets.UTF_8));
+                if (split < 0) {
+                    return "arm" + arm + " " + label + " error=noHeaders";
+                }
+                String headerText = new String(raw, 0, split, StandardCharsets.UTF_8);
+                String[] lines = headerText.split("\r\n");
+                int status = -1;
+                if (lines.length > 0) {
+                    String[] statusParts = lines[0].split(" ");
+                    if (statusParts.length >= 2) {
+                        try {
+                            status = Integer.parseInt(statusParts[1]);
+                        } catch (NumberFormatException ignored) {
+                        }
+                    }
+                }
+                Map<String, String> headers = new HashMap<>();
+                for (int i = 1; i < lines.length; i++) {
+                    int colon = lines[i].indexOf(':');
+                    if (colon > 0) {
+                        headers.put(lines[i].substring(0, colon).trim().toLowerCase(Locale.US),
+                                lines[i].substring(colon + 1).trim());
+                    }
+                }
+                byte[] bodyBytes = new byte[0];
+                int bodyStart = split + headerEnd.length();
+                if (bodyStart < raw.length) {
+                    byte[] rest = new byte[raw.length - bodyStart];
+                    System.arraycopy(raw, bodyStart, rest, 0, rest.length);
+                    if ("chunked".equalsIgnoreCase(headers.get("transfer-encoding"))) {
+                        bodyBytes = dechunk(rest);
+                    } else {
+                        bodyBytes = rest;
+                    }
+                    if ("gzip".equalsIgnoreCase(headers.get("content-encoding"))) {
+                        try {
+                            GZIPInputStream gzip = new GZIPInputStream(
+                                    new java.io.ByteArrayInputStream(bodyBytes));
+                            bodyBytes = readAllLimited(gzip, 4096);
+                        } catch (Exception ignored) {
+                        }
+                    }
+                }
+                String snippet = stripUrls(new String(bodyBytes, StandardCharsets.UTF_8));
+                if (snippet.length() > 120) {
+                    snippet = snippet.substring(0, 120);
+                }
+                return "arm" + arm + " " + label + " status=" + status
+                        + " type=" + headers.getOrDefault("content-type", "")
+                        + " len=" + headers.getOrDefault("content-length", "")
+                        + " range=" + range
+                        + " hops=0 finalHost=" + target.getHost()
+                        + " server=" + headers.getOrDefault("server", "")
+                        + " via=" + headers.getOrDefault("via", "")
+                        + " xcache=" + headers.getOrDefault("x-cache", "")
+                        + " body=" + snippet;
+            } finally {
+                try {
+                    socket.close();
+                } catch (Exception ignored) {
+                }
+            }
+        } catch (Exception e) {
+            return "arm" + arm + " " + label + " error=" + e.getClass().getSimpleName()
+                    + ":" + shortMsg(e.getMessage());
+        }
+    }
+
+    private String probeBodySnippet(ResponseBody body) throws IOException {
+        if (body == null) {
+            return "";
+        }
+        InputStream in = body.byteStream();
+        byte[] buffer = new byte[512];
+        int read = in.read(buffer);
+        if (read <= 0) {
+            return "";
+        }
+        String text = new String(buffer, 0, read, StandardCharsets.UTF_8);
+        text = stripUrls(text);
+        return text.length() > 120 ? text.substring(0, 120) : text;
+    }
+
+    private String stripUrls(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text.replaceAll("https?://\\S+", "[url]").replaceAll("[\\r\\n]+", " ").trim();
+    }
+
+    private String headerOrEmpty(Response resp, String name) {
+        String value = resp.header(name);
+        return value != null ? value : "";
+    }
+
+    private String shortMsg(String msg) {
+        if (msg == null) {
+            return "";
+        }
+        String clean = msg.replaceAll("https?://\\S+", "[url]");
+        return clean.length() > 120 ? clean.substring(0, 120) : clean;
+    }
+
+    private String resolveRedirect(String current, String location) {
+        if (location.startsWith("http://") || location.startsWith("https://")) {
+            return location;
+        }
+        try {
+            URL base = new URL(current);
+            if (location.startsWith("/")) {
+                return base.getProtocol() + "://" + base.getHost() + location;
+            }
+            String path = base.getPath();
+            int slash = path.lastIndexOf('/');
+            String dir = slash >= 0 ? path.substring(0, slash + 1) : "/";
+            return base.getProtocol() + "://" + base.getHost() + dir + location;
+        } catch (Exception e) {
+            return current;
+        }
+    }
+
+    private byte[] readAllLimited(InputStream in, int limit) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] buffer = new byte[4096];
+        int total = 0;
+        int read;
+        while (total < limit && (read = in.read(buffer, 0, Math.min(buffer.length, limit - total))) != -1) {
+            out.write(buffer, 0, read);
+            total += read;
+        }
+        return out.toByteArray();
+    }
+
+    private int indexOfBytes(byte[] data, byte[] needle) {
+        outer:
+        for (int i = 0; i + needle.length <= data.length; i++) {
+            for (int j = 0; j < needle.length; j++) {
+                if (data[i + j] != needle[j]) {
+                    continue outer;
+                }
+            }
+            return i;
+        }
+        return -1;
+    }
+
+    private byte[] dechunk(byte[] data) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        int pos = 0;
+        while (pos < data.length) {
+            int lineEnd = -1;
+            for (int i = pos; i + 1 < data.length; i++) {
+                if (data[i] == '\r' && data[i + 1] == '\n') {
+                    lineEnd = i;
+                    break;
+                }
+            }
+            if (lineEnd < 0) {
+                break;
+            }
+            String sizeText = new String(data, pos, lineEnd - pos, StandardCharsets.UTF_8).trim();
+            int size;
+            try {
+                size = Integer.parseInt(sizeText, 16);
+            } catch (NumberFormatException e) {
+                break;
+            }
+            pos = lineEnd + 2;
+            if (size == 0) {
+                break;
+            }
+            int take = Math.min(size, data.length - pos);
+            out.write(data, pos, take);
+            pos += take + 2;
+        }
+        return out.toByteArray();
     }
 
     // /experiment：原生三段复现实验（无 WebView、无 audio 元素）。
