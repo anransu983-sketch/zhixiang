@@ -1086,33 +1086,20 @@ function renderNeteaseLoginBlock(): HTMLElement {
             } else if (result.code === 802) {
                 status.textContent = '已扫码，请在手机上确认';
             } else if (result.code === 800) {
-                // 码过期就自动换新码：用户切去网易云 App 扫码再回来时，
-                // 旧码可能已过期，屏幕上永远有新鲜码可扫，不用手动点刷新。
-                // 但累计 3 次还扫不上就停：短命码下无限自动换码等于每小时
-                // 刷上百次取码，可能反过来喂给限流器。
+                // 码过期就停，不再静默换新码（Folia 同款：过期只报过期，
+                // 由用户手动重新获取）。静默换码会在用户正在 App 里确认
+                // 旧码时把轮询切到新码：旧码的确认落了地（授权设备+1），
+                // 新码却永远等不到 803，表现就是“扫码不成功但设备会加”。
                 stopPoll();
-                if (qrAutoRefreshes < 3) {
-                    qrAutoRefreshes += 1;
-                    console.log('[Netease] 二维码已过期，已自动换新码');
-                    window.setTimeout(() => {
-                        // 800ms 内已有新流程开始时跳过（stopPoll 已置空令牌，
-                        // 新流程开始会把它换成新对象）；否则正常换新码。
-                        if (qrToken !== null) {
-                            return;
-                        }
-                        void startQr(true, true);
-                    }, 800);
-                } else {
-                    status.textContent = '连续换码 3 次仍未扫码，点按重新获取';
-                    const refresh = document.createElement('button');
-                    refresh.type = 'button';
-                    refresh.className = 'login-btn';
-                    refresh.textContent = '刷新二维码';
-                    refresh.addEventListener('click', () => {
-                        void startQr();
-                    });
-                    body.appendChild(refresh);
-                }
+                status.textContent = '二维码已过期，点按重新获取';
+                const refresh = document.createElement('button');
+                refresh.type = 'button';
+                refresh.className = 'login-btn';
+                refresh.textContent = '刷新二维码';
+                refresh.addEventListener('click', () => {
+                    void startQr();
+                });
+                body.appendChild(refresh);
             } else if (result.code === 8821) {
                 // 这个码已被拒绝：停掉轮询（继续轮同一码只会一直 8821），
                 // 给换新码按钮，不自动刷码以免无意义循环。
