@@ -3,6 +3,7 @@
 // resolveStream 时再由路径换成 WebView 可播的地址。
 
 import { Capacitor, registerPlugin } from '@capacitor/core';
+import { neteaseSource } from './netease';
 import type { AudioSource, SourceId, Track } from '../types';
 
 interface LocalRawTrack {
@@ -115,6 +116,35 @@ export async function getLocalCoverDataUrl(albumId: number): Promise<string | nu
     } catch {
         return null;
     }
+}
+
+// 0.1.85 本地封面网易云补源：MediaStore 专辑图拿不到时用。复用
+// searchForLocal 的同一套匹配（标题歌手对得上、时长最接近），只取 coverUrl；
+// 封面错一张无所谓，不设时长门。内存缓存只记命中，避免同一首歌反复搜索。
+const neteaseCoverCache = new Map<string, string>();
+
+export async function getLocalCoverFromNetease(track: Track): Promise<string | null> {
+    const cached = neteaseCoverCache.get(track.id);
+    if (cached) {
+        return cached;
+    }
+    const title = track.title.trim();
+    if (!title) {
+        return null;
+    }
+    const artist =
+        track.artist === '未知歌手' || track.artist === '<unknown>' ? '' : track.artist;
+    const match = await neteaseSource.searchForLocal(
+        title,
+        artist,
+        track.durationMs && track.durationMs > 0 ? track.durationMs : undefined
+    );
+    const coverUrl = match?.coverUrl;
+    if (typeof coverUrl === 'string' && coverUrl.startsWith('https://')) {
+        neteaseCoverCache.set(track.id, coverUrl);
+        return coverUrl;
+    }
+    return null;
 }
 
 export const localSource = new LocalMusicSource();

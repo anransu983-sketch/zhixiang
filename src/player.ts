@@ -32,7 +32,7 @@ import type { LyricLine } from './lyrics';
 import { openLiveWallpaperPicker, setWallpaperState } from './native/wallpaper-plugin';
 import { loadVisualToggles, saveVisualToggles, VisualStage } from './visuals';
 import type { VisualToggles } from './visuals';
-import { getLocalCoverDataUrl } from './sources/local';
+import { getLocalCoverDataUrl, getLocalCoverFromNetease } from './sources/local';
 import { posterFallbackBackground, posterHue } from './posters';
 import { getLastYtmStreamMeta } from './sources/ytm';
 import type { Track } from './types';
@@ -452,8 +452,33 @@ function buildPlayerPage(): HTMLElement {
     visualInner.appendChild(visualPad);
     visualPanel.appendChild(visualInner);
     content.appendChild(visualPanel);
-    const toggleDefs: { key: keyof VisualToggles; label: string }[] = [
-        { key: 'rain', label: '雨滴玻璃（默认开）' },
+    // 0.1.85 雨窗三档：播放页视觉面板里的雨滴复选框改成单选，与我的页雨窗
+    // 共用同一份存储（zx.visual.toggles 的 rainMode）。
+    const rainModes: Array<{ mode: number; label: string }> = [
+        { mode: 0, label: '雨滴：关' },
+        { mode: 1, label: '雨滴：静态水滴' },
+        { mode: 2, label: '雨滴：动态滑落' }
+    ];
+    for (const rainDef of rainModes) {
+        const label = document.createElement('label');
+        label.className = 'player-toggle';
+        const box = document.createElement('input');
+        box.type = 'radio';
+        box.name = 'zx-player-rain-mode';
+        box.checked = toggles.rainMode === rainDef.mode;
+        box.addEventListener('change', () => {
+            if (!box.checked) {
+                return;
+            }
+            toggles = { ...toggles, rainMode: rainDef.mode };
+            saveVisualToggles(toggles);
+            stage?.poke();
+            void pushWallpaperState();
+        });
+        label.append(box, document.createTextNode(rainDef.label));
+        visualPad.appendChild(label);
+    }
+    const toggleDefs: { key: 'particles' | 'pulse' | 'stars' | 'sword'; label: string }[] = [
         { key: 'particles', label: '粒子舞台' },
         { key: 'pulse', label: '节奏脉动' },
         { key: 'stars', label: '氛围星空' },
@@ -619,7 +644,21 @@ function buildPlayerPage(): HTMLElement {
                     return;
                 }
                 if (!dataUrl) {
-                    hideCover();
+                    // 0.1.85：MediaStore 无图时走网易云搜索匹配补封面。
+                    void getLocalCoverFromNetease(track).then((coverUrl) => {
+                        if (track.id !== coverForTrackId) {
+                            return;
+                        }
+                        if (!coverUrl) {
+                            hideCover();
+                            return;
+                        }
+                        if (coverCache.size > 20) {
+                            coverCache.clear();
+                        }
+                        coverCache.set(track.id, coverUrl);
+                        setCoverSrc(coverUrl);
+                    });
                     return;
                 }
                 if (coverCache.size > 20) {
@@ -644,7 +683,8 @@ function buildPlayerPage(): HTMLElement {
     stage = new VisualStage(canvas, cover, {
         getAnalyser,
         isPlaying: () => getCurrentState().playing,
-        getToggles: () => toggles,
+        // 0.1.85：每次现读存储，我的页雨窗改动不用重进播放页就生效。
+        getToggles: () => loadVisualToggles(),
         getCoverImage: () => (cover.complete && cover.naturalWidth > 0 ? cover : null)
     });
 

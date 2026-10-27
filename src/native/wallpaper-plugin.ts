@@ -51,7 +51,7 @@ export async function setWallpaperState(state: WallpaperState): Promise<void> {
         positionMs: state.positionMs,
         lyricLines: state.lyricLines,
         currentLineIndex: state.currentLineIndex,
-        toggleRain: state.toggles.rain,
+        toggleRain: state.toggles.rainMode > 0,
         toggleParticles: state.toggles.particles,
         togglePulse: state.toggles.pulse,
         toggleStars: state.toggles.stars

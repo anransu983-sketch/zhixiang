@@ -108,6 +108,57 @@ class NeteaseSource implements AudioSource {
         return songs.map((raw) => this.toTrack(raw as NeteaseRawSong));
     }
 
+    // 0.1.85 本地补源：按“歌名＋歌手”搜网易云，给本地歌匹配封面与歌词。
+    // 匹配口径：标题对得上（DJ/抖音类括号后缀剥掉再比，本地侧已由调用方
+    // 清洗过标题）、歌手对得上（互含即可，网易云常是“歌手A、歌手B”合写）；
+    // 多条命中时取时长 dt 最接近本地时长的一条。搜不到或搜索失败回 null，
+    // 调用方再回落 LRCLIB，不抛错到播放链。
+    async searchForLocal(
+        title: string,
+        artist: string,
+        durationMs?: number
+    ): Promise<Track | null> {
+        const keyword = artist ? `${title} ${artist}` : title;
+        let tracks: Track[];
+        try {
+            tracks = await this.search(keyword);
+        } catch {
+            return null;
+        }
+        const normalize = (value: string): string =>
+            value.replace(/\s+/g, ' ').trim().toLowerCase();
+        const stripVersion = (value: string): string =>
+            value
+                .replace(/\s*[（(][^）)]*(DJ|抖音|Remix|REMIX)[^）)]*[）)]/g, '')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .toLowerCase();
+        // 本地侧标题可能带 (DJ版) 后缀（如封面链路传的是原标题），
+        // 匹配时两侧都剥掉版本后缀再比，歌词链路传的已清洗标题不受影响。
+        const wantTitle = stripVersion(title);
+        const wantArtist = normalize(artist);
+        const candidates = tracks.filter((track) => {
+            const trackTitle = normalize(track.title);
+            if (trackTitle !== wantTitle && stripVersion(track.title) !== wantTitle) {
+                return false;
+            }
+            if (!wantArtist) {
+                return true;
+            }
+            const trackArtist = normalize(track.artist);
+            return trackArtist.includes(wantArtist) || wantArtist.includes(trackArtist);
+        });
+        if (candidates.length === 0) {
+            return null;
+        }
+        const diff = (track: Track): number =>
+            durationMs && track.durationMs
+                ? Math.abs(track.durationMs - durationMs)
+                : 0;
+        candidates.sort((a, b) => diff(a) - diff(b));
+        return candidates[0] ?? null;
+    }
+
     async resolveStream(track: Track): Promise<string> {
         if (track.streamUrl) {
             // Folia 同款：网易云给 http 明文地址，代理 OkHttp 会被网络

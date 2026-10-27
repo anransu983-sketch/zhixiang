@@ -1,4 +1,5 @@
 import './style.css';
+import { applyStoredPerfMode, applyStoredTheme } from './appearance';
 import { renderHome } from './home';
 import { initLogger } from './logger';
 import { initMediaSession } from './native/media-session';
@@ -12,6 +13,10 @@ initMediaSession();
 
 // 足迹记录同款入口：只订阅 onTrackChange，不动播放逻辑。
 initPlaybackHistory();
+
+// 外观偏好要在首屏渲染前应用，否则我的页会先闪默认色再跳主题。
+applyStoredTheme();
+applyStoredPerfMode();
 
 const root = document.getElementById('app');
 if (root) {

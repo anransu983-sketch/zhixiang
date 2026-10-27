@@ -1,7 +1,9 @@
 // 播放页视觉（第 8 块，全新写）：单块画布上的五项独立图层。
 //
 // 五项开关各自独立，互不依赖，存在 localStorage，键 zhixiang.visual.toggles：
-// - rain（雨滴玻璃，默认开）：封面模糊底 + 玻璃水滴（静止圆滴＋下滑拖尾＋大光斑）。
+// - rainMode（雨滴三档，默认 2 动态）：0 关（不画水滴）、1 静态水滴
+//   （只画静止圆滴，下滑滴不动，不空转 rAF）、2 动态滑落（静止圆滴＋
+//   下滑拖尾＋大光斑，即旧 rain=true 的行为）。封面模糊底不受档位影响。
 // - particles（粒子舞台，默认关）：粒子随频谱能量律动。
 // - pulse（节奏脉动，默认关）：封面随频谱能量缩放发光。
 // - stars（氛围星空，默认关）：星空闪烁漂移。
@@ -21,7 +23,7 @@
 //   播放页调用 poke() 重启动画。toggle 变化也调 poke() 立即生效。
 
 export interface VisualToggles {
-    rain: boolean;
+    rainMode: number;
     particles: boolean;
     pulse: boolean;
     stars: boolean;
@@ -31,7 +33,7 @@ export interface VisualToggles {
 const STORAGE_KEY = 'zhixiang.visual.toggles';
 
 export const DEFAULT_TOGGLES: VisualToggles = {
-    rain: true,
+    rainMode: 2,
     particles: false,
     pulse: false,
     stars: false,
@@ -45,8 +47,16 @@ export function loadVisualToggles(): VisualToggles {
             return { ...DEFAULT_TOGGLES };
         }
         const parsed = JSON.parse(raw) as Partial<VisualToggles>;
+        // 旧形状迁移：rain=true→2 动态，rain=false→0 关（保持旧观感不变）。
+        const legacy = parsed as Partial<VisualToggles> & { rain?: unknown };
+        const migrated =
+            typeof parsed.rainMode === 'number' && parsed.rainMode >= 0 && parsed.rainMode <= 2
+                ? parsed.rainMode
+                : typeof legacy.rain === 'boolean'
+                    ? legacy.rain ? 2 : 0
+                    : DEFAULT_TOGGLES.rainMode;
         return {
-            rain: typeof parsed.rain === 'boolean' ? parsed.rain : DEFAULT_TOGGLES.rain,
+            rainMode: migrated,
             particles:
                 typeof parsed.particles === 'boolean'
                     ? parsed.particles
@@ -159,8 +169,9 @@ export class VisualStage {
             this.stopLoop();
             return;
         }
-        if (!this.options.isPlaying()) {
-            // 暂停/停止：画一帧静态画面后停画，不空转。
+        if (!this.needsLoop()) {
+            // 暂停/停止、轻装模式、或只剩静态层（雨滴静态档且其余动效全关）：
+            // 画一帧静态画面后停画，不空转 rAF。
             if (!this.staticDrawn) {
                 this.drawFrame(0, false);
                 this.staticDrawn = true;
@@ -175,7 +186,7 @@ export class VisualStage {
                 if (!this.running) {
                     return;
                 }
-                if (document.hidden || !this.options.isPlaying()) {
+                if (document.hidden || !this.needsLoop()) {
                     this.running = false;
                     this.rafId = null;
                     this.poke();
@@ -186,6 +197,25 @@ export class VisualStage {
             };
             this.rafId = requestAnimationFrame(step);
         }
+    }
+
+    // 是否值得跑 rAF 循环：播放中、非轻装模式，且至少有一层会随时间变。
+    // 雨滴动态档（2）算一层；静态档（1）不算——水滴不动，不必空转。
+    private needsLoop(): boolean {
+        if (document.body.classList.contains('perf-mode')) {
+            return false;
+        }
+        if (!this.options.isPlaying()) {
+            return false;
+        }
+        const toggles = this.options.getToggles();
+        return (
+            toggles.rainMode === 2 ||
+            toggles.particles ||
+            toggles.pulse ||
+            toggles.stars ||
+            this.swordStart !== null
+        );
     }
 
     stop(): void {
@@ -346,10 +376,10 @@ export class VisualStage {
 
         ctx.clearRect(0, 0, width, height);
 
-        // 底：有封面时一律画封面模糊底（雨滴开关只管雨滴本身）；
-        // 无封面时，雨滴开画渐变底、雨滴关画深色底（保持旧观感）。
+        // 底：有封面时一律画封面模糊底（雨滴档位只管水滴本身）；
+        // 无封面时，雨滴有关外档位画渐变底、0 关画深色底（保持旧观感）。
         const cover = this.options.getCoverImage();
-        if (cover || toggles.rain) {
+        if (cover || toggles.rainMode > 0) {
             const bg = this.ensureBackground(width, height);
             if (bg) {
                 ctx.drawImage(bg, 0, 0);
@@ -365,8 +395,11 @@ export class VisualStage {
         if (toggles.particles) {
             this.drawParticles(ctx, width, height, energy, animated);
         }
-        if (toggles.rain) {
+        if (toggles.rainMode === 2) {
             this.drawRain(ctx, width, height, animated);
+        } else if (toggles.rainMode === 1) {
+            // 静态档：水滴单独给 animated=false，下滑滴不动；其余层不受影响。
+            this.drawRain(ctx, width, height, false);
         }
         // 剑来画在最上层：剑光斜划＋诗句，静态帧不画。
         if (toggles.sword && animated) {

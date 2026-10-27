@@ -44,7 +44,7 @@
     --radius-cover: var(--r-poster);
     --radius-input: var(--r-pill);
     --section-gap: 24px;
-    --nav-h: 56px;
+    --nav-h: 76px;
     --np-h: 60px;
     --font-sans: system-ui, -apple-system, "PingFang SC", "HarmonyOS Sans SC", "Noto Sans SC",
         "Source Han Sans SC", "Microsoft YaHei", "Hiragino Sans GB", sans-serif;
@@ -2999,4 +2999,317 @@ html[data-fx="lite"] .home .login-area > h2 {
 
 .footprint-source-fill {
     background: linear-gradient(90deg, #2dd4bf, #f472b6);
+}
+
+/* ============ 0.1.85：胶囊导航 / 主题衣橱 / 听歌钥匙收起 / 雨窗轻装 / 轻装模式 ============ */
+
+/* 底部胶囊导航：悬浮胶囊（左右 16px、底部悬空 20px＋安全区）、半透明磨砂玻璃。
+   小面积用 blur 20px，不触发大面积玻璃的重绘问题；迷你栏 bottom 已由 --nav-h
+   抬高 20px，胶囊悬在迷你栏下方，不遮挡。 */
+.tab-bar {
+    left: 16px;
+    right: 16px;
+    bottom: calc(20px + env(safe-area-inset-bottom));
+    height: 56px;
+    padding: 6px;
+    gap: 0;
+    border: 1px solid var(--hairline);
+    border-radius: 999px;
+    background: var(--surface-2);
+    -webkit-backdrop-filter: blur(20px);
+    backdrop-filter: blur(20px);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+.tab-bar .tab-btn {
+    z-index: 1;
+}
+.tab-bar .tab-btn.is-active {
+    background: none;
+    -webkit-background-clip: initial;
+    background-clip: initial;
+    color: var(--theme-accent, var(--accent));
+}
+.tab-bar .tab-btn.is-active::after {
+    display: none;
+}
+/* 滑动指示改成粉色 pill：位置仍由 switchTab 按实测 offsetWidth/offsetLeft 写，
+   transition 用弹簧曲线，磁吸感。 */
+.tab-indicator {
+    top: 6px;
+    height: calc(100% - 12px);
+    border-radius: 999px;
+    background: var(--theme-pill, rgba(232, 160, 191, 0.25));
+    transition:
+        transform 380ms cubic-bezier(0.34, 1.56, 0.64, 1),
+        width 380ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes zx-tab-glow {
+    0%, 100% {
+        box-shadow:
+            0 10px 30px rgba(0, 0, 0, 0.45),
+            0 0 12px var(--theme-glow, rgba(232, 160, 191, 0.35));
+    }
+    50% {
+        box-shadow:
+            0 10px 30px rgba(0, 0, 0, 0.45),
+            0 0 26px var(--theme-glow, rgba(232, 160, 191, 0.6));
+    }
+}
+.tab-bar.is-playing {
+    animation: zx-tab-glow 1.6s ease-in-out infinite;
+}
+
+/* 主题：壁纸＋罩色一层 background 写进 body（不用额外罩层，避开层叠风险），
+   颜色变量跟随主题走；卡片玻璃底色深浅由 --surface-1 决定。 */
+body[data-zx-theme] {
+    background-image:
+        linear-gradient(var(--theme-scrim, rgba(0, 0, 0, 0.3)), var(--theme-scrim, rgba(0, 0, 0, 0.3))),
+        var(--theme-wallpaper);
+    background-size: cover;
+    background-position: center;
+    background-attachment: fixed;
+}
+body[data-zx-theme='bocchi'] {
+    color-scheme: light;
+    --text: #4a3540;
+    --text-2: #8a6d7a;
+    --text-3: #a08a94;
+    --surface-1: rgba(255, 255, 255, 0.72);
+    --surface-2: rgba(255, 255, 255, 0.6);
+    --surface-3: rgba(255, 255, 255, 0.5);
+    --accent: #ec407a;
+    --accent-ink: #ffffff;
+    --accent-soft: rgba(236, 64, 122, 0.14);
+    --accent-line: rgba(236, 64, 122, 0.35);
+    --hairline: rgba(236, 64, 122, 0.18);
+    --glass: rgba(255, 255, 255, 0.5);
+    --theme-scrim: rgba(255, 246, 249, 0.35);
+    --theme-pill: rgba(236, 64, 122, 0.2);
+    --theme-glow: rgba(236, 64, 122, 0.45);
+}
+body[data-zx-theme='nightcity_glass'] {
+    color-scheme: dark;
+    --text: #f4f4f5;
+    --text-2: #a1a1aa;
+    --text-3: #8a8a94;
+    --surface-1: rgba(10, 20, 28, 0.72);
+    --surface-2: rgba(10, 20, 28, 0.6);
+    --surface-3: rgba(10, 20, 28, 0.5);
+    --accent: #fcee0a;
+    --accent-ink: #111111;
+    --accent-soft: rgba(252, 238, 10, 0.14);
+    --accent-line: rgba(252, 238, 10, 0.35);
+    --hairline: rgba(255, 255, 255, 0.1);
+    --glass: rgba(10, 20, 28, 0.5);
+    --theme-scrim: rgba(0, 0, 0, 0.35);
+    --theme-pill: rgba(252, 238, 10, 0.2);
+    --theme-glow: rgba(252, 238, 10, 0.45);
+}
+body[data-zx-theme='nightcity_dusk'] {
+    color-scheme: light;
+    --text: #3a3348;
+    --text-2: #7a7390;
+    --text-3: #9a93ab;
+    --surface-1: rgba(255, 255, 255, 0.66);
+    --surface-2: rgba(255, 255, 255, 0.55);
+    --surface-3: rgba(255, 255, 255, 0.45);
+    --accent: #ff4d8d;
+    --accent-ink: #ffffff;
+    --accent-soft: rgba(255, 77, 141, 0.14);
+    --accent-line: rgba(255, 77, 141, 0.35);
+    --hairline: rgba(255, 255, 255, 0.25);
+    --glass: rgba(255, 255, 255, 0.5);
+    --theme-scrim: rgba(20, 10, 30, 0.25);
+    --theme-pill: rgba(255, 77, 141, 0.2);
+    --theme-glow: rgba(255, 77, 141, 0.45);
+}
+/* 旧玻璃卡的硬编码底色在亮主题下几乎看不见，跟随主题变量走。 */
+body[data-zx-theme] .login-block,
+body[data-zx-theme] .mag-card {
+    background: var(--surface-1);
+    border-color: var(--hairline);
+}
+
+/* 听歌钥匙收起模块：整块一张卡，标题按钮＋收起态状态行＋折叠体；
+   展开后两行登录在模块内裸排，行间分隔线（不再套两张卡）。 */
+.login-key-module {
+    padding: 14px;
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-card);
+    background: var(--surface-1);
+}
+.login-key-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+.login-key-head-text {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+.login-key-head-title {
+    font-size: 20px;
+    font-weight: 700;
+}
+.login-key-head-chev {
+    color: var(--text-3);
+    font-size: 18px;
+    line-height: 1.4;
+}
+.login-key-summary {
+    color: var(--text-2);
+    font-size: 12px;
+    margin-top: 6px;
+}
+.login-key-summary-dot {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--ok);
+    margin-right: 4px;
+}
+.login-key-body {
+    margin-top: 12px;
+}
+.login-key-body .login-block {
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    padding: 12px 0 4px;
+}
+.login-key-body .login-block + .login-block {
+    border-top: 1px solid var(--hairline);
+    margin-top: 12px;
+    padding-top: 16px;
+}
+
+/* 外观卡（主题衣橱 / 雨窗 / 轻装模式）：行式列表，后行顶部分隔线。 */
+.zx-appearance-card {
+    padding: 16px;
+    border: 1px solid var(--hairline);
+    border-radius: 20px;
+    background: var(--surface-1);
+}
+.zx-appearance-card h2 {
+    margin: 0;
+    font-size: 20px;
+}
+.zx-appearance-sub {
+    color: var(--text-3);
+    font-size: 13px;
+    margin: 6px 0 4px;
+}
+.zx-appearance-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 0;
+    cursor: pointer;
+}
+.zx-appearance-row + .zx-appearance-row {
+    border-top: 1px solid var(--hairline);
+}
+.zx-appearance-row-text {
+    flex: 1;
+}
+.zx-appearance-row-text b {
+    font-size: 16px;
+}
+.zx-appearance-row-text p {
+    margin: 3px 0 0;
+    color: var(--text-2);
+    font-size: 13px;
+    line-height: 1.5;
+}
+.zx-theme-thumb {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background-size: cover;
+    background-position: center;
+    flex-shrink: 0;
+}
+.zx-rain-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    flex-shrink: 0;
+}
+.zx-appearance-check {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 2px solid var(--text-3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    flex-shrink: 0;
+}
+.zx-appearance-row.is-active .zx-appearance-check {
+    background: var(--theme-accent, var(--accent));
+    border-color: var(--theme-accent, var(--accent));
+    color: #ffffff;
+}
+.zx-theme-hex {
+    color: var(--text-2);
+}
+.zx-theme-palette {
+    font-size: 24px;
+    color: var(--theme-accent, var(--accent));
+    flex-shrink: 0;
+}
+.zx-switch {
+    width: 52px;
+    height: 30px;
+    border: 0;
+    border-radius: 999px;
+    background: #555555;
+    position: relative;
+    flex-shrink: 0;
+    cursor: pointer;
+    padding: 0;
+}
+.zx-switch::after {
+    content: '';
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: #ffffff;
+    transition: left 200ms ease;
+}
+.zx-switch.on {
+    background: var(--theme-accent, var(--accent));
+}
+.zx-switch.on::after {
+    left: 25px;
+}
+
+/* 轻装模式：全站关模糊、阴影、动画与过渡（播放页画布另由 poke() 判类停循环）。 */
+body.perf-mode,
+body.perf-mode * {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+    box-shadow: none !important;
+    animation: none !important;
+    transition: none !important;
 }

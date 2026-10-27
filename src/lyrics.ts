@@ -22,6 +22,7 @@
 
 import { httpGet } from './native/http';
 import { withSessionCookie } from './sources/netease-session';
+import { neteaseSource } from './sources/netease';
 import { getYtmCaptions } from './sources/ytm';
 import type { Track } from './types';
 
@@ -339,6 +340,42 @@ async function fetchLocalLyrics(track: Track): Promise<LyricResult | null> {
             .filter((line) => line.text.length > 0);
         return lines.length > 0 ? { lines, note: null } : null;
     }
+    // 0.1.85 网易云补源（在 LRCLIB 之前）：按歌名＋歌手搜网易云，挑标题
+    // 歌手对得上且时长最接近的一条。时长差超 10 秒时不用它的同步词
+    // （DJ 剪辑版飘词比没词糟），直接落到 LRCLIB；没中也落到 LRCLIB。
+    // 命中则走本地缓存同一口径（synced），下次不再重复搜索。
+    const neteaseMatch = await neteaseSource.searchForLocal(
+        title,
+        artist,
+        track.durationMs && track.durationMs > 0 ? track.durationMs : undefined
+    );
+    if (neteaseMatch) {
+        const diffSec =
+            durationSec !== null && neteaseMatch.durationMs
+                ? Math.abs(Math.round(neteaseMatch.durationMs / 1000) - durationSec)
+                : 0;
+        if (durationSec === null || diffSec <= 10) {
+            const songId = neteaseMatch.id.startsWith('netease:')
+                ? neteaseMatch.id.slice('netease:'.length)
+                : '';
+            if (songId) {
+                const neteaseLyric = await fetchNeteaseLyricById(songId);
+                if (neteaseLyric.lines.length > 0) {
+                    console.log(`[Lyrics] 本地网易云补源同步词 ${neteaseLyric.lines.length} 行`);
+                    cache[key] = {
+                        at: Date.now(),
+                        kind: 'synced',
+                        texts: neteaseLyric.lines.map((line) => line.text),
+                        times: neteaseLyric.lines.map((line) => line.timeMs)
+                    };
+                    saveLocalLyricCache(cache);
+                    return { lines: neteaseLyric.lines, note: null };
+                }
+            }
+        } else {
+            console.log(`[Lyrics] 本地网易云补源时长差 ${diffSec}s 超 10s，弃用同步词`);
+        }
+    }
     const params = new URLSearchParams();
     if (artist) {
         params.set('track_name', title);
@@ -425,22 +462,9 @@ async function fetchLocalLyrics(track: Track): Promise<LyricResult | null> {
     return null;
 }
 
-export async function fetchLyrics(track: Track): Promise<LyricResult> {
-    if (track.source === 'local') {
-        const local = await fetchLocalLyrics(track);
-        if (local) {
-            return local;
-        }
-        return { lines: [], note: '本地歌曲暂无歌词，只显示歌名与歌手。' };
-    }
-    if (track.source === 'ytm') {
-        return fetchYtmLyrics(track);
-    }
-    const prefix = 'netease:';
-    if (!track.id.startsWith(prefix) || track.id.length === prefix.length) {
-        return { lines: [], note: '这首歌暂无歌词。' };
-    }
-    const songId = track.id.slice(prefix.length);
+// 网易云歌词直取（按歌曲 id）：网易云源与本地网易云补源共用。
+// 成功回 { lines, note: null }；无词或失败回带说明的空结果，调用方按需处理。
+async function fetchNeteaseLyricById(songId: string): Promise<LyricResult> {
     try {
         const params = new URLSearchParams({
             id: songId,
@@ -467,4 +491,23 @@ export async function fetchLyrics(track: Track): Promise<LyricResult> {
     } catch {
         return { lines: [], note: '歌词暂时拿不到，只显示歌名与歌手。' };
     }
+}
+
+export async function fetchLyrics(track: Track): Promise<LyricResult> {
+    if (track.source === 'local') {
+        const local = await fetchLocalLyrics(track);
+        if (local) {
+            return local;
+        }
+        return { lines: [], note: '本地歌曲暂无歌词，只显示歌名与歌手。' };
+    }
+    if (track.source === 'ytm') {
+        return fetchYtmLyrics(track);
+    }
+    const prefix = 'netease:';
+    if (!track.id.startsWith(prefix) || track.id.length === prefix.length) {
+        return { lines: [], note: '这首歌暂无歌词。' };
+    }
+    const songId = track.id.slice(prefix.length);
+    return fetchNeteaseLyricById(songId);
 }

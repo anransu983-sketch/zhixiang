@@ -14,8 +14,10 @@ import {
 import type { PosterSectionDefinition } from './posters';
 import { renderShelfLayer } from './shelf';
 import { clearLogs, copyPlainText, getLogEntries, getLogModules, getLogText, subscribeLogs, type LogEntry } from './logger';
+import { applyPerfMode, applyTheme, loadPerfMode, loadThemeId, THEMES } from './appearance';
+import { loadVisualToggles, saveVisualToggles } from './visuals';
 import { SOURCES } from './sources/index';
-import { getLocalCoverDataUrl, getLocalNotice } from './sources/local';
+import { getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalNotice } from './sources/local';
 import { fetchNeteaseDailySongs } from './sources/netease';
 import { fetchYtmDailyTracks, probeYtmHome } from './sources/ytm';
 import {
@@ -226,6 +228,11 @@ export function renderHome(): HTMLElement {
     const refreshBar = (state: PlaybackState): void => {
         // 暂停态挂 body 上：均衡器、坞辉光呼吸等动画靠它停，不用各处再订阅。
         document.body.classList.toggle('is-paused', !state.playing);
+        // 0.1.85：胶囊导航播放辉光——有曲目且播放中才亮脉动。
+        document.querySelector('.tab-bar')?.classList.toggle(
+            'is-playing',
+            Boolean(state.track && state.playing)
+        );
         if (state.track) {
             infoTitle.textContent = state.track.title;
             status.textContent = state.error ?? state.track.artist;
@@ -247,7 +254,24 @@ export function renderHome(): HTMLElement {
                         const albumId = Number(last);
                         if (Number.isInteger(albumId) && albumId > 0) {
                             void getLocalCoverDataUrl(albumId).then((dataUrl) => {
-                                if (!dataUrl || miniCoverTrackId !== state.track?.id) {
+                                if (miniCoverTrackId !== state.track?.id) {
+                                    return;
+                                }
+                                if (!dataUrl) {
+                                    // 0.1.85：MediaStore 无图时走网易云搜索匹配补封面。
+                                    const track = state.track;
+                                    if (!track) {
+                                        return;
+                                    }
+                                    void getLocalCoverFromNetease(track).then((coverUrl) => {
+                                        if (!coverUrl || miniCoverTrackId !== state.track?.id) {
+                                            return;
+                                        }
+                                        miniLocalCoverCache.set(track.id, coverUrl);
+                                        cover.src = coverUrl;
+                                        cover.hidden = false;
+                                        coverPlaceholder.hidden = true;
+                                    });
                                     return;
                                 }
                                 miniLocalCoverCache.set(state.track.id, dataUrl);
@@ -298,6 +322,9 @@ export function renderHome(): HTMLElement {
             heading.textContent = '我的';
             page.appendChild(heading);
             page.appendChild(renderLoginArea());
+            page.appendChild(renderThemeWardrobe());
+            page.appendChild(renderRainWindow());
+            page.appendChild(renderPerfModeSection());
             page.appendChild(renderLayoutMixSection());
             page.appendChild(renderFootprintEntry());
             page.appendChild(renderDeveloperSection());
@@ -391,6 +418,12 @@ export function renderHome(): HTMLElement {
         button.className = 'tab-btn';
         button.textContent = def.label;
         button.addEventListener('click', () => {
+            // 0.1.85：胶囊导航点按轻震，不支持的设备静默跳过。
+            try {
+                navigator.vibrate?.(10);
+            } catch {
+                // 忽略震动不可用。
+            }
             if (def.id === currentTab) {
                 // 再点当前 Tab：回顶并聚焦搜索框（我的页没有搜索框，只回顶）。
                 window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -996,21 +1029,237 @@ function renderLayoutMixSection(): HTMLElement {
 }
 
 function renderLoginArea(): HTMLElement {
+    // 0.1.85：听歌钥匙改成一个收起模块（折叠写法同版式配方卡）——平时只露
+    // 标题、副标题、一行真实登录状态与箭头，点标题展开后两行登录才在模块
+    // 里面出现。默认收起。
     const area = document.createElement('section');
-    area.className = 'login-area';
+    area.className = 'login-area login-key-module';
 
-    const heading = document.createElement('h2');
+    const head = document.createElement('button');
+    head.type = 'button';
+    head.className = 'login-key-head';
+    const headText = document.createElement('span');
+    headText.className = 'login-key-head-text';
+    const heading = document.createElement('span');
+    heading.className = 'login-key-head-title';
     heading.textContent = '听歌钥匙';
-    area.appendChild(heading);
-
-    const loginSub = document.createElement('p');
+    const loginSub = document.createElement('span');
     loginSub.className = 'login-area-sub';
     loginSub.textContent = '双源登录 · 一处管理';
-    area.appendChild(loginSub);
+    headText.append(heading, loginSub);
+    const summary = document.createElement('span');
+    summary.className = 'login-key-summary';
+    const headChev = document.createElement('span');
+    headChev.className = 'login-key-head-chev';
+    headChev.textContent = '▾';
+    head.append(headText, summary, headChev);
+    area.appendChild(head);
 
-    area.appendChild(renderNeteaseLoginBlock());
-    area.appendChild(renderYtmLoginBlock());
+    const body = document.createElement('div');
+    body.className = 'login-key-body';
+    body.hidden = true;
+    area.appendChild(body);
+
+    // 收起态状态行：两块各自回调真实登录态，这里只聚合展示，不碰登录逻辑。
+    let neteaseLoggedIn = false;
+    let ytmLoggedIn = false;
+    const refreshSummary = (): void => {
+        summary.replaceChildren();
+        const build = (loggedIn: boolean, label: string): HTMLElement => {
+            const item = document.createElement('span');
+            item.className = 'login-key-summary-item';
+            if (loggedIn) {
+                const dot = document.createElement('span');
+                dot.className = 'login-key-summary-dot';
+                item.appendChild(dot);
+            }
+            item.append(document.createTextNode(loggedIn ? `${label}已登录` : `${label}未登录`));
+            return item;
+        };
+        summary.append(
+            build(neteaseLoggedIn, '网易云'),
+            document.createTextNode(' · '),
+            build(ytmLoggedIn, 'YouTube Music')
+        );
+    };
+    refreshSummary();
+    body.appendChild(renderNeteaseLoginBlock((loggedIn) => {
+        neteaseLoggedIn = loggedIn;
+        refreshSummary();
+    }));
+    body.appendChild(renderYtmLoginBlock((loggedIn) => {
+        ytmLoggedIn = loggedIn;
+        refreshSummary();
+    }));
+
+    head.addEventListener('click', () => {
+        body.hidden = !body.hidden;
+        headChev.textContent = body.hidden ? '▾' : '▴';
+    });
     return area;
+}
+
+// 0.1.85 主题衣橱：三套主题行式列表（仿图二：浅色大圆角卡、标题左控件右），
+// 末行主题配色只展示当前主色色值，不做自定义取色器。
+function renderThemeWardrobe(): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'zx-appearance-card';
+
+    const heading = document.createElement('h2');
+    heading.textContent = '主题衣橱';
+    section.appendChild(heading);
+    const sub = document.createElement('p');
+    sub.className = 'zx-appearance-sub';
+    sub.textContent = '三套主题 · 一处换装';
+    section.appendChild(sub);
+
+    const checks = new Map<string, HTMLElement>();
+    const hexText = document.createElement('span');
+    hexText.className = 'zx-theme-hex';
+    const refresh = (): void => {
+        const current = loadThemeId();
+        for (const [id, check] of checks) {
+            check.textContent = id === current ? '✓' : '';
+            check.parentElement?.classList.toggle('is-active', id === current);
+        }
+        const theme = THEMES.find((item) => item.id === current) ?? THEMES[0]!;
+        hexText.textContent = theme.accent;
+    };
+    for (const theme of THEMES) {
+        const row = document.createElement('div');
+        row.className = 'zx-appearance-row';
+        const thumb = document.createElement('span');
+        thumb.className = 'zx-theme-thumb';
+        thumb.style.backgroundImage = `url("${theme.wallpaper}")`;
+        row.appendChild(thumb);
+        const text = document.createElement('span');
+        text.className = 'zx-appearance-row-text';
+        const name = document.createElement('b');
+        name.textContent = theme.name;
+        const desc = document.createElement('p');
+        desc.textContent = theme.desc;
+        text.append(name, desc);
+        row.appendChild(text);
+        const check = document.createElement('span');
+        check.className = 'zx-appearance-check';
+        checks.set(theme.id, check);
+        row.appendChild(check);
+        row.addEventListener('click', () => {
+            applyTheme(theme.id);
+            refresh();
+        });
+        section.appendChild(row);
+    }
+    const colorRow = document.createElement('div');
+    colorRow.className = 'zx-appearance-row zx-theme-color-row';
+    const colorText = document.createElement('span');
+    colorText.className = 'zx-appearance-row-text';
+    const colorName = document.createElement('b');
+    colorName.textContent = '主题配色';
+    const colorDesc = document.createElement('p');
+    colorDesc.append(document.createTextNode('当前主题色：'), hexText);
+    colorText.append(colorName, colorDesc);
+    colorRow.appendChild(colorText);
+    const palette = document.createElement('span');
+    palette.className = 'zx-theme-palette';
+    palette.textContent = '🎨';
+    colorRow.appendChild(palette);
+    section.appendChild(colorRow);
+    refresh();
+    return section;
+}
+
+// 0.1.85 雨窗：雨滴三档，与播放页视觉面板共用同一份存储。
+function renderRainWindow(): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'zx-appearance-card';
+
+    const heading = document.createElement('h2');
+    heading.textContent = '雨窗';
+    section.appendChild(heading);
+    const sub = document.createElement('p');
+    sub.className = 'zx-appearance-sub';
+    sub.textContent = '水滴落在玻璃上 · 三档可选';
+    section.appendChild(sub);
+
+    const modes: Array<{ mode: number; name: string; desc: string }> = [
+        { mode: 0, name: '关', desc: '无效果，壁纸保持干净' },
+        { mode: 1, name: '静态水滴', desc: '水滴贴在壁纸上不动，省电' },
+        { mode: 2, name: '动态滑落', desc: '水滴会生长、滑落后重生，略费电' }
+    ];
+    const checks = new Map<number, HTMLElement>();
+    const refresh = (): void => {
+        const current = loadVisualToggles().rainMode;
+        for (const [mode, check] of checks) {
+            check.textContent = mode === current ? '✓' : '';
+            check.parentElement?.classList.toggle('is-active', mode === current);
+        }
+    };
+    for (const item of modes) {
+        const row = document.createElement('div');
+        row.className = 'zx-appearance-row';
+        const icon = document.createElement('span');
+        icon.className = 'zx-rain-icon';
+        icon.textContent = item.mode === 0 ? '♡' : '💧';
+        row.appendChild(icon);
+        const text = document.createElement('span');
+        text.className = 'zx-appearance-row-text';
+        const name = document.createElement('b');
+        name.textContent = item.name;
+        const desc = document.createElement('p');
+        desc.textContent = item.desc;
+        text.append(name, desc);
+        row.appendChild(text);
+        const check = document.createElement('span');
+        check.className = 'zx-appearance-check';
+        checks.set(item.mode, check);
+        row.appendChild(check);
+        row.addEventListener('click', () => {
+            saveVisualToggles({ ...loadVisualToggles(), rainMode: item.mode });
+            refresh();
+        });
+        section.appendChild(row);
+    }
+    refresh();
+    return section;
+}
+
+// 0.1.85 轻装模式：一行性能开关，body 加 perf-mode 类。
+function renderPerfModeSection(): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'zx-appearance-card';
+
+    const row = document.createElement('div');
+    row.className = 'zx-appearance-row zx-perf-row';
+    const icon = document.createElement('span');
+    icon.className = 'zx-rain-icon';
+    icon.textContent = '⏱';
+    row.appendChild(icon);
+    const text = document.createElement('span');
+    text.className = 'zx-appearance-row-text';
+    const name = document.createElement('b');
+    name.textContent = '轻装模式';
+    const desc = document.createElement('p');
+    desc.textContent = '关毛玻璃模糊、卡片阴影与呼吸/入场动效，流畅省电优先';
+    text.append(name, desc);
+    row.appendChild(text);
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'zx-switch';
+    toggle.setAttribute('role', 'switch');
+    const refresh = (): void => {
+        const on = loadPerfMode();
+        toggle.classList.toggle('on', on);
+        toggle.setAttribute('aria-checked', String(on));
+    };
+    toggle.addEventListener('click', () => {
+        applyPerfMode(!loadPerfMode());
+        refresh();
+    });
+    row.appendChild(toggle);
+    section.appendChild(row);
+    refresh();
+    return section;
 }
 
 // 网易云扫码轮询诊断（Claude 第十七轮）：在途检查全局只许一个；
@@ -1021,7 +1270,7 @@ let neteaseQrChecksInFlight = 0;
 let neteaseQrCatchUpPending = false;
 let neteaseQrLastCheckSettledAt = 0;
 
-function renderNeteaseLoginBlock(): HTMLElement {
+function renderNeteaseLoginBlock(onState?: (loggedIn: boolean) => void): HTMLElement {
     const box = document.createElement('div');
     box.className = 'login-block';
 
@@ -1072,6 +1321,7 @@ function renderNeteaseLoginBlock(): HTMLElement {
     };
 
     const renderLoggedOut = (notice?: string): void => {
+        onState?.(false);
         stopPoll();
         body.replaceChildren();
         if (notice) {
@@ -1091,6 +1341,7 @@ function renderNeteaseLoginBlock(): HTMLElement {
     };
 
     const renderLoggedIn = (session: NeteaseSession): void => {
+        onState?.(true);
         stopPoll();
         body.replaceChildren();
         const row = document.createElement('div');
@@ -1394,7 +1645,7 @@ function renderNeteaseLoginBlock(): HTMLElement {
     return box;
 }
 
-function renderYtmLoginBlock(): HTMLElement {
+function renderYtmLoginBlock(onState?: (loggedIn: boolean) => void): HTMLElement {
     const box = document.createElement('div');
     box.className = 'login-block';
 
@@ -1413,6 +1664,7 @@ function renderYtmLoginBlock(): HTMLElement {
     box.appendChild(body);
 
     const renderLoggedOut = (notice?: string): void => {
+        onState?.(false);
         body.replaceChildren();
         if (notice) {
             const note = document.createElement('p');
@@ -1448,6 +1700,7 @@ function renderYtmLoginBlock(): HTMLElement {
     };
 
     const renderLoggedIn = (): void => {
+        onState?.(true);
         body.replaceChildren();
         const row = document.createElement('div');
         row.className = 'login-row';

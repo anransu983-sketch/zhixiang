@@ -1223,12 +1223,62 @@ export async function probeYtmHome(): Promise<void> {
     console.log('[Ytm] 首页探针 v3：完成');
 }
 
+// 0.1.85 今日星荐取数：不再走 browseYtm() 的 ANDROID/IOS 回落（移动端家族
+// 拒 home 参数，探针 v2/v3 已实证），改走探针 v3 第 1 臂原样：WEB_REMIX 旧版
+// + gl=US（hl 保持 zh-CN，会话头 + 修头，缓存 visitorData 才带）。
+// 榜单等其他 browse 路径不动，仍走 browseYtm()。
+async function browseYtmHome(): Promise<unknown> {
+    const contextClient: Record<string, unknown> = {
+        clientName: SEARCH_CLIENT.name,
+        clientVersion: SEARCH_CLIENT.version,
+        hl: 'zh-CN',
+        gl: 'US'
+    };
+    if (cachedVisitorData) {
+        contextClient.visitorData = cachedVisitorData;
+    }
+    const headers: Record<string, string> = {
+        ...requestHeaders(),
+        Origin: 'https://music.youtube.com',
+        Referer: 'https://music.youtube.com',
+        'X-Origin': 'https://music.youtube.com'
+    };
+    if (cachedVisitorData) {
+        headers['X-Goog-Visitor-Id'] = cachedVisitorData;
+    }
+    const body = JSON.stringify({
+        context: { client: contextClient },
+        browseId: 'FEmusic_home'
+    });
+    let response;
+    try {
+        response = await httpPost(`${BROWSE_URL}?key=${INNERTUBE_KEY}`, body, headers);
+    } catch {
+        throw new Error('YTM 榜单加载失败（网络异常）');
+    }
+    if (response.status !== 200) {
+        throw new Error(`YTM 榜单加载失败（HTTP ${response.status}）`);
+    }
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(response.body) as unknown;
+    } catch {
+        throw new Error('YTM 榜单加载失败（返回异常）');
+    }
+    const visitorData = (parsed as { responseContext?: { visitorData?: unknown } })
+        .responseContext?.visitorData;
+    if (typeof visitorData === 'string' && visitorData.length > 0) {
+        cachedVisitorData = visitorData;
+    }
+    return parsed;
+}
+
 export async function fetchYtmDailyTracks(): Promise<Track[]> {
     // 0.1.82：browseYtm 的报错文案是榜单共用的“YTM 榜单加载失败”，
     // 每日推荐这里翻成“YTM 今日星荐加载失败”，不再让每日失败顶着榜单名。
     let home: unknown;
     try {
-        home = await browseYtm('FEmusic_home');
+        home = await browseYtmHome();
     } catch (error) {
         if (error instanceof Error && error.message.startsWith('YTM 榜单加载失败')) {
             throw new Error(error.message.replace('YTM 榜单加载失败', 'YTM 今日星荐加载失败'));
