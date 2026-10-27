@@ -56,7 +56,11 @@ export function loadSession(): NeteaseSession | null {
             return null;
         }
         const parsed = JSON.parse(raw) as Partial<NeteaseSession> | null;
-        if (!parsed || typeof parsed.cookie !== 'string' || !hasMusicU(parsed.cookie)) {
+        // 0.1.71：803 已确认的会话不再以 MUSIC_U 字符串为唯一门槛——
+        // Folia 同款 pendingProfile 规则：有凭证先算登录，是否真有效
+        // 交给 /api/user/level 校验（301 才清）。只存 803 来的会话，
+        // 游客 cookie 从不进这里，所以放宽不会把游客误算成登录。
+        if (!parsed || typeof parsed.cookie !== 'string' || !parsed.cookie) {
             return null;
         }
         return {
@@ -242,7 +246,9 @@ export async function checkQr(key: string): Promise<QrCheckResult> {
         console.error(detail);
         throw new Error(detail);
     }
-    // 803：先取 body 里的凭证，拿不到再用 Set-Cookie 兜底；都没有则不算登录成功。
+    // 803：先取 body 里的凭证，拿不到再用 Set-Cookie 兜底。
+    // 0.1.71 收紧前漏了一格：data.cookie 是数组时没接（Folia 只接
+    // string，芷湘之前也只接 string，数组 803 会被误判为无凭证）。
     let cookie = '';
     if (typeof parsed.cookie === 'string') {
         cookie = parsed.cookie.trim();
@@ -252,10 +258,18 @@ export async function checkQr(key: string): Promise<QrCheckResult> {
     if (!cookie && parsed.data && typeof parsed.data.cookie === 'string') {
         cookie = parsed.data.cookie.trim();
     }
+    if (!cookie && parsed.data && Array.isArray(parsed.data.cookie)) {
+        cookie = (parsed.data.cookie as unknown[]).filter((item) => typeof item === 'string' && item).join('; ');
+    }
     if (!cookie) {
         cookie = cookieFromSetCookies(response.setCookies);
     }
-    if (!cookie || !hasMusicU(cookie)) {
+    // Folia 同款宽容规则（0.1.71）：803 已确认时，有凭证就先算登录，
+    // 不要因为当场没在字符串里找到 MUSIC_U 就直接判“凭证不完整”
+    // 逼用户重扫——那正是“扫了、设备+1、芷湘却不登录”的表现。
+    // 凭证是否真有效，交给后续 /api/user/level 校验定夺（301 才清掉，
+    // 未知则保留视图），不要在 803 当场丢掉已确认的会话。
+    if (!cookie) {
         // 803 已确认却拿不到 MUSIC_U：只记凭证“形状”定位，不记任何凭证值——
         // body.cookie 有无与类型、data.cookie 有无、Set-Cookie 里出现的
         // cookie 名、响应体里是否含 MUSIC_U 子串。用户在开发者区 COPY 发回
