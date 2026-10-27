@@ -302,6 +302,25 @@ export async function checkQr(key: string): Promise<QrCheckResult> {
         );
         return { code: 803, message: '登录凭证不完整，请重新扫码', session: null };
     }
+    // Claude 第十八轮要的那一行：803 成功时也记凭证来源与形状（只记
+    // 名与长度，不记值），否则成功与否都只看结果码，无法区分 (b) 还是 (c)。
+    {
+        const namesOf = (value: string): string =>
+            value
+                .split(';')
+                .map((part) => part.split('=', 1)[0]?.trim())
+                .filter(Boolean)
+                .join(',');
+        const source =
+            typeof parsed.cookie === 'string' || Array.isArray(parsed.cookie)
+                ? 'body.cookie'
+                : parsed.data && (typeof parsed.data.cookie === 'string' || Array.isArray(parsed.data.cookie))
+                  ? 'data.cookie'
+                  : 'setCookies';
+        console.log(
+            `[Netease] 803 凭证来源=${source} 名=[${namesOf(cookie)}] 长度=${cookie.length}`
+        );
+    }
     const profile = parsed.profile ?? parsed.data?.profile ?? null;
     const session: NeteaseSession = {
         cookie,

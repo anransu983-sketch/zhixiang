@@ -45,6 +45,33 @@ export async function httpPost(
     return request('POST', url, headers, body);
 }
 
+// Capacitor 把原生 ArrayList 到 JS 时不一定是数组：YTM 头名在 0.1.67
+// 已实测到字符串形式的 "[a, b]"，.join 直接抛错。Set-Cookie 同理——
+// 原生侧明明用 headers().values("Set-Cookie") 全量回传（不是 Map，不会
+// 压成一条），到 JS 若还是字符串，cookieFromSetCookies 逐字符拆就全错。
+// 这里统一归一化：数组原样，字符串按 Java List 的 "[a, b]" 格式拆，
+// 拆出来的 Expires 日期碎片（无 = 号）由下游解析时过滤，不会丢 MUSIC_U。
+function normalizeStringArray(value: unknown): string[] | undefined {
+    if (value === undefined || value === null) {
+        return undefined;
+    }
+    if (Array.isArray(value)) {
+        return value.filter((item) => typeof item === 'string');
+    }
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (!trimmed) {
+            return [];
+        }
+        const inner = trimmed.startsWith('[') && trimmed.endsWith(']') ? trimmed.slice(1, -1) : trimmed;
+        if (!inner.trim()) {
+            return [];
+        }
+        return inner.split(', ');
+    }
+    return undefined;
+}
+
 async function request(
     method: string,
     url: string,
@@ -52,7 +79,11 @@ async function request(
     body?: string
 ): Promise<HttpResponse> {
     try {
-        return await HttpBridge.request({ url, method, headers, body });
+        const response = await HttpBridge.request({ url, method, headers, body });
+        response.setCookies = normalizeStringArray(response.setCookies);
+        response.requestHeaderNames = normalizeStringArray(response.requestHeaderNames);
+        response.responseHeaderNames = normalizeStringArray(response.responseHeaderNames);
+        return response;
     } catch (error) {
         // 不抛裸错：原生侧 reject 一律带中文 message 与 code，这里拼成一句中文。
         const message = error instanceof Error ? error.message : '';
