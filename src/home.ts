@@ -17,6 +17,7 @@ import { clearLogs, copyPlainText, getLogEntries, getLogModules, getLogText, sub
 import { SOURCES } from './sources/index';
 import { getLocalCoverDataUrl, getLocalNotice } from './sources/local';
 import { fetchNeteaseDailySongs } from './sources/netease';
+import { fetchYtmDailyTracks } from './sources/ytm';
 import {
     checkQr,
     clearSession as clearNeteaseSession,
@@ -324,6 +325,10 @@ export function renderHome(): HTMLElement {
 
         if (tabId === 'netease') {
             page.appendChild(renderNeteaseDailySection());
+        }
+
+        if (tabId === 'ytm') {
+            page.appendChild(renderYtmDailySection());
         }
 
         const { block, search } = renderSourceSection(source, status, (query) => {
@@ -1693,18 +1698,27 @@ function renderPosterCard(poster: Poster, playNotice: HTMLElement): HTMLElement 
 // 0.1.79 每日推荐：网易云 Tab 海报区下方一段，列表复用搜索结果同款
 // track-row（封面/歌名/歌手/时长，点行即从该首起播）。需登录会话，
 // 未登录只留一句提示不发请求；加载失败也只留提示，不影响海报与搜索。
-function renderNeteaseDailySection(): HTMLElement {
+// 0.1.81 可折叠 + YTM 通用化：默认只露前 3 首，点“展开全部”才露全 list，
+// 播放全部不受折叠影响（永远播整单）；同一函数供网易云每日推荐与
+// YTM 今日星荐两路复用，只换标题/副标题/取数函数/登录判断。
+function renderDailySection(
+    titleText: string,
+    subText: string,
+    fetchTracks: () => Promise<Track[]>,
+    isLoggedIn: () => boolean,
+    loginNotice: string
+): HTMLElement {
     const section = document.createElement('section');
     section.className = 'daily-section';
 
     const head = document.createElement('div');
     head.className = 'daily-head';
     const heading = document.createElement('h2');
-    heading.textContent = '每日推荐';
+    heading.textContent = titleText;
     head.appendChild(heading);
     const sub = document.createElement('span');
     sub.className = 'daily-sub';
-    sub.textContent = '根据你的听歌口味，每日更新';
+    sub.textContent = subText;
     head.appendChild(sub);
     section.appendChild(head);
 
@@ -1714,6 +1728,12 @@ function renderNeteaseDailySection(): HTMLElement {
     playAll.textContent = '▶ 播放全部';
     playAll.disabled = true;
     section.appendChild(playAll);
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'login-btn';
+    toggle.hidden = true;
+    section.appendChild(toggle);
 
     const notice = document.createElement('p');
     notice.className = 'source-notice';
@@ -1725,18 +1745,28 @@ function renderNeteaseDailySection(): HTMLElement {
     section.appendChild(trackList);
 
     let tracks: Track[] = [];
+    let expanded = false;
+    const renderList = (): void => {
+        renderTracks(trackList, expanded ? tracks : tracks.slice(0, 3), notice);
+        toggle.textContent = expanded ? '收起 ▲' : `展开全部 ${tracks.length} 首 ▼`;
+        toggle.hidden = tracks.length <= 3;
+    };
     playAll.addEventListener('click', () => {
         if (tracks.length > 0) {
             void playQueue(tracks, 0);
         }
     });
+    toggle.addEventListener('click', () => {
+        expanded = !expanded;
+        renderList();
+    });
     void (async () => {
-        if (!loadNeteaseSession()) {
-            notice.textContent = '登录网易云后可看每日推荐';
+        if (!isLoggedIn()) {
+            notice.textContent = loginNotice;
             return;
         }
         try {
-            tracks = await fetchNeteaseDailySongs();
+            tracks = await fetchTracks();
         } catch (error) {
             notice.textContent = error instanceof Error && /[\u4e00-\u9fff]/.test(error.message)
                 ? error.message
@@ -1749,10 +1779,30 @@ function renderNeteaseDailySection(): HTMLElement {
         }
         notice.textContent = `共 ${tracks.length} 首`;
         playAll.disabled = false;
-        renderTracks(trackList, tracks, notice);
+        renderList();
     })();
 
     return section;
+}
+
+function renderNeteaseDailySection(): HTMLElement {
+    return renderDailySection(
+        '每日推荐',
+        '根据你的听歌口味，每日更新',
+        fetchNeteaseDailySongs,
+        () => loadNeteaseSession() !== null,
+        '登录网易云后可看每日推荐'
+    );
+}
+
+function renderYtmDailySection(): HTMLElement {
+    return renderDailySection(
+        '今日星荐',
+        '根据你的 YTM 收听，每日更新',
+        fetchYtmDailyTracks,
+        () => loadYtmSession() !== null,
+        '登录 YouTube Music 后可看今日星荐'
+    );
 }
 
 function renderSourceSection(

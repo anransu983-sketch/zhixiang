@@ -1051,3 +1051,68 @@ export async function fetchYtmChartPosters(): Promise<Poster[]> {
     }
     return posters;
 }
+
+// 0.1.81 YTM 每日推荐（今日星荐）：登录态下 browse 首页 FEmusic_home，
+// 取个性化 feed 里的单曲项。首页结构未在沙箱实探过，故解析走通用口径：
+// playlistVideoRenderer（榜单同源）+ musicResponsiveListItemRenderer
+// （playlistItemData.videoId + flexColumns 标题/歌手 + 缩略图组）两路并行
+// 收集、按 videoId 去重、上限 30 首；首页拿不到任何单曲即抛错，
+// 调用方只显示中文提示，不拿榜单专辑冒充每日推荐。
+export async function fetchYtmDailyTracks(): Promise<Track[]> {
+    const home = await browseYtm('FEmusic_home');
+    const tracks: Track[] = [];
+    const seen = new Set<string>();
+    const pushTrack = (track: Track | null): void => {
+        if (!track || seen.has(track.id)) {
+            return;
+        }
+        seen.add(track.id);
+        tracks.push(track);
+    };
+    const videos: YtmPlaylistVideo[] = [];
+    collectPlaylistVideos(home, videos);
+    for (const video of videos) {
+        pushTrack(playlistVideoToTrack(video));
+    }
+    const collectListItems = (node: unknown): void => {
+        if (Array.isArray(node)) {
+            for (const child of node) {
+                collectListItems(child);
+            }
+            return;
+        }
+        if (node === null || typeof node !== 'object') {
+            return;
+        }
+        const record = node as Record<string, unknown>;
+        const item = record.musicResponsiveListItemRenderer as RawListItem | null;
+        if (item !== null && typeof item === 'object') {
+            const videoId =
+                typeof item.playlistItemData?.videoId === 'string'
+                    ? item.playlistItemData.videoId
+                    : null;
+            if (videoId) {
+                const title = columnText(item, 0);
+                const artist = columnText(item, 1);
+                pushTrack({
+                    id: `ytm:${videoId}`,
+                    title: title || '未知曲名',
+                    artist: artist || '未知歌手',
+                    coverUrl: largestThumbnailSource(
+                        item.thumbnail?.musicThumbnailRenderer?.thumbnail?.thumbnails
+                    ),
+                    source: 'ytm'
+                });
+            }
+        }
+        for (const child of Object.values(record)) {
+            collectListItems(child);
+        }
+    };
+    collectListItems(home);
+    if (tracks.length === 0) {
+        console.log('[Ytm] 每日推荐首页无单曲，browse 回了空 feed');
+        throw new Error('YTM 每日推荐暂时拿不到，请登录后再试');
+    }
+    return tracks.slice(0, 30);
+}

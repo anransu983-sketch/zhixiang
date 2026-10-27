@@ -1628,6 +1628,11 @@ body {
     font-size: 13px;
 }
 
+/* 0.1.81 可折叠：播放全部与展开按钮并排，展开前列表只露前 3 首。 */
+.daily-section .login-btn + .login-btn {
+    margin-left: 8px;
+}
+
 .footprint-entry {
     display: flex;
     align-items: center;
