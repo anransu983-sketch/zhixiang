@@ -1062,11 +1062,10 @@ export async function fetchYtmChartPosters(): Promise<Poster[]> {
 // 而榜单 FEmusic_charts 同函数同会话头能通——先分臂测，不改每日取数。
 // 臂只变一个量：client / 会话头 / 地区 / visitorData；每臂只记状态与
 // 是否含单曲项，不记任何会话值；全部臂跑完才算完成，单臂异常不中断。
-// 0.1.83 YTM 首页探针 v2（Claude 第二轮修正后，0.1.82 的 6 臂全 400）：
+// 0.1.84 YTM 首页探针 v3（Claude 第三轮排序，0.1.83 的 7 臂全败、400/404 分化）：
 // 每臂只记状态、体长、有无单曲项；非 200 时再记 error 信封（code/status/
 // message 前 200 字/reason），解析失败则脱敏截断，绝不记请求头与会话值。
-// 七臂：ANDROID 抓正文、ANDROID_MUSIC 7.55.52、ANDROID_MUSIC 5.34.51、
-// WEB_REMIX 修头、ANDROID 自带 key、ANDROID_MUSIC 组合、榜单对照。
+// 四臂：WEB_REMIX 旧版 gl=US、ANDROID_MUSIC 7.21.50、WEB_REMIX 当日版 gl=US、榜单对照 7.55.52。
 // 每日取数逻辑不动，探针出 200 再定。
 function logProbeError(body: string): string {
     try {
@@ -1099,9 +1098,8 @@ function logProbeError(body: string): string {
 
 export async function probeYtmHome(): Promise<void> {
     const android = PLAYER_CLIENTS.find((client) => client.name === 'ANDROID');
-    // ANDROID_MUSIC 客户端定义：版号与 UA 取公开客户端定义（7.55.52 一组），
-    // 5.34.51 为 youtubei.js fork 的另一公开版号；两版都未证实为当前接受版，
-    // 故双臂同测。sdk 版沿用公开 androidMusic 定义的 34，版号是本臂的变量。
+    // 探针 v3（Claude 第三轮排序）：7.55.52 只留给第 4 臂榜单对照（定 404 是拒版本还是仅拒 home），
+    // home 臂改测 ytmusicapi_dart asMobile 用的 7.21.50；sdk 版沿用公开 androidMusic 定义的 34。
     const androidMusic7552: InnertubeClient = {
         name: 'ANDROID_MUSIC',
         version: '7.55.52',
@@ -1109,13 +1107,15 @@ export async function probeYtmHome(): Promise<void> {
         clientNameId: 21,
         androidSdkVersion: 34
     };
-    const androidMusic53451: InnertubeClient = {
+    const androidMusic72150: InnertubeClient = {
         name: 'ANDROID_MUSIC',
-        version: '5.34.51',
-        userAgent: 'com.google.android.apps.youtube.music/5.34.51 (Linux; U; Android 14) gzip',
+        version: '7.21.50',
+        userAgent: 'com.google.android.apps.youtube.music/7.21.50 (Linux; U; Android 14) gzip',
         clientNameId: 21,
         androidSdkVersion: 34
     };
+    // 当日版 WEB_REMIX：只换版号，其余同 SEARCH_CLIENT（无专属 UA，走会话 UA）。
+    const webRemixToday: InnertubeClient = { ...SEARCH_CLIENT, version: '1.20261028.01.00' };
     type ProbeArm = {
         label: string;
         client: InnertubeClient;
@@ -1137,19 +1137,20 @@ export async function probeYtmHome(): Promise<void> {
     if (cachedVisitorData) {
         webRemixExtra['X-Goog-Visitor-Id'] = cachedVisitorData;
     } else {
-        console.log('[Ytm] 首页探针 v2：WEB_REMIX 修头臂无缓存 visitorData，X-Goog-Visitor-Id 省略');
+        console.log('[Ytm] 首页探针 v3：WEB_REMIX 臂无缓存 visitorData，X-Goog-Visitor-Id 省略');
     }
     const arms: ProbeArm[] = [];
+    // 第 1 臂：WEB_REMIX 旧版 + gl=US（v2 修头臂唯一变量是 gl；hl 保持 zh-CN，同搜索修复口径）。
+    arms.push({ label: 'WEB_REMIX·旧版·gl=US·会话', client: SEARCH_CLIENT, session: true, hl: 'zh-CN', gl: 'US', visitor: true, browseId: 'FEmusic_home', extraHeaders: webRemixExtra });
+    // 第 2 臂：ANDROID_MUSIC 7.21.50 跑 home（同 v2 第 2 臂形状，只换版本）。
     if (android) {
-        arms.push({ label: 'ANDROID·会话·CN·抓正文', client: android, session: true, hl: 'zh-CN', gl: 'CN', visitor: false, browseId: 'FEmusic_home' });
-        arms.push({ label: 'ANDROID_MUSIC 7.55.52·会话·CN', client: androidMusic7552, session: true, hl: 'zh-CN', gl: 'CN', visitor: false, browseId: 'FEmusic_home', clientHeaders: true });
-        arms.push({ label: 'ANDROID_MUSIC 5.34.51·会话·CN', client: androidMusic53451, session: true, hl: 'zh-CN', gl: 'CN', visitor: false, browseId: 'FEmusic_home', clientHeaders: true });
-        arms.push({ label: 'ANDROID·自带key·会话·CN', client: android, session: true, hl: 'zh-CN', gl: 'CN', visitor: false, browseId: 'FEmusic_home', apiKey: android.apiKey });
-        arms.push({ label: 'ANDROID_MUSIC 7.55.52·组合·会话·CN', client: androidMusic7552, session: true, hl: 'zh-CN', gl: 'CN', visitor: false, browseId: 'FEmusic_home', clientHeaders: true, musicOrigin: true, apiKey: android.apiKey });
-        arms.push({ label: '对照·FEmusic_charts·ANDROID·会话·CN', client: android, session: true, hl: 'zh-CN', gl: 'CN', visitor: false, browseId: 'FEmusic_charts' });
+        arms.push({ label: 'ANDROID_MUSIC 7.21.50·会话·CN', client: androidMusic72150, session: true, hl: 'zh-CN', gl: 'CN', visitor: false, browseId: 'FEmusic_home', clientHeaders: true });
     }
-    arms.push({ label: 'WEB_REMIX·修头·会话·CN', client: SEARCH_CLIENT, session: true, hl: 'zh-CN', gl: 'CN', visitor: true, browseId: 'FEmusic_home', extraHeaders: webRemixExtra });
-    console.log(`[Ytm] 首页探针 v2：开始（共 ${arms.length} 臂）`);
+    // 第 3 臂：WEB_REMIX 当日版 + gl=US（同第 1 臂，只换版号；主要在第 1 臂 400 时有信息量）。
+    arms.push({ label: 'WEB_REMIX·当日版·gl=US·会话', client: webRemixToday, session: true, hl: 'zh-CN', gl: 'US', visitor: true, browseId: 'FEmusic_home', extraHeaders: webRemixExtra });
+    // 第 4 臂：榜单对照 + ANDROID_MUSIC 7.55.52（定 404 是全 browse 拒版本还是仅拒 home）。
+    arms.push({ label: '对照·FEmusic_charts·ANDROID_MUSIC 7.55.52·会话·CN', client: androidMusic7552, session: true, hl: 'zh-CN', gl: 'CN', visitor: false, browseId: 'FEmusic_charts', clientHeaders: true });
+    console.log(`[Ytm] 首页探针 v3：开始（共 ${arms.length} 臂）`);
     for (const arm of arms) {
         const contextClient: Record<string, unknown> = {
             clientName: arm.client.name,
@@ -1188,7 +1189,7 @@ export async function probeYtmHome(): Promise<void> {
             if (musicHash) {
                 headers = { ...headers, Authorization: musicHash, 'X-Origin': 'https://music.youtube.com' };
             } else {
-                console.log(`[Ytm] 首页探针 v2 ${arm.label}：无会话，music-origin 签名省略`);
+                console.log(`[Ytm] 首页探针 v3 ${arm.label}：无会话，music-origin 签名省略`);
             }
         }
         if (arm.clientHeaders) {
@@ -1214,12 +1215,12 @@ export async function probeYtmHome(): Promise<void> {
                 || response.body.includes('playlistVideoRenderer');
             // 对照臂以 status 200 为通过，单曲项标志只作参考（榜单响应结构不同）。
             const extra = response.status !== 200 ? ` ${logProbeError(response.body)}` : '';
-            console.log(`[Ytm] 首页探针 v2 ${arm.label}：status=${response.status} len=${response.body.length} 单曲项=${hasItems ? '有' : '无'}${extra}`);
+            console.log(`[Ytm] 首页探针 v3 ${arm.label}：status=${response.status} len=${response.body.length} 单曲项=${hasItems ? '有' : '无'}${extra}`);
         } catch (error) {
-            console.log(`[Ytm] 首页探针 v2 ${arm.label}：异常 ${error instanceof Error ? error.message : '未知原因'}`);
+            console.log(`[Ytm] 首页探针 v3 ${arm.label}：异常 ${error instanceof Error ? error.message : '未知原因'}`);
         }
     }
-    console.log('[Ytm] 首页探针 v2：完成');
+    console.log('[Ytm] 首页探针 v3：完成');
 }
 
 export async function fetchYtmDailyTracks(): Promise<Track[]> {
