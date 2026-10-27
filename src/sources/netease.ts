@@ -13,9 +13,13 @@
 // - 以下两路实测不可用，本模块不用：
 //   取链 v1 GET（/api/song/enhance/player/url/v1）回 {msg: '参数错误', code: 400}；
 //   /api/search/get/web 回加密串，无法直接解析。
+//   但 v1 eapi POST（同路径，eapi 加密，level=exhigh, encodeType=flac）
+//   在 2026-10-27 S26 探针实证可用，给无 authSecret 的 m701 地址且全 206，
+//   故 0.1.77 起取链 v1 优先、老接口回落。
 // 注意：取链地址带时效签名，拿到后应尽快播放，不要长期缓存。
 
 import { httpGet } from '../native/http';
+import { eapiRequest } from './netease-eapi';
 import { withSessionCookie } from './netease-session';
 import type { AudioSource, Poster, SourceId, Track } from '../types';
 
@@ -92,6 +96,41 @@ class NeteaseSource implements AudioSource {
             return track.streamUrl.replace(/^http:/, 'https:');
         }
         const songId = this.parseSongId(track.id);
+        // 0.1.77 修复：v1 优先（2026-10-27 22:22 S26 探针实证）。
+        // 老接口给带 authSecret 的 m704/m804 地址，7 臂全 403；
+        // eapi v1 给无 authSecret 的 m701 地址，7 臂全 206。
+        // v1 无地址/试听/异常时回落老接口，不丢无签名曲的旧路。
+        try {
+            const v1 = await eapiRequest('/api/song/enhance/player/url/v1', {
+                ids: `[${songId}]`,
+                level: 'exhigh',
+                encodeType: 'flac'
+            });
+            const parsedV1 = JSON.parse(v1.body) as {
+                code?: unknown;
+                data?: { url?: unknown; freeTrialInfo?: unknown }[];
+            };
+            const v1First = Array.isArray(parsedV1.data) ? parsedV1.data[0] : undefined;
+            const v1Url = typeof v1First?.url === 'string' && v1First.url ? v1First.url : null;
+            if (v1Url && !v1First?.freeTrialInfo) {
+                const httpsUrl = v1Url.replace(/^http:/, 'https:');
+                try {
+                    const parsedUrl = new URL(httpsUrl);
+                    const paramNames = [...new URLSearchParams(parsedUrl.search).keys()].join(',');
+                    console.log(
+                        `[Netease] 取链v1码=${parsedV1.code} host=${parsedUrl.hostname} 协议=${parsedUrl.protocol} 长度=${httpsUrl.length} 参数=[${paramNames}]`
+                    );
+                } catch {
+                    console.log(`[Netease] 取链v1码=${parsedV1.code} 地址解析失败`);
+                }
+                return httpsUrl;
+            }
+            console.log(`[Netease] 取链v1无地址或仅试听，回落老接口，v1码=${parsedV1.code}`);
+        } catch (error) {
+            console.log(
+                `[Netease] 取链v1失败回落老接口：${error instanceof Error ? `${error.name} ${error.message}` : String(error)}`
+            );
+        }
         const params = new URLSearchParams({
             ids: `[${songId}]`,
             br: String(STREAM_BITRATE)
