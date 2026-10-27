@@ -54,6 +54,14 @@ interface NeteaseRawStream {
     id?: unknown;
     code?: unknown;
     url?: unknown;
+    fee?: unknown;
+    level?: unknown;
+    br?: unknown;
+    size?: unknown;
+    type?: unknown;
+    time?: unknown;
+    expi?: unknown;
+    freeTrialInfo?: unknown;
 }
 
 class NeteaseSource implements AudioSource {
@@ -100,32 +108,47 @@ class NeteaseSource implements AudioSource {
         // 老接口给带 authSecret 的 m704/m804 地址，7 臂全 403；
         // eapi v1 给无 authSecret 的 m701 地址，7 臂全 206。
         // v1 无地址/试听/异常时回落老接口，不丢无签名曲的旧路。
+        // 0.1.78 Claude 评审后补强：记两级码、fee、level/br/size/type、
+        // time 对 dt、expi、试听，v1 只给 10 秒（探针实测 v1 约 3 秒内），
+        // 超时即回落老接口，不等 eapi 自身 25 秒。
         try {
-            const v1 = await eapiRequest('/api/song/enhance/player/url/v1', {
-                ids: `[${songId}]`,
-                level: 'exhigh',
-                encodeType: 'flac'
-            });
-            const parsedV1 = JSON.parse(v1.body) as {
+            const v1Race = await Promise.race([
+                eapiRequest('/api/song/enhance/player/url/v1', {
+                    ids: `[${songId}]`,
+                    level: 'exhigh',
+                    encodeType: 'flac'
+                }),
+                new Promise<never>((_, reject) => {
+                    window.setTimeout(() => reject(new Error('v1 取链 10 秒超时')), 10000);
+                })
+            ]);
+            const parsedV1 = JSON.parse(v1Race.body) as {
                 code?: unknown;
-                data?: { url?: unknown; freeTrialInfo?: unknown }[];
+                data?: NeteaseRawStream[];
             };
             const v1First = Array.isArray(parsedV1.data) ? parsedV1.data[0] : undefined;
             const v1Url = typeof v1First?.url === 'string' && v1First.url ? v1First.url : null;
-            if (v1Url && !v1First?.freeTrialInfo) {
+            const v1DataCode = v1First?.code;
+            const v1Trial = !!v1First?.freeTrialInfo ||
+                (typeof v1First?.time === 'number' && typeof track.durationMs === 'number' &&
+                    track.durationMs > 0 && v1First.time < 0.8 * track.durationMs);
+            const v1Blocked = v1DataCode === 404 || v1DataCode === 403;
+            if (v1Url && !v1Trial && !v1Blocked) {
                 const httpsUrl = v1Url.replace(/^http:/, 'https:');
                 try {
                     const parsedUrl = new URL(httpsUrl);
                     const paramNames = [...new URLSearchParams(parsedUrl.search).keys()].join(',');
                     console.log(
-                        `[Netease] 取链v1码=${parsedV1.code} host=${parsedUrl.hostname} 协议=${parsedUrl.protocol} 长度=${httpsUrl.length} 参数=[${paramNames}]`
+                        `[Netease] 取链路径=v1 顶码=${parsedV1.code} 数据码=${v1DataCode} fee=${v1First?.fee} level=${v1First?.level} br=${v1First?.br} size=${v1First?.size} type=${v1First?.type} time=${v1First?.time} dt=${track.durationMs} expi=${v1First?.expi} 试听=无 host=${parsedUrl.hostname} 协议=${parsedUrl.protocol} 长度=${httpsUrl.length} 参数=[${paramNames}]`
                     );
                 } catch {
-                    console.log(`[Netease] 取链v1码=${parsedV1.code} 地址解析失败`);
+                    console.log(`[Netease] 取链路径=v1 顶码=${parsedV1.code} 数据码=${v1DataCode} 地址解析失败`);
                 }
                 return httpsUrl;
             }
-            console.log(`[Netease] 取链v1无地址或仅试听，回落老接口，v1码=${parsedV1.code}`);
+            console.log(
+                `[Netease] 取链v1不用回落老接口，顶码=${parsedV1.code} 数据码=${v1DataCode} fee=${v1First?.fee} level=${v1First?.level} br=${v1First?.br} size=${v1First?.size} type=${v1First?.type} time=${v1First?.time} dt=${track.durationMs} expi=${v1First?.expi} 试听=${v1Trial ? '有' : '无'} 有地址=${v1Url ? '是' : '否'}`
+            );
         } catch (error) {
             console.log(
                 `[Netease] 取链v1失败回落老接口：${error instanceof Error ? `${error.name} ${error.message}` : String(error)}`
@@ -153,20 +176,22 @@ class NeteaseSource implements AudioSource {
         if (url) {
             url = url.replace(/^http:/, 'https:');
         }
-        // 0.1.72 诊断：只记取链码、地址 host 与协议、长度与查询参数名，
-        // 不记完整地址与签名，供分流是取链本身还是代理取上游的问题。
+        // 0.1.78：老接口也记顶码、fee、br/size/type/time、authSecret 有无。
+        // authSecret 只记不拦：芷湘里取链抛错同样计入连续 3 跳，拦了省不掉
+        // 跳数，只省一次代理往返；且带签名老接口在更多曲目上仍待验证。
         try {
             if (url) {
                 const parsedUrl = new URL(url);
                 const paramNames = [...new URLSearchParams(parsedUrl.search).keys()].join(',');
+                const hasAuthSecret = paramNames.split(',').includes('authSecret');
                 console.log(
-                    `[Netease] 取链码=${first?.code} host=${parsedUrl.hostname} 协议=${parsedUrl.protocol} 长度=${url.length} 参数=[${paramNames}]`
+                    `[Netease] 取链路径=老接口 顶码=${(parsed as { code?: unknown } | null)?.code} 数据码=${first?.code} fee=${first?.fee} br=${first?.br} size=${first?.size} type=${first?.type} time=${first?.time} dt=${track.durationMs} expi=${first?.expi} authSecret=${hasAuthSecret ? '有' : '无'} host=${parsedUrl.hostname} 协议=${parsedUrl.protocol} 长度=${url.length} 参数=[${paramNames}]`
                 );
             } else {
-                console.log(`[Netease] 取链码=${first?.code} 无地址`);
+                console.log(`[Netease] 取链路径=老接口 顶码=${(parsed as { code?: unknown } | null)?.code} 数据码=${first?.code} 无地址`);
             }
         } catch {
-            console.log(`[Netease] 取链码=${first?.code} 地址解析失败`);
+            console.log(`[Netease] 取链路径=老接口 数据码=${first?.code} 地址解析失败`);
         }
         if (first?.code !== 200 || !url) {
             throw new Error('这首歌在网易云上暂时播不了，可能是需要会员或没有版权，请换一首试试');
