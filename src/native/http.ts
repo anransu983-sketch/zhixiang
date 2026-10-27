@@ -14,6 +14,9 @@ export interface HttpResponse {
     body: string;
     // 原生侧回传的 Set-Cookie（登录流程拿凭证的兜底）；普通请求不用理会。
     setCookies?: string[];
+    // 原生侧换行拼的 Set-Cookie 全量：优先用它，避开 "[a, b]" 按 ", " 切
+    // 会误切 Expires 日期的问题。
+    setCookiesJoined?: string;
     // 网络实情（原生侧回传）：协议、TLS 版本/套件、收发头名；只含名不含值。
     networkProtocol?: string;
     tlsVersion?: string;
@@ -80,7 +83,13 @@ async function request(
 ): Promise<HttpResponse> {
     try {
         const response = await HttpBridge.request({ url, method, headers, body });
-        response.setCookies = normalizeStringArray(response.setCookies);
+        // setCookiesJoined 优先：每行一条完整 Set-Cookie，Expires 里的逗号
+        // 不会被误切；老字段只作兜底（仍按 "[a, b]" 格式归一化）。
+        if (typeof response.setCookiesJoined === 'string' && response.setCookiesJoined) {
+            response.setCookies = response.setCookiesJoined.split('\n').filter(Boolean);
+        } else {
+            response.setCookies = normalizeStringArray(response.setCookies);
+        }
         response.requestHeaderNames = normalizeStringArray(response.requestHeaderNames);
         response.responseHeaderNames = normalizeStringArray(response.responseHeaderNames);
         return response;

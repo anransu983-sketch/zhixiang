@@ -188,6 +188,10 @@ public class HttpBridgePlugin extends Plugin {
                         result.put("status", status);
                         result.put("body", text);
                         result.put("setCookies", setCookies);
+                        // 换行拼一份：JS 侧按 "\n" 切就不会被 Expires 日期里的
+                        // ", " 误切（Java List 到 JS 的 "[a, b]" 字符串按 ", "
+                        // 切会把 Expires=Wed, 21 Oct ... 切碎，见 0.1.71 跟进）。
+                        result.put("setCookiesJoined", String.join("\n", setCookies));
                         // 网络实情（只记协议/TLS/头名，不记任何头值与正文）：
                         // 源码对不上的差只能在线上看，下一版照着实情改。
                         result.put("networkProtocol", res.protocol().toString());

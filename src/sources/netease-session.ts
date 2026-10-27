@@ -172,24 +172,72 @@ export async function fetchQrKey(): Promise<string> {
     return key;
 }
 
+// Set-Cookie 属性名：出现在 Cookie 头里会污染校验，必须过滤。
+const COOKIE_ATTRIBUTE_NAMES = new Set([
+    'path', 'domain', 'expires', 'max-age', 'secure', 'httponly', 'samesite', 'partitioned'
+]);
+
+function addCookiePairs(seen: Map<string, string>, text: string, setCookieLine: boolean): void {
+    // body/data 的 cookie 串是 "a=b; c=d"，每段都是名值对；
+    // Set-Cookie 行是 "a=b; Path=/; Expires=..."，只取第一段。
+    const segments = setCookieLine ? [text.split(';', 1)[0] ?? ''] : text.split(';');
+    for (const segment of segments) {
+        const pair = segment.trim();
+        if (!pair) {
+            continue;
+        }
+        const eq = pair.indexOf('=');
+        if (eq <= 0) {
+            continue;
+        }
+        const name = pair.slice(0, eq).trim();
+        const value = pair.slice(eq + 1).trim();
+        if (!name || !value || COOKIE_ATTRIBUTE_NAMES.has(name.toLowerCase())) {
+            continue;
+        }
+        seen.set(name, `${name}=${value}`);
+    }
+}
+
+function cookieStringToPairs(text: string): string[] {
+    const seen = new Map<string, string>();
+    addCookiePairs(seen, text, false);
+    return [...seen.values()];
+}
+
+// 三源合并（Claude 第十九轮）：不再“先非空者胜”——body.cookie 若有
+// 却缺 MUSIC_U，旧逻辑会直接赢过含 MUSIC_U 的 setCookies。现在按
+// body → data → setCookies 顺序合并，同名后者覆盖，setCookies 优先。
+function mergeQrCookies(bodyCookie: unknown, dataCookie: unknown, setCookies: string[] | undefined): string {
+    const seen = new Map<string, string>();
+    const addValue = (value: unknown): void => {
+        if (typeof value === 'string') {
+            addCookiePairs(seen, value, false);
+        } else if (Array.isArray(value)) {
+            for (const item of value) {
+                if (typeof item === 'string' && item) {
+                    addCookiePairs(seen, item, false);
+                }
+            }
+        }
+    };
+    addValue(bodyCookie);
+    addValue(dataCookie);
+    if (setCookies) {
+        for (const entry of setCookies) {
+            addCookiePairs(seen, entry, true);
+        }
+    }
+    return [...seen.values()].join('; ');
+}
+
 function cookieFromSetCookies(setCookies: string[] | undefined): string {
     if (!setCookies || setCookies.length === 0) {
         return '';
     }
-    const pairs: string[] = [];
-    for (const entry of setCookies) {
-        const pair = entry.split(';', 1)[0]?.trim();
-        if (pair) {
-            pairs.push(pair);
-        }
-    }
-    // 同名只留最后一个（两次响应里可能各有一份）。
     const seen = new Map<string, string>();
-    for (const pair of pairs) {
-        const name = pair.split('=', 1)[0]?.trim();
-        if (name) {
-            seen.set(name, pair);
-        }
+    for (const entry of setCookies) {
+        addCookiePairs(seen, entry, true);
     }
     return [...seen.values()].join('; ');
 }
@@ -246,23 +294,41 @@ export async function checkQr(key: string): Promise<QrCheckResult> {
         console.error(detail);
         throw new Error(detail);
     }
-    // 803：先取 body 里的凭证，拿不到再用 Set-Cookie 兜底。
-    // 0.1.71 收紧前漏了一格：data.cookie 是数组时没接（Folia 只接
-    // string，芷湘之前也只接 string，数组 803 会被误判为无凭证）。
-    let cookie = '';
-    if (typeof parsed.cookie === 'string') {
-        cookie = parsed.cookie.trim();
-    } else if (Array.isArray(parsed.cookie)) {
-        cookie = (parsed.cookie as unknown[]).filter((item) => typeof item === 'string' && item).join('; ');
-    }
-    if (!cookie && parsed.data && typeof parsed.data.cookie === 'string') {
-        cookie = parsed.data.cookie.trim();
-    }
-    if (!cookie && parsed.data && Array.isArray(parsed.data.cookie)) {
-        cookie = (parsed.data.cookie as unknown[]).filter((item) => typeof item === 'string' && item).join('; ');
-    }
-    if (!cookie) {
-        cookie = cookieFromSetCookies(response.setCookies);
+    // 803：三源合并（body → data → setCookies，同名后者覆盖），
+    // 不再先非空者胜。旧逻辑里 body.cookie 有却缺 MUSIC_U 时，
+    // 会直接赢过含 MUSIC_U 的 setCookies。
+    const cookie = mergeQrCookies(parsed.cookie, parsed.data?.cookie, response.setCookies);
+    // Claude 第十九轮的检查点：三源各自名+长度、合并后名+有无 MUSIC_U，
+    // 只记名与长度，不记值。user/level 结果在登录区渲染时另记一行。
+    {
+        const namesOf = (value: unknown): string => {
+            if (typeof value === 'string') {
+                return cookieStringToPairs(value)
+                    .map((pair) => pair.split('=', 1)[0]?.trim())
+                    .filter(Boolean)
+                    .join(',');
+            }
+            if (Array.isArray(value)) {
+                return value
+                    .filter((item) => typeof item === 'string')
+                    .map((item) => (item as string).split(';', 1)[0]?.split('=', 1)[0]?.trim())
+                    .filter(Boolean)
+                    .join(',');
+            }
+            return '';
+        };
+        const setCookieNames = (response.setCookies ?? [])
+            .map((entry) => entry.split(';', 1)[0]?.split('=', 1)[0]?.trim())
+            .filter(Boolean)
+            .join(',');
+        const mergedNames = cookie
+            .split(';')
+            .map((part) => part.split('=', 1)[0]?.trim())
+            .filter(Boolean)
+            .join(',');
+        console.log(
+            `[Netease] 803 三源：body=[${namesOf(parsed.cookie)}] data=[${namesOf(parsed.data?.cookie)}] setCookies=[${setCookieNames}] 合并=[${mergedNames}] 有MUSIC_U=${cookie.includes('MUSIC_U=') ? '是' : '否'} 长度=${cookie.length}`
+        );
     }
     // Folia 同款宽容规则（0.1.71）：803 已确认时，有凭证就先算登录，
     // 不要因为当场没在字符串里找到 MUSIC_U 就直接判“凭证不完整”
@@ -301,25 +367,6 @@ export async function checkQr(key: string): Promise<QrCheckResult> {
                 `setCookies名=[${setCookieNames || '空'}]，body含MUSIC_U=${response.body.includes('MUSIC_U') ? '是' : '否'}`
         );
         return { code: 803, message: '登录凭证不完整，请重新扫码', session: null };
-    }
-    // Claude 第十八轮要的那一行：803 成功时也记凭证来源与形状（只记
-    // 名与长度，不记值），否则成功与否都只看结果码，无法区分 (b) 还是 (c)。
-    {
-        const namesOf = (value: string): string =>
-            value
-                .split(';')
-                .map((part) => part.split('=', 1)[0]?.trim())
-                .filter(Boolean)
-                .join(',');
-        const source =
-            typeof parsed.cookie === 'string' || Array.isArray(parsed.cookie)
-                ? 'body.cookie'
-                : parsed.data && (typeof parsed.data.cookie === 'string' || Array.isArray(parsed.data.cookie))
-                  ? 'data.cookie'
-                  : 'setCookies';
-        console.log(
-            `[Netease] 803 凭证来源=${source} 名=[${namesOf(cookie)}] 长度=${cookie.length}`
-        );
     }
     const profile = parsed.profile ?? parsed.data?.profile ?? null;
     const session: NeteaseSession = {
