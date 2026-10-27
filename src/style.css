@@ -259,9 +259,10 @@ body {
     width: 100%;
     height: 44px;
     padding: 0 16px 0 44px;
-    border: 1px solid var(--hairline);
+    border: 1px solid rgba(255, 255, 255, 0.20);
     border-radius: 999px;
-    background: var(--surface-1);
+    background: rgba(255, 255, 255, 0.10);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
     color: inherit;
     font-family: inherit;
     font-size: 15px;
@@ -328,17 +329,22 @@ body {
     display: grid;
     /* 列宽钉死：此前隐式 auto 列按最长行撑宽，整列连播放按钮一起被推出屏外。 */
     grid-template-columns: minmax(0, 1fr);
-    gap: 4px;
+    gap: 10px;
 }
 
+/* 0.1.80 玻璃磁带卡（用户已批预览）：搜索行不再是裸行，整行一张
+   悬浮玻璃卡——半透明底 + 细白边 + 大阴影；不用 backdrop blur，
+   免得重蹈吸顶搜索全屏重绘贵的覆辙。磁带小窗由 renderTracks 塞。 */
 .track-row {
     display: flex;
     align-items: center;
     gap: 12px;
     min-height: 64px;
-    padding: 10px 0;
-    border: 0;
-    background: transparent;
+    padding: 10px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.07);
+    box-shadow: 0 10px 22px rgba(0, 0, 0, 0.35);
     cursor: pointer;
 }
 
@@ -433,6 +439,29 @@ body {
     color: var(--text-3);
     font-size: 13px;
     font-variant-numeric: tabular-nums;
+}
+
+/* 磁带小窗：两轴 + 磁带条，纯装饰，不占点击，跟着卡片走。 */
+.track-tape {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.track-reel {
+    width: 14px;
+    height: 14px;
+    flex: none;
+    border: 2px solid rgba(255, 255, 255, 0.45);
+    border-radius: 50%;
+}
+
+.track-tape-bar {
+    height: 3px;
+    flex: 1;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.22);
 }
 
 .track-play {
@@ -682,6 +711,217 @@ body {
 .poster-notice {
     margin: 12px 0 0;
     color: var(--text-2);
+}
+
+/* 0.1.80 海报四版（用户拍板全要）：切换只翻 data-layout，不重渲染。
+   磁带小窗默认藏，只在磁带馆里出现；动效只给便宜的 transform/opacity，
+   黑胶转只在正在播的卡上跑，暂停即停。 */
+.poster-tape {
+    display: none;
+}
+
+.poster-reel {
+    width: 14px;
+    height: 14px;
+    flex: none;
+    border: 2px solid rgba(255, 255, 255, 0.45);
+    border-radius: 50%;
+}
+
+.poster-tape-bar {
+    height: 3px;
+    flex: 1;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.22);
+}
+
+@keyframes poster-float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-5px); }
+}
+
+@keyframes poster-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* 磁带馆：两列玻璃卡，错峰上下浮，正在播的卡辉光呼吸。 */
+.poster-module[data-layout="tape"] .poster-card {
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.07);
+    box-shadow: 0 10px 22px rgba(0, 0, 0, 0.35);
+    animation: poster-float 3s ease-in-out infinite;
+    animation-delay: calc(var(--i, 0) * 0.35s);
+}
+
+.poster-module[data-layout="tape"] .poster-card.is-playing {
+    box-shadow: 0 0 24px hsl(var(--hue, 330) 80% 60% / 0.35);
+}
+
+.poster-module[data-layout="tape"] .poster-tape {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 12px 12px;
+}
+
+.poster-module[data-layout="tape"] .poster-card.is-playing .poster-reel {
+    animation: poster-spin 3s linear infinite;
+}
+
+/* 星卷：横向卷轴，卡片定宽横滑，贴边有渐变光带。 */
+.poster-module[data-layout="scroll"] .poster-grid {
+    display: flex;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    padding-bottom: 4px;
+}
+
+.poster-module[data-layout="scroll"] .poster-card {
+    width: 200px;
+    flex: none;
+    scroll-snap-align: start;
+    border-top: 3px solid transparent;
+    border-image: linear-gradient(90deg, #f9a8d4, #c084fc, #22d3ee) 1;
+}
+
+/* 黑胶：每榜一行，封面变转动的唱片，只在正在播时转。 */
+.poster-module[data-layout="vinyl"] .poster-grid {
+    grid-template-columns: 1fr;
+}
+
+.poster-module[data-layout="vinyl"] .poster-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    background: rgba(255, 255, 255, 0.07);
+}
+
+.poster-module[data-layout="vinyl"] .poster-cover-wrap {
+    width: 84px;
+    height: 84px;
+    flex: none;
+    aspect-ratio: auto;
+    border-radius: 50%;
+    overflow: hidden;
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.5);
+}
+
+.poster-module[data-layout="vinyl"] .poster-cover-wrap::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 28px;
+    height: 28px;
+    margin: -14px 0 0 -14px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #f9a8d4, #c084fc);
+    z-index: 1;
+}
+
+.poster-module[data-layout="vinyl"] .poster-card.is-playing .poster-cover-wrap {
+    animation: poster-spin 6s linear infinite;
+}
+
+.poster-module[data-layout="vinyl"] .poster-overlay {
+    position: static;
+    flex: 1;
+    background: none;
+    color: var(--text);
+    padding: 0;
+}
+
+.poster-module[data-layout="vinyl"] .poster-subtitle,
+.poster-module[data-layout="vinyl"] .poster-count {
+    color: var(--text-2);
+}
+
+.poster-module[data-layout="vinyl"] .poster-play {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    flex: none;
+    border: 1px solid var(--hairline);
+    border-radius: 50%;
+    font-size: 12px;
+}
+
+/* 巨幕：首榜跨两列放大，封面缓慢缩放呼吸，其余两列小卡。 */
+.poster-module[data-layout="mag"] .poster-card:first-child {
+    grid-column: span 2;
+}
+
+.poster-module[data-layout="mag"] .poster-card:first-child .poster-cover-wrap {
+    aspect-ratio: 16 / 9;
+}
+
+.poster-module[data-layout="mag"] .poster-card:first-child .poster-cover {
+    animation: poster-mag-zoom 8s ease-in-out infinite;
+}
+
+@keyframes poster-mag-zoom {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.08); }
+}
+
+.poster-module[data-layout="mag"] .poster-card:first-child .poster-title {
+    font-size: 20px;
+    line-height: 26px;
+}
+
+/* 排布工坊：我的页单独的布局自定义区，与登录卡同款玻璃卡。 */
+.layout-mix {
+    padding: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: var(--r-card);
+    background: rgba(255, 255, 255, 0.08);
+    box-shadow: 0 10px 22px rgba(0, 0, 0, 0.35);
+}
+
+.layout-mix h2 {
+    margin: 0;
+}
+
+.layout-mix-sub {
+    margin: 4px 0 12px;
+    color: var(--text-2);
+    font-size: 13px;
+}
+
+.layout-mix-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.layout-mix-label {
+    width: 100%;
+    font-size: 13px;
+    color: var(--text-2);
+}
+
+.layout-mix-btn {
+    padding: 6px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.20);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-2);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.layout-mix-btn.is-active {
+    border-color: transparent;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
 }
 
 /* 底部四 Tab（0.1.42）：一次只看一个源；页内区块间距 20px，不再沿长页摊开。 */
@@ -1394,9 +1634,10 @@ body {
     gap: 12px;
     width: 100%;
     padding: 14px;
-    border: 1px solid var(--hairline);
+    border: 1px solid rgba(255, 255, 255, 0.18);
     border-radius: var(--r-card);
-    background: var(--surface-1);
+    background: rgba(255, 255, 255, 0.08);
+    box-shadow: 0 10px 22px rgba(0, 0, 0, 0.35);
     color: inherit;
     text-align: left;
 }
@@ -2100,7 +2341,7 @@ body {
     content: '';
     position: absolute;
     inset: 0;
-    border-radius: 12px;
+    border-radius: 16px;
     box-shadow: 0 0 24px hsl(var(--hue, 330) 80% 60% / 0.35);
     opacity: 0.35;
     animation: row-breathe 3s ease-in-out infinite alternate;
@@ -2426,20 +2667,19 @@ button:not(.poster-card):not(.shelf-record):active::after {
     backdrop-filter: none;
 }
 
-/* 登录卡与开发者卡共用磁吸卡外观：surface-2＋极光细边；登录卡不折叠。 */
+/* 0.1.80 我的页玻璃卡：登录卡与开发者卡不再用极光细边，改与搜索卡
+   同款悬浮玻璃——半透明底 + 细白边 + 大阴影，同宽同间距吸成一列。 */
 .login-block {
-    border: 1px solid transparent;
-    background:
-        linear-gradient(var(--surface-2), var(--surface-2)) padding-box,
-        var(--g-aurora) border-box;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.08);
+    box-shadow: 0 10px 22px rgba(0, 0, 0, 0.35);
 }
 
 .mag-card {
-    border: 1px solid transparent;
+    border: 1px solid rgba(255, 255, 255, 0.18);
     border-radius: var(--r-card);
-    background:
-        linear-gradient(var(--surface-2), var(--surface-2)) padding-box,
-        var(--g-aurora) border-box;
+    background: rgba(255, 255, 255, 0.08);
+    box-shadow: 0 10px 22px rgba(0, 0, 0, 0.35);
 }
 
 .dev-card[data-open="true"] {

@@ -297,6 +297,7 @@ export function renderHome(): HTMLElement {
             heading.textContent = '我的';
             page.appendChild(heading);
             page.appendChild(renderLoginArea());
+            page.appendChild(renderLayoutMixSection());
             page.appendChild(renderFootprintEntry());
             page.appendChild(renderDeveloperSection());
             const record: TabPage = { page };
@@ -846,6 +847,55 @@ function renderFootprintEntry(): HTMLElement {
     return entry;
 }
 
+// 0.1.80 排布工坊（我的页单独做）：每个音源的海报排布单独选，
+// 跟随全局 / 磁带馆 / 星卷 / 黑胶 / 巨幕五档，点选即时生效到已挂载
+// 的海报模块，未挂载的页下次进页时按选择渲染。
+function renderLayoutMixSection(): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'layout-mix';
+
+    const heading = document.createElement('h2');
+    heading.textContent = '排布工坊';
+    section.appendChild(heading);
+    const sub = document.createElement('p');
+    sub.className = 'layout-mix-sub';
+    sub.textContent = '每个音源的海报排布可以单独选，混搭着用';
+    section.appendChild(sub);
+
+    for (const definition of POSTER_SECTIONS) {
+        const row = document.createElement('div');
+        row.className = 'layout-mix-row';
+        const label = document.createElement('span');
+        label.className = 'layout-mix-label';
+        label.textContent = definition.label;
+        row.appendChild(label);
+
+        const options: Array<{ id: PosterLayoutMixValue; label: string }> = [
+            { id: 'follow', label: '跟随全局' },
+            ...POSTER_LAYOUTS
+        ];
+        const buttons: HTMLButtonElement[] = [];
+        for (const option of options) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'layout-mix-btn';
+            button.textContent = option.label;
+            const current = posterLayoutMix[definition.key] ?? 'follow';
+            button.classList.toggle('is-active', current === option.id);
+            button.addEventListener('click', () => {
+                applyPosterLayoutMix(definition.key, option.id);
+                for (const other of buttons) {
+                    other.classList.toggle('is-active', other === button);
+                }
+            });
+            buttons.push(button);
+            row.appendChild(button);
+        }
+        section.appendChild(row);
+    }
+    return section;
+}
+
 function renderLoginArea(): HTMLElement {
     const area = document.createElement('section');
     area.className = 'login-area';
@@ -1329,24 +1379,74 @@ function renderYtmLoginBlock(): HTMLElement {
 // 各页模块共用，任何一页切换都同步到已挂载的全部模块；切换只翻 data-layout，不重渲染。
 // 颜色全部走 :root 变量，以后主题深浅切换只需换一套变量值，这里不用动。
 
-type PosterLayout = 'wall' | 'cards' | 'shelf';
+// 0.1.80 海报四版全上（用户拍板“都要”）：旧海报墙/卡片/3D 架撤掉，
+// 换成四版可切换布局，名字按用户要求起好听点，不再是直白的功能名。
+// 磁带馆 = 玻璃磁带架，星卷 = 横向磁带卷轴，黑胶 = 黑胶唱片架，
+// 巨幕 = 杂志大海报。切换仍只翻 data-layout，不重渲染。
+type PosterLayout = 'tape' | 'scroll' | 'vinyl' | 'mag';
 
 const POSTER_LAYOUT_KEY = 'zx_poster_layout_v1';
 
 const POSTER_LAYOUTS: Array<{ id: PosterLayout; label: string }> = [
-    { id: 'wall', label: '海报墙' },
-    { id: 'cards', label: '卡片' },
-    { id: 'shelf', label: '3D 架' }
+    { id: 'tape', label: '磁带馆' },
+    { id: 'scroll', label: '星卷' },
+    { id: 'vinyl', label: '黑胶' },
+    { id: 'mag', label: '巨幕' }
 ];
 
 function loadPosterLayout(): PosterLayout {
     const stored = localStorage.getItem(POSTER_LAYOUT_KEY);
-    return stored === 'cards' || stored === 'shelf' ? stored : 'wall';
+    return stored === 'scroll' || stored === 'vinyl' || stored === 'mag' ? stored : 'tape';
 }
 
 let currentPosterLayout: PosterLayout = loadPosterLayout();
 const posterModules = new Set<HTMLElement>();
 const posterLayoutButtons: HTMLButtonElement[] = [];
+
+// 0.1.80 排布工坊（我的页单独做）：每个音源的海报排布可以单独选，
+// 混搭着用；没选或选“跟随全局”时，跟海报区顶部的全局开关走。
+// 存 zx_poster_layout_mix_v1，形如 {"local":"vinyl","netease":"follow"}。
+type PosterLayoutMixValue = PosterLayout | 'follow';
+const POSTER_LAYOUT_MIX_KEY = 'zx_poster_layout_mix_v1';
+
+function loadPosterLayoutMix(): Record<string, PosterLayoutMixValue> {
+    try {
+        const parsed = JSON.parse(localStorage.getItem(POSTER_LAYOUT_MIX_KEY) ?? '{}') as Record<
+            string,
+            unknown
+        >;
+        const mix: Record<string, PosterLayoutMixValue> = {};
+        for (const [key, value] of Object.entries(parsed)) {
+            if (value === 'follow' || value === 'tape' || value === 'scroll' || value === 'vinyl' || value === 'mag') {
+                mix[key] = value;
+            }
+        }
+        return mix;
+    } catch {
+        return {};
+    }
+}
+
+let posterLayoutMix: Record<string, PosterLayoutMixValue> = loadPosterLayoutMix();
+
+function resolvePosterLayout(sourceKey: string): PosterLayout {
+    const picked = posterLayoutMix[sourceKey];
+    return picked && picked !== 'follow' ? picked : currentPosterLayout;
+}
+
+function savePosterLayoutMix(): void {
+    localStorage.setItem(POSTER_LAYOUT_MIX_KEY, JSON.stringify(posterLayoutMix));
+}
+
+function applyPosterLayoutMix(sourceKey: string, value: PosterLayoutMixValue): void {
+    posterLayoutMix[sourceKey] = value;
+    savePosterLayoutMix();
+    for (const module of posterModules) {
+        if (module.dataset.sourceKey === sourceKey) {
+            module.dataset.layout = resolvePosterLayout(sourceKey);
+        }
+    }
+}
 
 // 海报三向开关的滑动滑块：每组开关一个，按激活按钮实测位置走；
 // 页隐藏时量不到宽，跳过，等切页回来再定位。
@@ -1369,7 +1469,8 @@ function applyPosterLayout(layout: PosterLayout): void {
     currentPosterLayout = layout;
     localStorage.setItem(POSTER_LAYOUT_KEY, layout);
     for (const module of posterModules) {
-        module.dataset.layout = layout;
+        // 混搭的模块跟自己的选择走，只有“跟随全局”的模块才跟全局开关。
+        module.dataset.layout = resolvePosterLayout(module.dataset.sourceKey ?? '');
         // 入场动画重播：切形态时把 enter 摘掉、强制回流、再挂上，
         // 卡片 rise 动画重新跑一遍；只在切形态时做，不干扰滚动。
         module.classList.remove('enter');
@@ -1388,7 +1489,8 @@ function applyPosterLayout(layout: PosterLayout): void {
 function renderPosterModule(definition: PosterSectionDefinition): HTMLElement {
     const module = document.createElement('section');
     module.className = 'poster-module enter';
-    module.dataset.layout = currentPosterLayout;
+    module.dataset.layout = resolvePosterLayout(definition.key);
+    module.dataset.sourceKey = definition.key;
     posterModules.add(module);
 
     const head = document.createElement('div');
@@ -1557,6 +1659,19 @@ function renderPosterCard(poster: Poster, playNotice: HTMLElement): HTMLElement 
     overlay.appendChild(playDot);
 
     card.appendChild(overlay);
+
+    // 磁带馆形态的小窗：纯装饰，两轴 + 磁带条，只在磁带馆形态下显示。
+    const tape = document.createElement('div');
+    tape.className = 'poster-tape';
+    tape.setAttribute('aria-hidden', 'true');
+    const reelLeft = document.createElement('span');
+    reelLeft.className = 'poster-reel';
+    const tapeBar = document.createElement('span');
+    tapeBar.className = 'poster-tape-bar';
+    const reelRight = document.createElement('span');
+    reelRight.className = 'poster-reel';
+    tape.append(reelLeft, tapeBar, reelRight);
+    card.appendChild(tape);
 
     card.addEventListener('click', () => {
         void (async () => {
@@ -1831,6 +1946,19 @@ function renderTracks(list: HTMLElement, tracks: Track[], status: HTMLElement): 
         const albumPart = track.album ? ` · ${track.album}` : '';
         meta.textContent = `${track.artist}${albumPart}`;
         info.appendChild(meta);
+
+        // 0.1.80 磁带小窗：纯装饰，两轴 + 磁带条，不参与点击。
+        const tape = document.createElement('div');
+        tape.className = 'track-tape';
+        tape.setAttribute('aria-hidden', 'true');
+        const reelLeft = document.createElement('span');
+        reelLeft.className = 'track-reel';
+        const tapeBar = document.createElement('span');
+        tapeBar.className = 'track-tape-bar';
+        const reelRight = document.createElement('span');
+        reelRight.className = 'track-reel';
+        tape.append(reelLeft, tapeBar, reelRight);
+        info.appendChild(tape);
         item.appendChild(info);
 
         if (track.id === playingId) {
