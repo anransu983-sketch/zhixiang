@@ -43,7 +43,7 @@
 // 由第 5 块的播放引擎实现（MSE 分块加载或本地 Range 代理均可，第 5 块定）。
 
 import { httpPost } from '../native/http';
-import { withYtmSession } from './ytm-session';
+import { loadYtmSession, sapisidHash, withYtmSession } from './ytm-session';
 import type { AudioSource, Poster, SourceId, Track } from '../types';
 
 const SEARCH_URL = 'https://music.youtube.com/youtubei/v1/search';
@@ -1062,28 +1062,94 @@ export async function fetchYtmChartPosters(): Promise<Poster[]> {
 // 而榜单 FEmusic_charts 同函数同会话头能通——先分臂测，不改每日取数。
 // 臂只变一个量：client / 会话头 / 地区 / visitorData；每臂只记状态与
 // 是否含单曲项，不记任何会话值；全部臂跑完才算完成，单臂异常不中断。
+// 0.1.83 YTM 首页探针 v2（Claude 第二轮修正后，0.1.82 的 6 臂全 400）：
+// 每臂只记状态、体长、有无单曲项；非 200 时再记 error 信封（code/status/
+// message 前 200 字/reason），解析失败则脱敏截断，绝不记请求头与会话值。
+// 七臂：ANDROID 抓正文、ANDROID_MUSIC 7.55.52、ANDROID_MUSIC 5.34.51、
+// WEB_REMIX 修头、ANDROID 自带 key、ANDROID_MUSIC 组合、榜单对照。
+// 每日取数逻辑不动，探针出 200 再定。
+function logProbeError(body: string): string {
+    try {
+        const parsed = JSON.parse(body) as {
+            error?: {
+                code?: unknown;
+                status?: unknown;
+                message?: unknown;
+                errors?: Array<{ reason?: unknown }>;
+            };
+        };
+        const err = parsed.error;
+        if (err && typeof err === 'object') {
+            const message = typeof err.message === 'string' ? err.message.slice(0, 200) : '';
+            const reason = Array.isArray(err.errors) && typeof err.errors[0]?.reason === 'string'
+                ? (err.errors[0] as { reason: string }).reason
+                : '';
+            return `error=${String(err.code ?? '')}/${String(err.status ?? '')} msg=${message} reason=${reason}`;
+        }
+    } catch {
+        // 解析失败时走脱敏截断，不贴原始体。
+    }
+    const stripped = body
+        .replace(/"?\s*(Cookie|SAPISID|Authorization|visitorData)\s*"?\s*[:=]\s*[^,}\s"]+/gi, '$1=[已脱敏]')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 200);
+    return `raw=${stripped || '空响应'}`;
+}
+
 export async function probeYtmHome(): Promise<void> {
     const android = PLAYER_CLIENTS.find((client) => client.name === 'ANDROID');
-    const ios = PLAYER_CLIENTS.find((client) => client.name === 'IOS');
-    type Arm = {
+    // ANDROID_MUSIC 客户端定义：版号与 UA 取公开客户端定义（7.55.52 一组），
+    // 5.34.51 为 youtubei.js fork 的另一公开版号；两版都未证实为当前接受版，
+    // 故双臂同测。sdk 版沿用公开 androidMusic 定义的 34，版号是本臂的变量。
+    const androidMusic7552: InnertubeClient = {
+        name: 'ANDROID_MUSIC',
+        version: '7.55.52',
+        userAgent: 'com.google.android.apps.youtube.music/7.55.52 (Linux; U; Android 14) gzip',
+        clientNameId: 21,
+        androidSdkVersion: 34
+    };
+    const androidMusic53451: InnertubeClient = {
+        name: 'ANDROID_MUSIC',
+        version: '5.34.51',
+        userAgent: 'com.google.android.apps.youtube.music/5.34.51 (Linux; U; Android 14) gzip',
+        clientNameId: 21,
+        androidSdkVersion: 34
+    };
+    type ProbeArm = {
         label: string;
         client: InnertubeClient;
         session: boolean;
         hl: string;
         gl: string;
         visitor: boolean;
+        browseId: string;
+        apiKey?: string;
+        extraHeaders?: Record<string, string>;
+        musicOrigin?: boolean;
+        clientHeaders?: boolean;
     };
-    const arms: Arm[] = [];
+    const webRemixExtra: Record<string, string> = {
+        Origin: 'https://music.youtube.com',
+        Referer: 'https://music.youtube.com',
+        'X-Origin': 'https://music.youtube.com'
+    };
+    if (cachedVisitorData) {
+        webRemixExtra['X-Goog-Visitor-Id'] = cachedVisitorData;
+    } else {
+        console.log('[Ytm] 首页探针 v2：WEB_REMIX 修头臂无缓存 visitorData，X-Goog-Visitor-Id 省略');
+    }
+    const arms: ProbeArm[] = [];
     if (android) {
-        arms.push({ label: 'ANDROID·会话·CN', client: android, session: true, hl: 'zh-CN', gl: 'CN', visitor: false });
-        arms.push({ label: 'ANDROID·匿名·CN', client: android, session: false, hl: 'zh-CN', gl: 'CN', visitor: false });
-        arms.push({ label: 'ANDROID·会话·US', client: android, session: true, hl: 'en-US', gl: 'US', visitor: false });
+        arms.push({ label: 'ANDROID·会话·CN·抓正文', client: android, session: true, hl: 'zh-CN', gl: 'CN', visitor: false, browseId: 'FEmusic_home' });
+        arms.push({ label: 'ANDROID_MUSIC 7.55.52·会话·CN', client: androidMusic7552, session: true, hl: 'zh-CN', gl: 'CN', visitor: false, browseId: 'FEmusic_home', clientHeaders: true });
+        arms.push({ label: 'ANDROID_MUSIC 5.34.51·会话·CN', client: androidMusic53451, session: true, hl: 'zh-CN', gl: 'CN', visitor: false, browseId: 'FEmusic_home', clientHeaders: true });
+        arms.push({ label: 'ANDROID·自带key·会话·CN', client: android, session: true, hl: 'zh-CN', gl: 'CN', visitor: false, browseId: 'FEmusic_home', apiKey: android.apiKey });
+        arms.push({ label: 'ANDROID_MUSIC 7.55.52·组合·会话·CN', client: androidMusic7552, session: true, hl: 'zh-CN', gl: 'CN', visitor: false, browseId: 'FEmusic_home', clientHeaders: true, musicOrigin: true, apiKey: android.apiKey });
+        arms.push({ label: '对照·FEmusic_charts·ANDROID·会话·CN', client: android, session: true, hl: 'zh-CN', gl: 'CN', visitor: false, browseId: 'FEmusic_charts' });
     }
-    if (ios) {
-        arms.push({ label: 'IOS·会话·CN', client: ios, session: true, hl: 'zh-CN', gl: 'CN', visitor: false });
-    }
-    arms.push({ label: 'WEB_REMIX·会话·CN（对照，榜单已证 400）', client: SEARCH_CLIENT, session: true, hl: 'zh-CN', gl: 'CN', visitor: false });
-    console.log(`[Ytm] 首页探针：开始（FEmusic_home，共 ${arms.length} 臂）`);
+    arms.push({ label: 'WEB_REMIX·修头·会话·CN', client: SEARCH_CLIENT, session: true, hl: 'zh-CN', gl: 'CN', visitor: true, browseId: 'FEmusic_home', extraHeaders: webRemixExtra });
+    console.log(`[Ytm] 首页探针 v2：开始（共 ${arms.length} 臂）`);
     for (const arm of arms) {
         const contextClient: Record<string, unknown> = {
             clientName: arm.client.name,
@@ -1103,45 +1169,57 @@ export async function probeYtmHome(): Promise<void> {
         if (arm.client.osVersion) {
             contextClient.osVersion = arm.client.osVersion;
         }
+        if (arm.client.clientNameId) {
+            contextClient.clientNameId = arm.client.clientNameId;
+        }
+        if (arm.client.androidSdkVersion) {
+            contextClient.androidSdkVersion = arm.client.androidSdkVersion;
+        }
+        if (arm.visitor && cachedVisitorData) {
+            contextClient.visitorData = cachedVisitorData;
+        }
+        let headers: Record<string, string> = arm.session ? requestHeaders() : HEADERS;
+        if (arm.extraHeaders) {
+            headers = { ...headers, ...arm.extraHeaders };
+        }
+        if (arm.musicOrigin) {
+            const session = loadYtmSession();
+            const musicHash = session ? sapisidHash(session.cookie, 'https://music.youtube.com') : null;
+            if (musicHash) {
+                headers = { ...headers, Authorization: musicHash, 'X-Origin': 'https://music.youtube.com' };
+            } else {
+                console.log(`[Ytm] 首页探针 v2 ${arm.label}：无会话，music-origin 签名省略`);
+            }
+        }
+        if (arm.clientHeaders) {
+            if (arm.client.clientNameId) {
+                headers = { ...headers, 'X-YouTube-Client-Name': String(arm.client.clientNameId) };
+            }
+            headers = { ...headers, 'X-YouTube-Client-Version': arm.client.version };
+            if (arm.client.userAgent) {
+                headers = { ...headers, 'User-Agent': arm.client.userAgent };
+            }
+        }
         const body = JSON.stringify({
             context: { client: contextClient },
-            browseId: 'FEmusic_home'
+            browseId: arm.browseId
         });
         try {
             const response = await httpPost(
-                `${BROWSE_URL}?key=${INNERTUBE_KEY}`,
+                `${BROWSE_URL}?key=${arm.apiKey ?? INNERTUBE_KEY}`,
                 body,
-                arm.session ? requestHeaders() : HEADERS
+                headers
             );
             const hasItems = response.body.includes('musicResponsiveListItemRenderer')
                 || response.body.includes('playlistVideoRenderer');
-            console.log(`[Ytm] 首页探针 ${arm.label}：status=${response.status} len=${response.body.length} 单曲项=${hasItems ? '有' : '无'}`);
+            // 对照臂以 status 200 为通过，单曲项标志只作参考（榜单响应结构不同）。
+            const extra = response.status !== 200 ? ` ${logProbeError(response.body)}` : '';
+            console.log(`[Ytm] 首页探针 v2 ${arm.label}：status=${response.status} len=${response.body.length} 单曲项=${hasItems ? '有' : '无'}${extra}`);
         } catch (error) {
-            console.log(`[Ytm] 首页探针 ${arm.label}：异常 ${error instanceof Error ? error.message : '未知原因'}`);
+            console.log(`[Ytm] 首页探针 v2 ${arm.label}：异常 ${error instanceof Error ? error.message : '未知原因'}`);
         }
     }
-    if (android && cachedVisitorData) {
-        const contextClient: Record<string, unknown> = {
-            clientName: android.name,
-            clientVersion: android.version,
-            hl: 'zh-CN',
-            gl: 'CN',
-            visitorData: cachedVisitorData
-        };
-        try {
-            const response = await httpPost(
-                `${BROWSE_URL}?key=${INNERTUBE_KEY}`,
-                JSON.stringify({ context: { client: contextClient }, browseId: 'FEmusic_home' }),
-                requestHeaders()
-            );
-            console.log(`[Ytm] 首页探针 ANDROID·会话·CN·缓存 visitorData：status=${response.status} len=${response.body.length}`);
-        } catch (error) {
-            console.log(`[Ytm] 首页探针 ANDROID·会话·CN·缓存 visitorData：异常 ${error instanceof Error ? error.message : '未知原因'}`);
-        }
-    } else {
-        console.log('[Ytm] 首页探针 ANDROID·会话·CN·缓存 visitorData：跳过（无缓存）');
-    }
-    console.log('[Ytm] 首页探针：完成');
+    console.log('[Ytm] 首页探针 v2：完成');
 }
 
 export async function fetchYtmDailyTracks(): Promise<Track[]> {

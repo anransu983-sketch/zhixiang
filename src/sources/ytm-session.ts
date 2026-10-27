@@ -178,7 +178,7 @@ function sha1Hex(text: string): string {
 // SAPISIDHASH（Folia 桥同款算法）：`SAPISIDHASH <unix秒>_<sha1("<unix秒> <SAPISID> https://www.youtube.com")>`。
 // cookie 里没有 SAPISID（或它的 __Secure- 形态）就回 null，请求只带 Cookie。
 // 签名现算现用，不记日志、不落盘。
-export function sapisidHash(cookie: string): string | null {
+export function sapisidHash(cookie: string, origin = 'https://www.youtube.com'): string | null {
     // 优先 plain SAPISID（SAPISIDHASH 规范的本名），再 fallback
     // __Secure-3PAPISID：旧逻辑取首个，顺序依赖，两值不同时可能取错。
     let sapisid: string | null = null;
@@ -200,7 +200,7 @@ export function sapisidHash(cookie: string): string | null {
         return null;
     }
     const seconds = Math.floor(Date.now() / 1000);
-    return `SAPISIDHASH ${seconds}_${sha1Hex(`${seconds} ${value} https://www.youtube.com`)}`;
+    return `SAPISIDHASH ${seconds}_${sha1Hex(`${seconds} ${value} ${origin}`)}`;
 }
 
 // 有会话时补 Cookie 与同源 UA；无会话时原样返回，不动匿名请求。
