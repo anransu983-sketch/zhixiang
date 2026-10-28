@@ -118,7 +118,7 @@ function qrFailureReason(error: unknown): string {
 // DOM 常驻、按 Tab 存 window.scrollY 恢复；上次 Tab 存在 localStorage。
 // 迷你播放条全局常驻，不跟 Tab 走，位置在 Tab 栏上方（CSS 里算）。
 
-type HomeTabId = 'local' | 'netease' | 'ytm' | 'me';
+type HomeTabId = 'local' | 'netease' | 'ytm' | 'bilibili' | 'me';
 
 interface TabPage {
     page: HTMLElement;
@@ -356,9 +356,11 @@ export function renderHome(): HTMLElement {
         }
         const source = SOURCES.find((item) => item.id === tabId);
         const definition = POSTER_SECTIONS.find((item) => item.key === tabId);
-        if (!source || !definition) {
+        if (!source) {
             throw new Error(`未知 Tab：${tabId}`);
         }
+        // 0.1.104：B 站页 v1 只有搜索，没有海报墙——海报模块改为可选，
+        // 没有 definition 的源直接跳过海报区，只留搜索区。
         const page = document.createElement('div');
         page.className = 'tab-page';
 
@@ -369,7 +371,9 @@ export function renderHome(): HTMLElement {
         head.appendChild(heading);
         page.appendChild(head);
 
-        page.appendChild(renderPosterModule(definition));
+        if (definition) {
+            page.appendChild(renderPosterModule(definition));
+        }
 
         if (tabId === 'local') {
             page.appendChild(renderMyImportsSection());
@@ -435,6 +439,7 @@ export function renderHome(): HTMLElement {
         { id: 'local', label: '本地' },
         { id: 'netease', label: '网易云' },
         { id: 'ytm', label: 'YTM' },
+        { id: 'bilibili', label: 'B站' },
         { id: 'me', label: '我的' }
     ];
     for (const def of TAB_DEFS) {
@@ -465,7 +470,9 @@ export function renderHome(): HTMLElement {
     // 初始 Tab：上次停留的页，没有则本地页；只挂载这一页，其余首次进入时再挂。
     const storedTab = localStorage.getItem('zx_home_tab_v1');
     const initialTab: HomeTabId =
-        storedTab === 'netease' || storedTab === 'ytm' || storedTab === 'me' ? storedTab : 'local';
+        storedTab === 'netease' || storedTab === 'ytm' || storedTab === 'bilibili' || storedTab === 'me'
+            ? storedTab
+            : 'local';
     switchTab(initialTab);
 
     return section;

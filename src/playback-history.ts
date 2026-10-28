@@ -32,6 +32,7 @@ export const SOURCE_NAMES: Record<SourceId, string> = {
     local: '本地',
     netease: '网易云',
     ytm: 'YTM',
+    bilibili: 'B站',
 };
 
 const KEY = 'zx_play_history_v1';
@@ -189,8 +190,8 @@ function emptyStats(): FootprintStats {
         activeDays: 0,
         topSongs: [],
         topArtists: [],
-        sourcePlays: { local: 0, netease: 0, ytm: 0 },
-        sourceMs: { local: 0, netease: 0, ytm: 0 },
+        sourcePlays: { local: 0, netease: 0, ytm: 0, bilibili: 0 },
+        sourceMs: { local: 0, netease: 0, ytm: 0, bilibili: 0 },
         wall: [],
         activeDaySet: new Set<string>(),
     };

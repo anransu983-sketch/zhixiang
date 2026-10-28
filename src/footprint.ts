@@ -281,7 +281,7 @@ function renderTopArtists(body: HTMLElement, stats: FootprintStats): void {
 
 function renderSources(body: HTMLElement, stats: FootprintStats): void {
     const wrap = section('来源分布');
-    const sources: SourceId[] = ['local', 'netease', 'ytm'];
+    const sources: SourceId[] = ['local', 'netease', 'ytm', 'bilibili'];
     let anySource = false;
     for (const source of sources) {
         const plays = stats.sourcePlays[source];

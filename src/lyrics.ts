@@ -653,6 +653,13 @@ export async function fetchLyrics(track: Track): Promise<LyricResult> {
     if (track.source === 'ytm') {
         return fetchYtmLyrics(track);
     }
+    if (track.source === 'bilibili') {
+        // 0.1.104：B 站源 v1 不接字幕轨，先复用本地那套联网补源
+        // （网易云搜＋LRCLIB，按歌名歌手时长匹配）；内嵌那步对 B 站曲
+        // 自动落空（路径缓存里没有 B 站 id），不影响。
+        const matched = await fetchLocalLyrics(track);
+        return matched ?? { lines: [], note: '这首歌暂无歌词。' };
+    }
     const prefix = 'netease:';
     if (!track.id.startsWith(prefix) || track.id.length === prefix.length) {
         return { lines: [], note: '这首歌暂无歌词。' };

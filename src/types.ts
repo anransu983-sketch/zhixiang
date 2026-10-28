@@ -1,6 +1,6 @@
 // 音源与曲目的共享类型：各音源实现与播放层都以此为准。
 
-export type SourceId = 'local' | 'netease' | 'ytm';
+export type SourceId = 'local' | 'netease' | 'ytm' | 'bilibili';
 
 export interface Track {
     id: string;
