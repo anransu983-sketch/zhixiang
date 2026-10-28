@@ -49,6 +49,42 @@ export function themeById(id: string): ThemeDef {
 
 const THEME_KEY = 'zx.theme.id';
 const PERF_KEY = 'zx.perf.mode';
+const ACCENT_KEY_PREFIX = 'zx.theme.accent.';
+const HEX_RE = /^#[0-9a-fA-F]{6}$/;
+
+/** 该主题用户自选的主色（无则 null）。每套主题各记一个。 */
+export function loadCustomAccent(id: string): string | null {
+    try {
+        const stored = localStorage.getItem(ACCENT_KEY_PREFIX + id);
+        return stored && HEX_RE.test(stored) ? stored : null;
+    } catch {
+        return null;
+    }
+}
+
+/** 该主题当前生效的主色：自选色优先，否则主题默认色。 */
+export function loadAccent(id: string): string {
+    return loadCustomAccent(id) ?? themeById(id).accent;
+}
+
+export function saveCustomAccent(id: string, hex: string): void {
+    if (!HEX_RE.test(hex)) {
+        return;
+    }
+    try {
+        localStorage.setItem(ACCENT_KEY_PREFIX + id, hex);
+    } catch {
+        // 写不进只影响下次打开的默认值。
+    }
+}
+
+export function clearCustomAccent(id: string): void {
+    try {
+        localStorage.removeItem(ACCENT_KEY_PREFIX + id);
+    } catch {
+        // 写不进只影响下次打开的默认值。
+    }
+}
 
 export function loadThemeId(): string {
     try {
@@ -66,7 +102,7 @@ export function applyTheme(id: string): ThemeDef {
     const theme = themeById(id);
     document.body.dataset.zxTheme = theme.id;
     document.body.style.setProperty('--theme-wallpaper', `url("${theme.wallpaper}")`);
-    document.body.style.setProperty('--theme-accent', theme.accent);
+    document.body.style.setProperty('--theme-accent', loadAccent(theme.id));
     try {
         localStorage.setItem(THEME_KEY, theme.id);
     } catch {

@@ -3317,6 +3317,91 @@ body[data-zx-theme] .mag-card {
     color: var(--theme-accent, var(--accent));
     flex-shrink: 0;
 }
+
+/* 主题配色取色面板：底部弹出，遮罩点空处等于取消。 */
+.zx-color-sheet-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+}
+.zx-color-sheet {
+    width: 100%;
+    max-width: 480px;
+    background: var(--surface-1);
+    border: 1px solid var(--hairline);
+    border-bottom: 0;
+    border-radius: 20px 20px 0 0;
+    padding: 20px 16px calc(20px + env(safe-area-inset-bottom));
+    box-sizing: border-box;
+}
+.zx-color-sheet-title {
+    font-size: 17px;
+    font-weight: 700;
+}
+.zx-color-sheet-preview {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 16px 0;
+}
+.zx-color-sheet-swatch {
+    width: 56px;
+    height: 56px;
+    flex: none;
+    padding: 0;
+    border: 2px solid rgba(255, 255, 255, 0.25);
+    border-radius: 50%;
+    background: none;
+    cursor: pointer;
+}
+.zx-color-sheet-swatch::-webkit-color-swatch-wrapper {
+    padding: 0;
+}
+.zx-color-sheet-swatch::-webkit-color-swatch {
+    border: 0;
+    border-radius: 50%;
+}
+.zx-color-sheet-hex {
+    color: var(--text-2);
+    font-size: 14px;
+}
+.zx-color-sheet-presets {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+}
+.zx-color-sheet-preset {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border: 2px solid rgba(255, 255, 255, 0.25);
+    border-radius: 50%;
+    cursor: pointer;
+}
+.zx-color-sheet-actions {
+    display: flex;
+    gap: 10px;
+}
+.zx-color-sheet-actions button {
+    flex: 1;
+    padding: 12px;
+    border: 1px solid var(--hairline);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.08);
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+.zx-color-sheet-actions .zx-color-sheet-confirm {
+    background: var(--theme-accent, var(--accent));
+    border-color: transparent;
+    color: #ffffff;
+}
 .zx-switch {
     width: 52px;
     height: 30px;

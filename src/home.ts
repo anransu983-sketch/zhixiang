@@ -14,7 +14,17 @@ import {
 import type { PosterSectionDefinition } from './posters';
 import { renderShelfLayer } from './shelf';
 import { clearLogs, copyPlainText, getLogEntries, getLogModules, getLogText, subscribeLogs, type LogEntry } from './logger';
-import { applyPerfMode, applyTheme, loadPerfMode, loadThemeId, THEMES } from './appearance';
+import {
+    applyPerfMode,
+    applyTheme,
+    clearCustomAccent,
+    loadAccent,
+    loadCustomAccent,
+    loadPerfMode,
+    loadThemeId,
+    saveCustomAccent,
+    THEMES,
+} from './appearance';
 import { loadVisualToggles, saveVisualToggles } from './visuals';
 import { SOURCES } from './sources/index';
 import { getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalNotice, localSource } from './sources/local';
@@ -1104,6 +1114,106 @@ function renderLoginArea(): HTMLElement {
     return area;
 }
 
+// 主题配色取色面板：点色块调系统取色器，预设点一下即预览；确定才存
+// 该主题的自选色，取消/点遮罩恢复打开前的主色，恢复默认色清掉自选。
+function openColorSheet(themeId: string, onDone: () => void): void {
+    const theme = THEMES.find((item) => item.id === themeId) ?? THEMES[0]!;
+    const previous = loadAccent(themeId);
+    let picked = previous;
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'zx-color-sheet-backdrop';
+    const sheet = document.createElement('div');
+    sheet.className = 'zx-color-sheet';
+    const close = (): void => {
+        backdrop.remove();
+    };
+
+    const title = document.createElement('div');
+    title.className = 'zx-color-sheet-title';
+    title.textContent = `主题配色 · ${theme.name}`;
+    sheet.appendChild(title);
+
+    const preview = document.createElement('div');
+    preview.className = 'zx-color-sheet-preview';
+    const input = document.createElement('input');
+    input.type = 'color';
+    input.className = 'zx-color-sheet-swatch';
+    input.value = previous;
+    const hexLabel = document.createElement('span');
+    hexLabel.className = 'zx-color-sheet-hex';
+    hexLabel.textContent = previous;
+    const hint = document.createElement('span');
+    hint.className = 'zx-color-sheet-hex';
+    hint.textContent = '点色块打开系统取色器';
+    preview.append(input, hexLabel, hint);
+    sheet.appendChild(preview);
+
+    const applyPreview = (hex: string): void => {
+        picked = hex;
+        hexLabel.textContent = hex;
+        document.body.style.setProperty('--theme-accent', hex);
+    };
+    input.addEventListener('input', () => {
+        applyPreview(input.value);
+    });
+
+    const presets = document.createElement('div');
+    presets.className = 'zx-color-sheet-presets';
+    for (const hex of ['#EC407A', '#FCEE0A', '#FF4D8D', '#22D3EE', '#8B5CF6', '#34D399', '#F97316', '#F43F5E']) {
+        const dot = document.createElement('button');
+        dot.type = 'button';
+        dot.className = 'zx-color-sheet-preset';
+        dot.style.background = hex;
+        dot.setAttribute('aria-label', hex);
+        dot.addEventListener('click', () => {
+            input.value = hex;
+            applyPreview(hex);
+        });
+        presets.appendChild(dot);
+    }
+    sheet.appendChild(presets);
+
+    const actions = document.createElement('div');
+    actions.className = 'zx-color-sheet-actions';
+    const confirm = document.createElement('button');
+    confirm.type = 'button';
+    confirm.className = 'zx-color-sheet-confirm';
+    confirm.textContent = '确定';
+    confirm.addEventListener('click', () => {
+        saveCustomAccent(themeId, picked);
+        onDone();
+        close();
+    });
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.textContent = '恢复默认色';
+    reset.addEventListener('click', () => {
+        clearCustomAccent(themeId);
+        document.body.style.setProperty('--theme-accent', theme.accent);
+        onDone();
+        close();
+    });
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = '取消';
+    cancel.addEventListener('click', () => {
+        document.body.style.setProperty('--theme-accent', previous);
+        close();
+    });
+    actions.append(confirm, reset, cancel);
+    sheet.appendChild(actions);
+
+    backdrop.addEventListener('click', (event) => {
+        if (event.target === backdrop) {
+            document.body.style.setProperty('--theme-accent', previous);
+            close();
+        }
+    });
+    backdrop.appendChild(sheet);
+    document.body.appendChild(backdrop);
+}
+
 // 0.1.86 主题衣橱改成收起模块（同听歌钥匙）：外面只露模块头（标题＋副标题＋
 // 当前主题＋箭头），点标题展开后三行主题与主题配色行才在模块里面出现。默认收起。
 function renderThemeWardrobe(): HTMLElement {
@@ -1138,6 +1248,8 @@ function renderThemeWardrobe(): HTMLElement {
     const checks = new Map<string, HTMLElement>();
     const hexText = document.createElement('span');
     hexText.className = 'zx-theme-hex';
+    const customMark = document.createElement('span');
+    customMark.className = 'zx-theme-hex';
     const refresh = (): void => {
         const current = loadThemeId();
         for (const [id, check] of checks) {
@@ -1145,7 +1257,8 @@ function renderThemeWardrobe(): HTMLElement {
             check.parentElement?.classList.toggle('is-active', id === current);
         }
         const theme = THEMES.find((item) => item.id === current) ?? THEMES[0]!;
-        hexText.textContent = theme.accent;
+        hexText.textContent = loadAccent(current);
+        customMark.textContent = loadCustomAccent(current) ? ' · 已自定义' : '';
         summary.textContent = `当前：${theme.name}`;
     };
     for (const theme of THEMES) {
@@ -1180,13 +1293,16 @@ function renderThemeWardrobe(): HTMLElement {
     const colorName = document.createElement('b');
     colorName.textContent = '主题配色';
     const colorDesc = document.createElement('p');
-    colorDesc.append(document.createTextNode('当前主题色：'), hexText);
+    colorDesc.append(document.createTextNode('当前主题色：'), hexText, customMark);
     colorText.append(colorName, colorDesc);
     colorRow.appendChild(colorText);
     const palette = document.createElement('span');
     palette.className = 'zx-theme-palette';
     palette.textContent = '🎨';
     colorRow.appendChild(palette);
+    colorRow.addEventListener('click', () => {
+        openColorSheet(loadThemeId(), refresh);
+    });
     body.appendChild(colorRow);
     head.addEventListener('click', () => {
         body.hidden = !body.hidden;
