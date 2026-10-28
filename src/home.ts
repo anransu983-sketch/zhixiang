@@ -1114,12 +1114,93 @@ function renderLoginArea(): HTMLElement {
     return area;
 }
 
-// 主题配色取色面板：点色块调系统取色器，预设点一下即预览；确定才存
-// 该主题的自选色，取消/点遮罩恢复打开前的主色，恢复默认色清掉自选。
+// 取色面板 HSV 换算（滑杆式取色器用，色值与滑杆双向同步）。
+function hsvToRgb(h: number, s: number, v: number): [number, number, number] {
+    const hue = ((h % 360) + 360) % 360;
+    const c = (v / 100) * (s / 100);
+    const x = c * (1 - Math.abs(((hue / 60) % 2) - 1));
+    const m = v / 100 - c;
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    if (hue < 60) {
+        r = c;
+        g = x;
+    } else if (hue < 120) {
+        r = x;
+        g = c;
+    } else if (hue < 180) {
+        g = c;
+        b = x;
+    } else if (hue < 240) {
+        g = x;
+        b = c;
+    } else if (hue < 300) {
+        r = x;
+        b = c;
+    } else {
+        r = c;
+        b = x;
+    }
+    return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
+}
+
+function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
+    const rn = r / 255;
+    const gn = g / 255;
+    const bn = b / 255;
+    const max = Math.max(rn, gn, bn);
+    const min = Math.min(rn, gn, bn);
+    const d = max - min;
+    let h = 0;
+    if (d !== 0) {
+        if (max === rn) {
+            h = 60 * (((gn - bn) / d) % 6);
+        } else if (max === gn) {
+            h = 60 * ((bn - rn) / d + 2);
+        } else {
+            h = 60 * ((rn - gn) / d + 4);
+        }
+    }
+    if (h < 0) {
+        h += 360;
+    }
+    const s = max === 0 ? 0 : (d / max) * 100;
+    return [Math.round(h), Math.round(s), Math.round(max * 100)];
+}
+
+function hexByte(n: number): string {
+    return Math.max(0, Math.min(255, Math.round(n)))
+        .toString(16)
+        .padStart(2, '0')
+        .toUpperCase();
+}
+
+function parseHexColor(text: string): { h: number; s: number; v: number; a: number } | null {
+    const m = /^#?([0-9a-fA-F]{6})([0-9a-fA-F]{2})?$/.exec(text.trim());
+    if (!m) {
+        return null;
+    }
+    const part = m[1]!;
+    const r = parseInt(part.slice(0, 2), 16);
+    const g = parseInt(part.slice(2, 4), 16);
+    const b = parseInt(part.slice(4, 6), 16);
+    const a = m[2] ? Math.round((parseInt(m[2], 16) / 255) * 100) : 100;
+    const [h, s, v] = rgbToHsv(r, g, b);
+    return { h, s, v, a };
+}
+
+// 主题配色取色面板（滑杆式）：色相 / 饱和度 / 明度 / 透明度四条滑杆＋
+// 色值输入框双向同步，顶部 ✕ 取消、✓ 确定；确定才存该主题的自选色
+// （等于主题默认色时不存），取消/点遮罩恢复打开前的主色，恢复默认色清掉自选。
 function openColorSheet(themeId: string, onDone: () => void): void {
     const theme = THEMES.find((item) => item.id === themeId) ?? THEMES[0]!;
     const previous = loadAccent(themeId);
-    let picked = previous;
+    const start = parseHexColor(previous) ?? { h: 330, s: 100, v: 100, a: 100 };
+    let h = start.h;
+    let s = start.s;
+    let v = start.v;
+    let a = start.a;
 
     const backdrop = document.createElement('div');
     backdrop.className = 'zx-color-sheet-backdrop';
@@ -1128,65 +1209,124 @@ function openColorSheet(themeId: string, onDone: () => void): void {
     const close = (): void => {
         backdrop.remove();
     };
+    const restorePrevious = (): void => {
+        document.body.style.setProperty('--theme-accent', previous);
+    };
 
-    const title = document.createElement('div');
+    const top = document.createElement('div');
+    top.className = 'zx-color-sheet-top';
+    const cancelTop = document.createElement('button');
+    cancelTop.type = 'button';
+    cancelTop.className = 'zx-color-sheet-top-btn';
+    cancelTop.textContent = '✕';
+    cancelTop.addEventListener('click', () => {
+        restorePrevious();
+        close();
+    });
+    const title = document.createElement('span');
     title.className = 'zx-color-sheet-title';
-    title.textContent = `主题配色 · ${theme.name}`;
-    sheet.appendChild(title);
+    title.textContent = '选择主题色';
+    const confirmTop = document.createElement('button');
+    confirmTop.type = 'button';
+    confirmTop.className = 'zx-color-sheet-top-btn';
+    confirmTop.textContent = '✓';
+    top.append(cancelTop, title, confirmTop);
+    sheet.appendChild(top);
 
     const preview = document.createElement('div');
     preview.className = 'zx-color-sheet-preview';
-    const input = document.createElement('input');
-    input.type = 'color';
-    input.className = 'zx-color-sheet-swatch';
-    input.value = previous;
-    const hexLabel = document.createElement('span');
-    hexLabel.className = 'zx-color-sheet-hex';
-    hexLabel.textContent = previous;
-    const hint = document.createElement('span');
-    hint.className = 'zx-color-sheet-hex';
-    hint.textContent = '点色块打开系统取色器';
-    preview.append(input, hexLabel, hint);
     sheet.appendChild(preview);
 
-    const applyPreview = (hex: string): void => {
-        picked = hex;
-        hexLabel.textContent = hex;
-        document.body.style.setProperty('--theme-accent', hex);
+    const slider = (cls: string, max: number, value: number): HTMLInputElement => {
+        const input = document.createElement('input');
+        input.type = 'range';
+        input.className = `zx-color-slider ${cls}`;
+        input.min = '0';
+        input.max = String(max);
+        input.value = String(value);
+        return input;
     };
-    input.addEventListener('input', () => {
-        applyPreview(input.value);
-    });
+    const hueSlider = slider('zx-color-slider-hue', 360, h);
+    const satSlider = slider('zx-color-slider-sat', 100, s);
+    const valSlider = slider('zx-color-slider-val', 100, v);
+    const alphaSlider = slider('zx-color-slider-alpha', 100, a);
 
-    const presets = document.createElement('div');
-    presets.className = 'zx-color-sheet-presets';
-    for (const hex of ['#EC407A', '#FCEE0A', '#FF4D8D', '#22D3EE', '#8B5CF6', '#34D399', '#F97316', '#F43F5E']) {
-        const dot = document.createElement('button');
-        dot.type = 'button';
-        dot.className = 'zx-color-sheet-preset';
-        dot.style.background = hex;
-        dot.setAttribute('aria-label', hex);
-        dot.addEventListener('click', () => {
-            input.value = hex;
-            applyPreview(hex);
+    const rgb = (hh: number, ss: number, vv: number): string => {
+        const [r, g, b] = hsvToRgb(hh, ss, vv);
+        return `rgb(${r}, ${g}, ${b})`;
+    };
+    const currentHex = (): string => {
+        const [r, g, b] = hsvToRgb(h, s, v);
+        const base = `#${hexByte(r)}${hexByte(g)}${hexByte(b)}`;
+        return a >= 100 ? base : base + hexByte((a / 100) * 255);
+    };
+    const hexInput = document.createElement('input');
+    hexInput.type = 'text';
+    hexInput.className = 'zx-color-sheet-hex-input';
+    hexInput.setAttribute('aria-label', '主题色代码');
+    const hexWrap = document.createElement('div');
+    hexWrap.className = 'zx-color-sheet-hex-wrap';
+    const hexLabel = document.createElement('span');
+    hexLabel.className = 'zx-color-sheet-hex-label';
+    hexLabel.textContent = '主题色代码';
+    hexWrap.append(hexLabel, hexInput);
+
+    const sync = (previewOnly: boolean): void => {
+        const [r, g, b] = hsvToRgb(h, s, v);
+        const alpha = a / 100;
+        preview.style.background =
+            `linear-gradient(rgba(${r}, ${g}, ${b}, ${alpha}), rgba(${r}, ${g}, ${b}, ${alpha})), ` +
+            'repeating-conic-gradient(#c8c8c8 0% 25%, #ffffff 0% 50%) 0 0 / 16px 16px';
+        satSlider.style.background = `linear-gradient(90deg, ${rgb(h, 0, v)}, ${rgb(h, 100, v)})`;
+        valSlider.style.background = `linear-gradient(90deg, #000000, ${rgb(h, s, 100)})`;
+        alphaSlider.style.background =
+            `linear-gradient(90deg, rgba(${r}, ${g}, ${b}, 0), rgba(${r}, ${g}, ${b}, 1)), ` +
+            'repeating-conic-gradient(#c8c8c8 0% 25%, #ffffff 0% 50%) 0 0 / 16px 16px';
+        const hex = currentHex();
+        hexInput.value = hex;
+        if (!previewOnly) {
+            document.body.style.setProperty('--theme-accent', hex);
+        }
+    };
+    const bind = (el: HTMLInputElement, set: (n: number) => void): void => {
+        el.addEventListener('input', () => {
+            set(Number(el.value));
+            sync(false);
         });
-        presets.appendChild(dot);
-    }
-    sheet.appendChild(presets);
-
-    const actions = document.createElement('div');
-    actions.className = 'zx-color-sheet-actions';
-    const confirm = document.createElement('button');
-    confirm.type = 'button';
-    confirm.className = 'zx-color-sheet-confirm';
-    confirm.textContent = '确定';
-    confirm.addEventListener('click', () => {
-        saveCustomAccent(themeId, picked);
-        onDone();
-        close();
+    };
+    bind(hueSlider, (n) => {
+        h = n;
     });
+    bind(satSlider, (n) => {
+        s = n;
+    });
+    bind(valSlider, (n) => {
+        v = n;
+    });
+    bind(alphaSlider, (n) => {
+        a = n;
+    });
+    hexInput.addEventListener('change', () => {
+        const parsed = parseHexColor(hexInput.value);
+        if (!parsed) {
+            hexInput.value = currentHex();
+            return;
+        }
+        h = parsed.h;
+        s = parsed.s;
+        v = parsed.v;
+        a = parsed.a;
+        hueSlider.value = String(h);
+        satSlider.value = String(s);
+        valSlider.value = String(v);
+        alphaSlider.value = String(a);
+        sync(false);
+    });
+    sheet.append(hueSlider, satSlider, valSlider, alphaSlider, hexWrap);
+
     const reset = document.createElement('button');
     reset.type = 'button';
+    reset.className = 'zx-color-sheet-reset';
     reset.textContent = '恢复默认色';
     reset.addEventListener('click', () => {
         clearCustomAccent(themeId);
@@ -1194,24 +1334,27 @@ function openColorSheet(themeId: string, onDone: () => void): void {
         onDone();
         close();
     });
-    const cancel = document.createElement('button');
-    cancel.type = 'button';
-    cancel.textContent = '取消';
-    cancel.addEventListener('click', () => {
-        document.body.style.setProperty('--theme-accent', previous);
+    sheet.appendChild(reset);
+
+    confirmTop.addEventListener('click', () => {
+        const hex = currentHex();
+        if (hex.toUpperCase() === theme.accent.toUpperCase()) {
+            clearCustomAccent(themeId);
+        } else {
+            saveCustomAccent(themeId, hex);
+        }
+        onDone();
         close();
     });
-    actions.append(confirm, reset, cancel);
-    sheet.appendChild(actions);
-
     backdrop.addEventListener('click', (event) => {
         if (event.target === backdrop) {
-            document.body.style.setProperty('--theme-accent', previous);
+            restorePrevious();
             close();
         }
     });
     backdrop.appendChild(sheet);
     document.body.appendChild(backdrop);
+    sync(true);
 }
 
 // 0.1.86 主题衣橱改成收起模块（同听歌钥匙）：外面只露模块头（标题＋副标题＋

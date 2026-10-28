@@ -3318,7 +3318,7 @@ body[data-zx-theme] .mag-card {
     flex-shrink: 0;
 }
 
-/* 主题配色取色面板：底部弹出，遮罩点空处等于取消。 */
+/* 主题配色取色面板：底部弹出，滑杆式（色相/饱和度/明度/透明度）＋色值输入。 */
 .zx-color-sheet-backdrop {
     position: fixed;
     inset: 0;
@@ -3335,60 +3335,80 @@ body[data-zx-theme] .mag-card {
     border: 1px solid var(--hairline);
     border-bottom: 0;
     border-radius: 20px 20px 0 0;
-    padding: 20px 16px calc(20px + env(safe-area-inset-bottom));
+    padding: 16px 16px calc(20px + env(safe-area-inset-bottom));
     box-sizing: border-box;
+}
+.zx-color-sheet-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+}
+.zx-color-sheet-top-btn {
+    padding: 8px;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
 }
 .zx-color-sheet-title {
     font-size: 17px;
     font-weight: 700;
 }
 .zx-color-sheet-preview {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin: 16px 0;
-}
-.zx-color-sheet-swatch {
-    width: 56px;
-    height: 56px;
-    flex: none;
-    padding: 0;
-    border: 2px solid rgba(255, 255, 255, 0.25);
-    border-radius: 50%;
-    background: none;
-    cursor: pointer;
-}
-.zx-color-sheet-swatch::-webkit-color-swatch-wrapper {
-    padding: 0;
-}
-.zx-color-sheet-swatch::-webkit-color-swatch {
-    border: 0;
-    border-radius: 50%;
-}
-.zx-color-sheet-hex {
-    color: var(--text-2);
-    font-size: 14px;
-}
-.zx-color-sheet-presets {
-    display: flex;
-    gap: 10px;
-    flex-wrap: wrap;
+    height: 44px;
+    border-radius: 999px;
     margin-bottom: 16px;
 }
-.zx-color-sheet-preset {
-    width: 36px;
-    height: 36px;
-    padding: 0;
-    border: 2px solid rgba(255, 255, 255, 0.25);
-    border-radius: 50%;
+.zx-color-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 30px;
+    border-radius: 999px;
+    outline: none;
+    margin: 0 0 12px;
     cursor: pointer;
 }
-.zx-color-sheet-actions {
-    display: flex;
-    gap: 10px;
+.zx-color-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: #ffffff;
+    border: 2px solid rgba(0, 0, 0, 0.15);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
-.zx-color-sheet-actions button {
-    flex: 1;
+.zx-color-slider-hue {
+    background: linear-gradient(90deg, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000);
+}
+.zx-color-sheet-hex-wrap {
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 12px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+}
+.zx-color-sheet-hex-label {
+    display: block;
+    color: var(--text-2);
+    font-size: 13px;
+    margin-bottom: 4px;
+}
+.zx-color-sheet-hex-input {
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 17px;
+    outline: none;
+    box-sizing: border-box;
+}
+.zx-color-sheet-reset {
+    width: 100%;
     padding: 12px;
     border: 1px solid var(--hairline);
     border-radius: 12px;
@@ -3396,11 +3416,6 @@ body[data-zx-theme] .mag-card {
     color: inherit;
     font: inherit;
     cursor: pointer;
-}
-.zx-color-sheet-actions .zx-color-sheet-confirm {
-    background: var(--theme-accent, var(--accent));
-    border-color: transparent;
-    color: #ffffff;
 }
 .zx-switch {
     width: 52px;

@@ -50,7 +50,7 @@ export function themeById(id: string): ThemeDef {
 const THEME_KEY = 'zx.theme.id';
 const PERF_KEY = 'zx.perf.mode';
 const ACCENT_KEY_PREFIX = 'zx.theme.accent.';
-const HEX_RE = /^#[0-9a-fA-F]{6}$/;
+const HEX_RE = /^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/;
 
 /** 该主题用户自选的主色（无则 null）。每套主题各记一个。 */
 export function loadCustomAccent(id: string): string | null {
