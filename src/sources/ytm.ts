@@ -903,23 +903,26 @@ function playlistVideoToTrack(raw: YtmPlaylistVideo): Track | null {
 }
 
 async function browseYtm(browseId: string): Promise<unknown> {
-    // 榜单页 browse 的两条铁律（见文件头沙箱实测）：
+    // 榜单页 browse 的铁律（见文件头沙箱实测）：
     // 1) context.client 里绝不带 visitorData 字段——带空串回 404，不带回 200。
     //    所以“先搜一次拿 visitorData 再 browse”对榜单无效；visitorData 只对
     //    取链（player）有用，那边已有搜索缓存兜底。
-    // 2) WEB_REMIX 榜单 browse 回 400，不是回落选项；回落只换移动端 client。
-    // 真机 ANDROID browse 失败时自动换 IOS 再试一次（同款真实 client，不编数据）；
+    // 2) 0.1.102 前回落只换移动端 client；但 2026-10-29 真机上移动端榜单
+    //    全灭（热碟 ANDROID→IOS，IOS 回 500；探针里 ANDROID_MUSIC 7.55.52
+    //    榜单对照臂回 404），而同机 WEB_REMIX gl=US 会话首页能通
+    //    （今日星荐 20 首）。所以移动端全灭后加一臂 WEB_REMIX gl=US 会话
+    //    （Origin/Referer 头，context 里仍不带 visitorData）；旧“WEB_REMIX
+    //    榜单回 400”是 2026-10-25 无登录沙箱结论，不再作数。
     // 成功响应自带的 visitorData 顺手缓存，供后续取链用。
     const clients = PLAYER_CLIENTS.filter(
         (client) => client.name === 'ANDROID' || client.name === 'IOS'
     );
-    // 回落链上最后一次失败的原因：定位用，不再只抛通用话术。
-    let lastStatus: number | null = null;
-    let lastNetwork = false;
-    let lastTimeout = false;
-    let lastParse = false;
-    let lastTooLarge = false;
-    let lastBody = '';
+    interface BrowseAttempt {
+        label: string;
+        contextClient: Record<string, unknown>;
+        headers: Record<string, string>;
+    }
+    const attempts: BrowseAttempt[] = [];
     for (const client of clients) {
         const contextClient: Record<string, unknown> = {
             clientName: client.name,
@@ -939,15 +942,40 @@ async function browseYtm(browseId: string): Promise<unknown> {
         if (client.osVersion) {
             contextClient.osVersion = client.osVersion;
         }
+        attempts.push({ label: client.name, contextClient, headers: requestHeaders() });
+    }
+    attempts.push({
+        label: 'WEB_REMIX',
+        contextClient: {
+            clientName: SEARCH_CLIENT.name,
+            clientVersion: SEARCH_CLIENT.version,
+            hl: 'zh-CN',
+            gl: 'US'
+        },
+        headers: {
+            ...requestHeaders(),
+            Origin: 'https://music.youtube.com',
+            Referer: 'https://music.youtube.com',
+            'X-Origin': 'https://music.youtube.com'
+        }
+    });
+    // 回落链上各臂失败的原因：定位用，不再只抛通用话术。
+    const statuses: string[] = [];
+    let lastNetwork = false;
+    let lastTimeout = false;
+    let lastParse = false;
+    let lastTooLarge = false;
+    let lastBody = '';
+    for (const attempt of attempts) {
         const body = JSON.stringify({
-            context: { client: contextClient },
+            context: { client: attempt.contextClient },
             browseId
         });
         lastBody = '';
         try {
-            const response = await httpPost(`${BROWSE_URL}?key=${INNERTUBE_KEY}`, body, requestHeaders());
+            const response = await httpPost(`${BROWSE_URL}?key=${INNERTUBE_KEY}`, body, attempt.headers);
             if (response.status !== 200) {
-                lastStatus = response.status;
+                statuses.push(`${attempt.label} ${response.status}`);
                 continue;
             }
             lastBody = response.body;
@@ -973,6 +1001,9 @@ async function browseYtm(browseId: string): Promise<unknown> {
             continue;
         }
     }
+    if (statuses.length > 0) {
+        throw new Error(`YTM 榜单加载失败（${statuses.join('，')}）`);
+    }
     if (lastTimeout) {
         throw new Error('YTM 榜单加载失败（请求超时）');
     }
@@ -981,9 +1012,6 @@ async function browseYtm(browseId: string): Promise<unknown> {
     }
     if (lastTooLarge) {
         throw new Error('YTM 榜单加载失败（响应过大，超过上限）');
-    }
-    if (lastStatus !== null) {
-        throw new Error(`YTM 榜单加载失败（HTTP ${lastStatus}）`);
     }
     if (lastParse) {
         const detail = `YTM 榜单加载失败（返回异常：${bodySnippet(lastBody)}）`;
