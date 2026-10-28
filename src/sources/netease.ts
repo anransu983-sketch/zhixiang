@@ -359,17 +359,22 @@ export async function fetchNeteaseChartPosters(): Promise<Poster[]> {
             const tracks = (songs as NeteaseChartSong[])
                 .slice(0, CHART_TRACK_LIMIT)
                 .map(chartSongToTrack);
+            // 0.1.90：榜单卡片封面改用榜内歌曲的专辑封面（取前 20 首里第一张
+            // 有图的），不再用歌单那张渐变底＋白字图；榜内全无图时才回落歌单封面。
+            const trackCover = tracks.find((track) => track.coverUrl)?.coverUrl;
             posters.push({
                 id: `netease-chart:${playlistId}`,
                 title:
                     typeof result?.name === 'string' && result.name
                         ? result.name
                         : '网易云榜单',
-                coverUrl: toHttpsCover(
-                    typeof result?.coverImgUrl === 'string' && result.coverImgUrl
-                        ? result.coverImgUrl
-                        : undefined
-                ),
+                coverUrl:
+                    trackCover ??
+                    toHttpsCover(
+                        typeof result?.coverImgUrl === 'string' && result.coverImgUrl
+                            ? result.coverImgUrl
+                            : undefined
+                    ),
                 source: 'netease',
                 tracks
             });
