@@ -393,6 +393,15 @@ body {
     color: var(--accent);
 }
 
+/* 0.1.87 我的导入行内文本（勾选行与列表行共用）：占满剩余宽度，长标题截断。 */
+.track-row-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .track-meta {
     margin-top: 2px;
     color: var(--text-2);

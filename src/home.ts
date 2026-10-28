@@ -17,7 +17,8 @@ import { clearLogs, copyPlainText, getLogEntries, getLogModules, getLogText, sub
 import { applyPerfMode, applyTheme, loadPerfMode, loadThemeId, THEMES } from './appearance';
 import { loadVisualToggles, saveVisualToggles } from './visuals';
 import { SOURCES } from './sources/index';
-import { getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalNotice } from './sources/local';
+import { getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalNotice, localSource } from './sources/local';
+import { addMyImportIds, loadMyImportIds, removeMyImportId } from './my-imports';
 import { fetchNeteaseDailySongs } from './sources/netease';
 import { fetchYtmDailyTracks, probeYtmHome } from './sources/ytm';
 import {
@@ -349,6 +350,10 @@ export function renderHome(): HTMLElement {
         page.appendChild(head);
 
         page.appendChild(renderPosterModule(definition));
+
+        if (tabId === 'local') {
+            page.appendChild(renderMyImportsSection());
+        }
 
         if (tabId === 'netease') {
             page.appendChild(renderNeteaseDailySection());
@@ -2221,6 +2226,245 @@ function renderDailySection(
         openPageButton.disabled = false;
     })();
 
+    return section;
+}
+
+// 0.1.87 我的导入：本地页在全量扫描之外另建的分组。用户从扫描结果里勾选
+// 歌曲导进来，分组只显示自己挑的；删除只删芷湘的库记录，文件不动，可重新导入。
+function renderMyImportsSection(): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'daily-section';
+
+    const head = document.createElement('div');
+    head.className = 'daily-head';
+    const heading = document.createElement('h2');
+    heading.textContent = '我的导入';
+    head.appendChild(heading);
+    const sub = document.createElement('span');
+    sub.className = 'daily-sub';
+    sub.textContent = '自己挑的歌 · 删除只删库记录不删文件';
+    head.appendChild(sub);
+    section.appendChild(head);
+
+    const importButton = document.createElement('button');
+    importButton.type = 'button';
+    importButton.className = 'login-btn';
+    importButton.textContent = '导入歌曲';
+    section.appendChild(importButton);
+
+    const playAll = document.createElement('button');
+    playAll.type = 'button';
+    playAll.className = 'login-btn';
+    playAll.textContent = '▶ 播放全部';
+    playAll.disabled = true;
+    section.appendChild(playAll);
+
+    const openPageButton = document.createElement('button');
+    openPageButton.type = 'button';
+    openPageButton.className = 'login-btn';
+    openPageButton.textContent = '打开列表 ›';
+    openPageButton.disabled = true;
+    section.appendChild(openPageButton);
+
+    const notice = document.createElement('p');
+    notice.className = 'source-notice';
+    notice.textContent = '正在加载…';
+    section.appendChild(notice);
+
+    let tracks: Track[] = [];
+    const resolve = async (): Promise<Track[]> => {
+        const ids = loadMyImportIds();
+        if (ids.length === 0) {
+            return [];
+        }
+        const scanned = await localSource.search('');
+        const byId = new Map(scanned.map((track) => [track.id, track]));
+        const resolved: Track[] = [];
+        for (const id of ids) {
+            const track = byId.get(id);
+            if (track) {
+                resolved.push(track);
+            }
+        }
+        return resolved;
+    };
+    const refresh = async (): Promise<void> => {
+        try {
+            tracks = await resolve();
+        } catch {
+            notice.textContent = '我的导入暂时加载不出来，请稍后再试';
+            playAll.disabled = true;
+            openPageButton.disabled = true;
+            return;
+        }
+        if (tracks.length === 0) {
+            notice.textContent = '还没有导入的歌，点导入歌曲从扫描结果里挑';
+            playAll.disabled = true;
+            openPageButton.disabled = true;
+            return;
+        }
+        notice.textContent = `共 ${tracks.length} 首`;
+        playAll.disabled = false;
+        openPageButton.disabled = false;
+    };
+    const openPicker = (): void => {
+        const page = document.createElement('div');
+        page.className = 'daily-page';
+        const pageHead = document.createElement('div');
+        pageHead.className = 'daily-page-head';
+        const back = document.createElement('button');
+        back.type = 'button';
+        back.className = 'daily-page-back';
+        back.textContent = '返回';
+        back.addEventListener('click', () => {
+            page.remove();
+        });
+        pageHead.appendChild(back);
+        const pageTitle = document.createElement('h2');
+        pageTitle.textContent = '导入歌曲';
+        pageHead.appendChild(pageTitle);
+        page.appendChild(pageHead);
+        const pageSub = document.createElement('p');
+        pageSub.className = 'daily-page-sub';
+        pageSub.textContent = '从扫描结果里勾选，导入到我的导入';
+        page.appendChild(pageSub);
+        const confirmButton = document.createElement('button');
+        confirmButton.type = 'button';
+        confirmButton.className = 'login-btn';
+        confirmButton.textContent = '确认导入';
+        confirmButton.disabled = true;
+        page.appendChild(confirmButton);
+        const pageNotice = document.createElement('p');
+        pageNotice.className = 'source-notice';
+        pageNotice.textContent = '正在扫描本地歌曲…';
+        page.appendChild(pageNotice);
+        const trackList = document.createElement('ul');
+        trackList.className = 'track-list';
+        page.appendChild(trackList);
+        document.body.appendChild(page);
+        void (async () => {
+            let scanned: Track[];
+            try {
+                scanned = await localSource.search('');
+            } catch {
+                pageNotice.textContent = '扫描失败，请确认已授予读取音频文件的权限后重试';
+                return;
+            }
+            if (scanned.length === 0) {
+                pageNotice.textContent = '本地还没有扫描到歌曲';
+                return;
+            }
+            pageNotice.textContent = `共 ${scanned.length} 首`;
+            const imported = new Set(loadMyImportIds());
+            const selected = new Set<string>();
+            const updateConfirm = (): void => {
+                confirmButton.disabled = selected.size === 0;
+                confirmButton.textContent =
+                    selected.size === 0 ? '确认导入' : `确认导入（${selected.size} 首）`;
+            };
+            for (const track of scanned) {
+                const row = document.createElement('li');
+                row.className = 'track-row';
+                const box = document.createElement('input');
+                box.type = 'checkbox';
+                box.checked = imported.has(track.id);
+                box.disabled = imported.has(track.id);
+                box.addEventListener('change', () => {
+                    if (box.checked) {
+                        selected.add(track.id);
+                    } else {
+                        selected.delete(track.id);
+                    }
+                    updateConfirm();
+                });
+                const text = document.createElement('span');
+                text.className = 'track-row-text';
+                text.textContent = imported.has(track.id)
+                    ? `${track.title} — ${track.artist}（已导入）`
+                    : `${track.title} — ${track.artist}`;
+                row.append(box, text);
+                trackList.appendChild(row);
+            }
+            confirmButton.addEventListener('click', () => {
+                addMyImportIds([...selected]);
+                page.remove();
+                void refresh();
+            });
+        })();
+    };
+    const openListPage = (): void => {
+        if (tracks.length === 0) {
+            return;
+        }
+        const page = document.createElement('div');
+        page.className = 'daily-page';
+        const pageHead = document.createElement('div');
+        pageHead.className = 'daily-page-head';
+        const back = document.createElement('button');
+        back.type = 'button';
+        back.className = 'daily-page-back';
+        back.textContent = '返回';
+        back.addEventListener('click', () => {
+            page.remove();
+        });
+        pageHead.appendChild(back);
+        const pageTitle = document.createElement('h2');
+        pageTitle.textContent = '我的导入';
+        pageHead.appendChild(pageTitle);
+        page.appendChild(pageHead);
+        const pagePlayAll = document.createElement('button');
+        pagePlayAll.type = 'button';
+        pagePlayAll.className = 'login-btn';
+        pagePlayAll.textContent = '▶ 播放全部';
+        pagePlayAll.addEventListener('click', () => {
+            void playQueue(tracks, 0);
+        });
+        page.appendChild(pagePlayAll);
+        const pageNotice = document.createElement('p');
+        pageNotice.className = 'source-notice';
+        pageNotice.textContent = `共 ${tracks.length} 首`;
+        page.appendChild(pageNotice);
+        const trackList = document.createElement('ul');
+        trackList.className = 'track-list';
+        page.appendChild(trackList);
+        const renderList = (): void => {
+            trackList.replaceChildren();
+            pageNotice.textContent = `共 ${tracks.length} 首`;
+            tracks.forEach((track, index) => {
+                const row = document.createElement('li');
+                row.className = 'track-row';
+                const text = document.createElement('span');
+                text.className = 'track-row-text';
+                text.textContent = `${track.title} — ${track.artist}`;
+                text.addEventListener('click', () => {
+                    void playQueue(tracks, index);
+                });
+                const del = document.createElement('button');
+                del.type = 'button';
+                del.className = 'login-btn';
+                del.textContent = '✕ 删除';
+                del.addEventListener('click', () => {
+                    // 只删芷湘库记录，文件不动；删完列表与卡片计数同步刷新。
+                    removeMyImportId(track.id);
+                    tracks = tracks.filter((item) => item.id !== track.id);
+                    renderList();
+                    void refresh();
+                });
+                row.append(text, del);
+                trackList.appendChild(row);
+            });
+        };
+        renderList();
+        document.body.appendChild(page);
+    };
+    importButton.addEventListener('click', openPicker);
+    playAll.addEventListener('click', () => {
+        if (tracks.length > 0) {
+            void playQueue(tracks, 0);
+        }
+    });
+    openPageButton.addEventListener('click', openListPage);
+    void refresh();
     return section;
 }
 
