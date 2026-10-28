@@ -1190,6 +1190,60 @@ function parseHexColor(text: string): { h: number; s: number; v: number; a: numb
     return { h, s, v, a };
 }
 
+// 色名提示：按色相/饱和度/明度给一句中文色名（近似称呼，非标准色卡）。
+function colorName(h: number, s: number, v: number): string {
+    if (s < 12) {
+        if (v < 15) {
+            return '黑色';
+        }
+        if (v < 40) {
+            return '深灰色';
+        }
+        if (v < 75) {
+            return '灰色';
+        }
+        if (v < 92) {
+            return '浅灰色';
+        }
+        return '白色';
+    }
+    const hue = ((h % 360) + 360) % 360;
+    let base = '红色';
+    if (hue < 12 || hue >= 348) {
+        base = '红色';
+    } else if (hue < 35) {
+        base = '橙色';
+    } else if (hue < 55) {
+        base = '黄色';
+    } else if (hue < 75) {
+        base = '黄绿色';
+    } else if (hue < 155) {
+        base = '绿色';
+    } else if (hue < 185) {
+        base = '青色';
+    } else if (hue < 210) {
+        base = '湖蓝色';
+    } else if (hue < 250) {
+        base = '蓝色';
+    } else if (hue < 285) {
+        base = '紫色';
+    } else if (hue < 320) {
+        base = '品红色';
+    } else {
+        base = '玫红色';
+    }
+    if ((hue < 15 || hue >= 320) && v >= 70 && s < 70) {
+        return '粉色';
+    }
+    if (v < 35) {
+        return `深${base}`;
+    }
+    if (s < 35) {
+        return `浅${base}`;
+    }
+    return base;
+}
+
 // 主题配色取色面板（滑杆式）：色相 / 饱和度 / 明度 / 透明度四条滑杆＋
 // 色值输入框双向同步，顶部 ✕ 取消、✓ 确定；确定才存该主题的自选色
 // （等于主题默认色时不存），取消/点遮罩恢复打开前的主色，恢复默认色清掉自选。
@@ -1269,9 +1323,11 @@ function openColorSheet(themeId: string, onDone: () => void): void {
     const hexLabel = document.createElement('span');
     hexLabel.className = 'zx-color-sheet-hex-label';
     hexLabel.textContent = '主题色代码';
-    hexWrap.append(hexLabel, hexInput);
+    const nameLabel = document.createElement('span');
+    nameLabel.className = 'zx-color-sheet-hex-label';
+    hexWrap.append(hexLabel, hexInput, nameLabel);
 
-    const sync = (previewOnly: boolean): void => {
+    const sync = (previewOnly: boolean, keepInput = false): void => {
         const [r, g, b] = hsvToRgb(h, s, v);
         const alpha = a / 100;
         preview.style.background =
@@ -1283,7 +1339,10 @@ function openColorSheet(themeId: string, onDone: () => void): void {
             `linear-gradient(90deg, rgba(${r}, ${g}, ${b}, 0), rgba(${r}, ${g}, ${b}, 1)), ` +
             'repeating-conic-gradient(#c8c8c8 0% 25%, #ffffff 0% 50%) 0 0 / 16px 16px';
         const hex = currentHex();
-        hexInput.value = hex;
+        if (!keepInput) {
+            hexInput.value = hex;
+        }
+        nameLabel.textContent = `当前颜色：${colorName(h, s, v)}`;
         if (!previewOnly) {
             document.body.style.setProperty('--theme-accent', hex);
         }
@@ -1306,11 +1365,10 @@ function openColorSheet(themeId: string, onDone: () => void): void {
     bind(alphaSlider, (n) => {
         a = n;
     });
-    hexInput.addEventListener('change', () => {
-        const parsed = parseHexColor(hexInput.value);
+    const applyHexText = (text: string): boolean => {
+        const parsed = parseHexColor(text);
         if (!parsed) {
-            hexInput.value = currentHex();
-            return;
+            return false;
         }
         h = parsed.h;
         s = parsed.s;
@@ -1320,6 +1378,20 @@ function openColorSheet(themeId: string, onDone: () => void): void {
         satSlider.value = String(s);
         valSlider.value = String(v);
         alphaSlider.value = String(a);
+        return true;
+    };
+    // 边输边提示：输满合法色值就立刻换滑杆位置、预览条和 App 主色；
+    // 没输完（非法）时不动，等继续输；输错提交时弹回当前色。
+    hexInput.addEventListener('input', () => {
+        if (applyHexText(hexInput.value)) {
+            sync(false, true);
+        }
+    });
+    hexInput.addEventListener('change', () => {
+        if (!applyHexText(hexInput.value)) {
+            hexInput.value = currentHex();
+            return;
+        }
         sync(false);
     });
     sheet.append(hueSlider, satSlider, valSlider, alphaSlider, hexWrap);
