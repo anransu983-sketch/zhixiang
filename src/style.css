@@ -824,20 +824,7 @@ body {
     box-shadow: 0 10px 24px rgba(0, 0, 0, 0.5);
 }
 
-.poster-module[data-layout="vinyl"] .poster-cover-wrap::after {
-    content: '';
-    position: absolute;
-    left: 50%;
-    top: 50%;
-    width: 16px;
-    height: 16px;
-    margin: -8px 0 0 -8px;
-    box-sizing: border-box;
-    border-radius: 50%;
-    border: 3px solid #f9a8d4;
-    background: transparent;
-    z-index: 1;
-}
+/* 黑胶圆盘中心圈已去掉（用户 2026-10-28 决定不要，封面完整显示）。 */
 
 .poster-module[data-layout="vinyl"] .poster-card.is-playing .poster-cover-wrap {
     animation: poster-spin 6s linear infinite;
