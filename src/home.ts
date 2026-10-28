@@ -28,8 +28,11 @@ import {
 import { loadVisualToggles, saveVisualToggles } from './visuals';
 import { nearestTraditionalColor } from './traditional-colors';
 import { SOURCES } from './sources/index';
-import { getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalNotice, localSource } from './sources/local';
+import { BILI_CHART_ZONES, fetchBilibiliChart } from './sources/bilibili';
+import type { BiliChartZone } from './sources/bilibili';
+import { checkAllFilesAccess, getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalNotice, getLocalSidecarCoverDataUrl, localSource, requestAllFilesAccess } from './sources/local';
 import { addMyImportIds, loadMyImportIds, removeMyImportId } from './my-imports';
+import { runBatchWriteback } from './batch-writeback';
 import {
     ROAM_SCENE_NAMES,
     endRoaming,
@@ -273,7 +276,11 @@ export function renderHome(): HTMLElement {
                         const last = coverUrl.split('/').pop() ?? '';
                         const albumId = Number(last);
                         if (Number.isInteger(albumId) && albumId > 0) {
-                            void getLocalCoverDataUrl(albumId).then((dataUrl) => {
+                            // 0.1.106：sidecar 同名图优先；没有再走原有链
+                            //（MediaStore 专辑图 → 网易云补源），原有体不动。
+                            void getLocalSidecarCoverDataUrl(state.track)
+                                .then((sidecar) => sidecar ?? getLocalCoverDataUrl(albumId))
+                                .then((dataUrl) => {
                                 if (miniCoverTrackId !== state.track?.id) {
                                     return;
                                 }
@@ -377,6 +384,7 @@ export function renderHome(): HTMLElement {
 
         if (tabId === 'local') {
             page.appendChild(renderMyImportsSection());
+            page.appendChild(renderWritebackSection());
         }
 
         if (tabId === 'netease') {
@@ -385,6 +393,10 @@ export function renderHome(): HTMLElement {
 
         if (tabId === 'ytm') {
             page.appendChild(renderYtmDailySection());
+        }
+
+        if (tabId === 'bilibili') {
+            page.appendChild(renderBilibiliDiscoverySection(status));
         }
 
         const { block, search } = renderSourceSection(source, status, (query) => {
@@ -2856,6 +2868,92 @@ function renderMyImportsSection(): HTMLElement {
     return section;
 }
 
+// 词图写回（0.1.106）：把联网匹配到的歌词和封面写到歌旁边（同目录
+// 同名 .lrc/.jpg），不动原文件；已有文件的歌跳过不覆盖。写之前须授予
+// 所有文件访问权限，没开时只提示、不写。
+function renderWritebackSection(): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'daily-section';
+
+    const head = document.createElement('div');
+    head.className = 'daily-head';
+    const heading = document.createElement('h2');
+    heading.textContent = '词图写回';
+    head.appendChild(heading);
+    const sub = document.createElement('span');
+    sub.className = 'daily-sub';
+    sub.textContent = '把联网匹配到的歌词和封面写到歌旁边，不动原文件；需先开所有文件访问权限';
+    head.appendChild(sub);
+    section.appendChild(head);
+
+    const checkButton = document.createElement('button');
+    checkButton.type = 'button';
+    checkButton.className = 'login-btn';
+    checkButton.textContent = '检查权限';
+    section.appendChild(checkButton);
+
+    const startButton = document.createElement('button');
+    startButton.type = 'button';
+    startButton.className = 'login-btn';
+    startButton.textContent = '开始写回';
+    section.appendChild(startButton);
+
+    const notice = document.createElement('p');
+    notice.className = 'source-notice';
+    notice.textContent = '还没开始';
+    section.appendChild(notice);
+
+    const setBusy = (busy: boolean): void => {
+        checkButton.disabled = busy;
+        startButton.disabled = busy;
+    };
+
+    checkButton.addEventListener('click', () => {
+        void (async () => {
+            setBusy(true);
+            try {
+                if (await checkAllFilesAccess()) {
+                    notice.textContent = '已授予所有文件访问权限，可以开始写回';
+                    return;
+                }
+                await requestAllFilesAccess();
+                notice.textContent = '已打开设置页，开完权限回 App 再点检查';
+            } catch {
+                notice.textContent = '打不开设置页，请到系统设置里手动给芷湘开所有文件访问权限';
+            } finally {
+                setBusy(false);
+            }
+        })();
+    });
+
+    startButton.addEventListener('click', () => {
+        void (async () => {
+            setBusy(true);
+            try {
+                if (!(await checkAllFilesAccess())) {
+                    notice.textContent = '请先点检查权限并授予所有文件访问权限';
+                    return;
+                }
+                const result = await runBatchWriteback((progress) => {
+                    notice.textContent =
+                        `已处理 ${progress.done}/${progress.total}：成功 ${progress.ok} · ` +
+                        `已有 ${progress.skipped} · 无匹配 ${progress.noMatch} · 失败 ${progress.failed}`;
+                });
+                notice.textContent =
+                    `写回完成：成功 ${result.ok} · 已有 ${result.skipped} · ` +
+                    `无匹配 ${result.noMatch} · 失败 ${result.failed}`;
+            } catch (error) {
+                notice.textContent =
+                    error instanceof Error ? error.message : '写回失败，请稍后再试';
+            } finally {
+                setBusy(false);
+            }
+        })();
+    });
+
+    return section;
+}
+
 function renderNeteaseDailySection(): HTMLElement {
     return renderDailySection(
         '今日乐荐',
@@ -2864,6 +2962,138 @@ function renderNeteaseDailySection(): HTMLElement {
         () => loadNeteaseSession() !== null,
         '登录网易云后可看今日乐荐'
     );
+}
+
+// 0.1.105 B 站发现页（参考截图：今日推荐＋音乐排行榜四栏）：
+// 今日推荐取全站音乐榜头条（个性化推荐要登录，v1 用榜单头条代替）；
+// 排行榜四栏按栏懒加载、本页内缓存；点行即播整榜（复用 renderTracks）。
+function renderBilibiliDiscoverySection(status: HTMLElement): HTMLElement {
+    const section = document.createElement('div');
+    section.className = 'bili-discovery';
+
+    const featuredHead = document.createElement('h2');
+    featuredHead.textContent = '今日推荐';
+    section.appendChild(featuredHead);
+
+    const featured = document.createElement('div');
+    featured.className = 'bili-featured';
+    const featuredCover = document.createElement('img');
+    featuredCover.className = 'bili-featured-cover';
+    featuredCover.alt = '';
+    featuredCover.hidden = true;
+    featuredCover.onerror = () => {
+        featuredCover.hidden = true;
+    };
+    const featuredInfo = document.createElement('div');
+    featuredInfo.className = 'bili-featured-info';
+    const featuredTitle = document.createElement('div');
+    featuredTitle.className = 'bili-featured-title';
+    featuredTitle.textContent = '加载中…';
+    const featuredArtist = document.createElement('div');
+    featuredArtist.className = 'bili-featured-artist';
+    featuredInfo.append(featuredTitle, featuredArtist);
+    const featuredPlay = document.createElement('button');
+    featuredPlay.type = 'button';
+    featuredPlay.className = 'bili-featured-play';
+    featuredPlay.textContent = '▶ 立即播放';
+    featuredPlay.disabled = true;
+    featured.append(featuredCover, featuredInfo, featuredPlay);
+    section.appendChild(featured);
+
+    const chartHead = document.createElement('h2');
+    chartHead.textContent = '音乐排行榜';
+    section.appendChild(chartHead);
+
+    const tabRow = document.createElement('div');
+    tabRow.className = 'bili-chart-tabs';
+    const tabButtons = new Map<string, HTMLButtonElement>();
+    for (const zone of BILI_CHART_ZONES) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'bili-chart-tab';
+        button.textContent = zone.label;
+        button.addEventListener('click', () => {
+            currentKey = zone.key;
+            void renderZone(zone);
+        });
+        tabButtons.set(zone.key, button);
+        tabRow.appendChild(button);
+    }
+    section.appendChild(tabRow);
+
+    const notice = document.createElement('p');
+    notice.className = 'source-notice';
+    notice.hidden = true;
+    section.appendChild(notice);
+
+    const list = document.createElement('ul');
+    list.className = 'track-list';
+    section.appendChild(list);
+
+    const cache = new Map<string, Track[]>();
+    let currentKey = BILI_CHART_ZONES[0]!.key;
+    let featuredTracks: Track[] = [];
+
+    const renderZone = async (zone: BiliChartZone): Promise<void> => {
+        for (const [key, button] of tabButtons) {
+            button.classList.toggle('is-active', key === zone.key);
+        }
+        const cached = cache.get(zone.key);
+        if (cached) {
+            notice.hidden = true;
+            renderTracks(list, cached, status);
+            return;
+        }
+        notice.textContent = '加载中…';
+        notice.classList.remove('is-error');
+        notice.hidden = false;
+        list.replaceChildren();
+        try {
+            const tracks = await fetchBilibiliChart(zone);
+            cache.set(zone.key, tracks);
+            if (currentKey !== zone.key) {
+                return;
+            }
+            notice.hidden = true;
+            renderTracks(list, tracks, status);
+            if (zone.key === BILI_CHART_ZONES[0]!.key && tracks.length > 0) {
+                featuredTracks = tracks;
+                const first = tracks[0]!;
+                featuredTitle.textContent = first.title;
+                featuredArtist.textContent = first.artist;
+                if (first.coverUrl) {
+                    featuredCover.src = first.coverUrl;
+                    featuredCover.hidden = false;
+                } else {
+                    featuredCover.hidden = true;
+                }
+                featuredPlay.disabled = false;
+            }
+        } catch (error) {
+            if (currentKey !== zone.key) {
+                return;
+            }
+            notice.textContent = friendlySearchError(error);
+            notice.classList.add('is-error');
+            notice.hidden = false;
+        }
+    };
+
+    featuredPlay.addEventListener('click', () => {
+        if (featuredTracks.length === 0) {
+            return;
+        }
+        void (async () => {
+            try {
+                await playQueue(featuredTracks, 0);
+            } catch (error) {
+                status.textContent = friendlyPlayError(error);
+            }
+        })();
+    });
+
+    void renderZone(BILI_CHART_ZONES[0]!);
+    return section;
 }
 
 function renderYtmDailySection(): HTMLElement {

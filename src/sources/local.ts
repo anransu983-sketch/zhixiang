@@ -22,6 +22,15 @@ interface LocalMusicPlugin {
     embeddedLyrics(options: {
         path: string;
     }): Promise<{ found: boolean; lyrics: string; source: string }>;
+    coverFile(options: { path: string }): Promise<{ dataUrl: string }>;
+    checkAllFilesAccess(): Promise<{ granted: boolean }>;
+    requestAllFilesAccess(): Promise<{ opened: boolean }>;
+    writeSidecar(options: {
+        path: string;
+        lyrics?: string;
+        coverDataUrl?: string;
+    }): Promise<{ lyricWritten: boolean; coverWritten: boolean; skipped: boolean }>;
+    downloadCover(options: { url: string }): Promise<{ dataUrl: string }>;
 }
 
 const LocalMusic = registerPlugin<LocalMusicPlugin>('LocalMusic');
@@ -64,6 +73,12 @@ class LocalMusicSource implements AudioSource {
             throw new Error('找不到这首歌的本地文件，请重新打开本地音乐再试');
         }
         return Capacitor.convertFileSrc(path);
+    }
+
+    // 批量写回与 sidecar 封面用：取扫描时记下的文件路径；不在缓存里
+    // 回 undefined，调用方跳过这首，不重扫。
+    getPath(track: Track): string | undefined {
+        return this.paths.get(track.id);
     }
 
     // 内嵌歌词（0.1.103）：按扫描时记下的文件路径向原生要文件自带的词。
@@ -170,6 +185,71 @@ export async function getLocalCoverFromNetease(track: Track): Promise<string | n
 }
 
 export const localSource = new LocalMusicSource();
+
+// 批量写回用：取扫描时记下的文件路径；不在缓存里回 undefined。
+export function getLocalPath(track: Track): string | undefined {
+    return localSource.getPath(track);
+}
+
+// 0.1.106 词图写回配套：所有文件访问权限查/开（原生侧见 LocalMusicPlugin）。
+export async function checkAllFilesAccess(): Promise<boolean> {
+    try {
+        const result = await LocalMusic.checkAllFilesAccess();
+        return result.granted === true;
+    } catch {
+        return false;
+    }
+}
+
+export async function requestAllFilesAccess(): Promise<void> {
+    await LocalMusic.requestAllFilesAccess();
+}
+
+export interface WriteSidecarResult {
+    lyricWritten: boolean;
+    coverWritten: boolean;
+    skipped: boolean;
+}
+
+// 0.1.106 词图写回配套：只写音频同目录的同名 .lrc/.jpg，目标已存在
+// 时原生跳过不覆盖；任一写失败时原生 reject，调用方计失败。
+export async function writeSidecar(options: {
+    path: string;
+    lyrics?: string;
+    coverDataUrl?: string;
+}): Promise<WriteSidecarResult> {
+    return LocalMusic.writeSidecar(options);
+}
+
+// 0.1.106 词图写回配套：封面下载放原生做（HttpBridge 的 body 是
+// UTF-8 文本，二进制图片走它会坏字节）；失败回 null，调用方只写歌词。
+export async function downloadCoverImage(url: string): Promise<string | null> {
+    try {
+        const result = await LocalMusic.downloadCover({ url });
+        return typeof result.dataUrl === 'string' && result.dataUrl.startsWith('data:image/')
+            ? result.dataUrl
+            : null;
+    } catch {
+        return null;
+    }
+}
+
+// 0.1.106：sidecar 同名图（写回的歌先认自己目录里的图；没权限读他人
+// 图片文件时原生 reject，这里回 null 落到原有链）。
+export async function getLocalSidecarCoverDataUrl(track: Track): Promise<string | null> {
+    const path = localSource.getPath(track);
+    if (!path) {
+        return null;
+    }
+    try {
+        const result = await LocalMusic.coverFile({ path });
+        return typeof result.dataUrl === 'string' && result.dataUrl.startsWith('data:image/')
+            ? result.dataUrl
+            : null;
+    } catch {
+        return null;
+    }
+}
 
 export async function getLocalEmbeddedLyrics(
     track: Track

@@ -13,11 +13,13 @@
 import { httpGet } from '../native/http';
 import { md5Hex } from './netease-eapi';
 import type { AudioSource, Track } from '../types';
+import type { LyricLine } from '../lyrics';
 
 const NAV_URL = 'https://api.bilibili.com/x/web-interface/nav';
 const SEARCH_URL = 'https://api.bilibili.com/x/web-interface/wbi/search/type';
 const PAGELIST_URL = 'https://api.bilibili.com/x/player/pagelist';
 const PLAYURL_URL = 'https://api.bilibili.com/x/player/playurl';
+const PLAYER_V2_URL = 'https://api.bilibili.com/x/player/wbi/v2';
 
 // B 站接口要浏览器 UA＋Referer，否则容易被风控拦；无 cookie、无登录态。
 const BILI_HEADERS: Record<string, string> = {
@@ -130,7 +132,12 @@ function toHttps(url: unknown): string | undefined {
     if (url.startsWith('//')) {
         return `https:${url}`;
     }
-    return url.startsWith('http') ? url : undefined;
+    if (url.startsWith('http://')) {
+        // 榜单封面是 http:// 直链：WebView 页是 https 源，http 图会被混杂内容拦，
+        // B 站 CDN 本就支持 https，直接升级（搜索封面是 // 相对，本来就走 https）。
+        return `https:${url.slice('http:'.length)}`;
+    }
+    return url.startsWith('https://') ? url : undefined;
 }
 
 async function fetchJson(url: string, failure: string): Promise<unknown> {
@@ -150,46 +157,207 @@ async function fetchJson(url: string, failure: string): Promise<unknown> {
     return parsed;
 }
 
+// 分 P cid：取链与字幕共用，v1 只用第一 P。
+async function getCid(bvid: string): Promise<number> {
+    const pages = (await fetchJson(
+        `${PAGELIST_URL}?bvid=${encodeURIComponent(bvid)}&jsonp=jsonp`,
+        'B 站分 P 信息拿不到'
+    )) as { code?: unknown; data?: unknown };
+    if (pages.code !== 0 || !Array.isArray(pages.data) || pages.data.length === 0) {
+        throw new Error('B 站视频没有分 P 信息');
+    }
+    const first = pages.data[0] as { cid?: unknown };
+    const cid = typeof first.cid === 'number' ? first.cid : 0;
+    if (cid <= 0) {
+        throw new Error('B 站视频没有分 P 信息');
+    }
+    return cid;
+}
+
+// B 站 CC 字幕轨当歌词（0.1.105，思路借鉴 NeriPlayer 的 B 站字幕歌词）：
+// wbi/v2 拿字幕轨列表，优先中文轨，否则第一条；拉字幕 JSON 的 body
+//（from 秒＋content）拼成歌词行。实测提醒：2026-10-29 连查 9 个视频
+//（含周杰伦官方 MV）字幕轨全是空的——音乐视频多无轨，所以本函数无轨
+// 时回 null，调用方回落联网补源，不硬编。字幕 JSON 本身未实测到真轨，
+// 字段按 B 站公开字幕格式（body[].from/to/content）解析、异常项跳过，
+// 真机以带字幕轨的视频验为准。
+export async function getBilibiliSubtitleLines(track: Track): Promise<LyricLine[] | null> {
+    const bvid = track.id.startsWith('bilibili:')
+        ? track.id.slice('bilibili:'.length)
+        : track.id;
+    if (!bvid) {
+        return null;
+    }
+    let cid: number;
+    try {
+        cid = await getCid(bvid);
+    } catch {
+        return null;
+    }
+    let parsed: unknown;
+    try {
+        const wts = Math.floor(Date.now() / 1000).toString();
+        const { qs, wRid } = signQuery({ bvid, cid: String(cid), wts }, await getMixinKey());
+        const res = await httpGet(`${PLAYER_V2_URL}?${qs}&w_rid=${wRid}`, BILI_HEADERS);
+        if (res.status !== 200) {
+            return null;
+        }
+        parsed = JSON.parse(res.body) as unknown;
+    } catch {
+        return null;
+    }
+    const subs = (parsed as { data?: { subtitle?: { subtitles?: unknown } } })
+        .data?.subtitle?.subtitles;
+    if (!Array.isArray(subs) || subs.length === 0) {
+        return null;
+    }
+    const tracks = subs as Array<Record<string, unknown>>;
+    const picked =
+        tracks.find(
+            (item) => typeof item.lan === 'string' && item.lan.toLowerCase().includes('zh')
+        ) ?? tracks[0];
+    if (!picked) {
+        return null;
+    }
+    const url = toHttps(picked.subtitle_url);
+    if (!url) {
+        return null;
+    }
+    let body: unknown;
+    try {
+        const res = await httpGet(url, BILI_HEADERS);
+        if (res.status !== 200) {
+            return null;
+        }
+        body = JSON.parse(res.body) as unknown;
+    } catch {
+        return null;
+    }
+    const items = (body as { body?: unknown }).body;
+    if (!Array.isArray(items)) {
+        return null;
+    }
+    const lines: LyricLine[] = [];
+    for (const raw of items as Array<Record<string, unknown>>) {
+        const from = typeof raw.from === 'number' ? raw.from : NaN;
+        const content = typeof raw.content === 'string' ? raw.content.trim() : '';
+        if (!Number.isFinite(from) || !content) {
+            continue;
+        }
+        lines.push({ timeMs: Math.round(from * 1000), text: content });
+    }
+    return lines.length > 0 ? lines : null;
+}
+
+// 搜索实现抽出来：榜单里原创/翻唱两区 ranking/v2 回 -400（分区 rid 不吃），
+// 回落走搜索（BiliTune 同款回落路子；tid 参数实测对结果无影响，不加）。
+async function searchBilibiliVideos(keyword: string): Promise<Track[]> {
+    const trimmed = keyword.trim();
+    if (!trimmed) {
+        return [];
+    }
+    let parsed = await searchWithMixin(trimmed, await getMixinKey());
+    if (parsed.code !== 0) {
+        // 签名素材过期是常见原因：清掉重取一次再试，还失败才报错。
+        parsed = await searchWithMixin(trimmed, await getMixinKey(true));
+    }
+    if (parsed.code !== 0) {
+        const detail =
+            typeof parsed.message === 'string' && parsed.message
+                ? parsed.message
+                : `code ${String(parsed.code)}`;
+        throw new Error(`B 站搜索失败（${detail}）`);
+    }
+    const items = Array.isArray(parsed.data?.result) ? parsed.data.result : [];
+    const tracks: Track[] = [];
+    for (const raw of items as Array<Record<string, unknown>>) {
+        const bvid = typeof raw.bvid === 'string' ? raw.bvid : '';
+        const title = typeof raw.title === 'string' ? stripEmTags(raw.title) : '';
+        if (!bvid || !title) {
+            continue;
+        }
+        const artist = typeof raw.author === 'string' && raw.author ? raw.author : '未知歌手';
+        tracks.push({
+            id: `bilibili:${bvid}`,
+            title,
+            artist,
+            durationMs: parseBiliDuration(raw.duration),
+            coverUrl: toHttps(raw.pic),
+            source: 'bilibili'
+        });
+    }
+    return tracks;
+}
+
+const RANKING_URL = 'https://api.bilibili.com/x/web-interface/ranking/v2';
+
+// 榜单分区（0.1.105 发现页，rid 取自 BiliTune 源码的 zone 表，与截图四栏一致）：
+// 全站音乐榜 1003、音乐区总榜 3 是 ranking/v2 直出；原创 28、翻唱 31
+// 在 ranking/v2 上回 -400，走搜索回落（关键词即栏名）。
+export interface BiliChartZone {
+    key: string;
+    label: string;
+    rid: number | null;
+    searchKeyword: string | null;
+}
+
+export const BILI_CHART_ZONES: BiliChartZone[] = [
+    { key: 'all', label: '全站音乐榜', rid: 1003, searchKeyword: null },
+    { key: 'region', label: '音乐区总榜', rid: 3, searchKeyword: null },
+    { key: 'original', label: '原创音乐', rid: null, searchKeyword: '原创音乐' },
+    { key: 'cover', label: '翻唱', rid: null, searchKeyword: '翻唱' }
+];
+
+export async function fetchBilibiliChart(zone: BiliChartZone): Promise<Track[]> {
+    if (zone.searchKeyword) {
+        return searchBilibiliVideos(zone.searchKeyword);
+    }
+    if (zone.rid === null) {
+        return [];
+    }
+    const parsed = (await fetchJson(
+        `${RANKING_URL}?rid=${zone.rid}&type=all`,
+        'B 站榜单加载失败'
+    )) as { code?: unknown; message?: unknown; data?: { list?: unknown } };
+    if (parsed.code !== 0) {
+        const detail =
+            typeof parsed.message === 'string' && parsed.message
+                ? parsed.message
+                : `code ${String(parsed.code)}`;
+        throw new Error(`B 站榜单加载失败（${detail}）`);
+    }
+    const items = Array.isArray(parsed.data?.list) ? parsed.data.list : [];
+    const tracks: Track[] = [];
+    for (const raw of items as Array<Record<string, unknown>>) {
+        const bvid = typeof raw.bvid === 'string' ? raw.bvid : '';
+        const title = typeof raw.title === 'string' ? stripEmTags(raw.title) : '';
+        if (!bvid || !title) {
+            continue;
+        }
+        const owner = raw.owner as { name?: unknown } | undefined;
+        const artist =
+            owner && typeof owner.name === 'string' && owner.name ? owner.name : '未知歌手';
+        tracks.push({
+            id: `bilibili:${bvid}`,
+            title,
+            artist,
+            durationMs:
+                typeof raw.duration === 'number' && raw.duration > 0
+                    ? raw.duration * 1000
+                    : undefined,
+            coverUrl: toHttps(raw.pic),
+            source: 'bilibili'
+        });
+    }
+    return tracks;
+}
+
 class BilibiliSource implements AudioSource {
     readonly id = 'bilibili' as const;
     readonly label = 'B站';
 
     async search(query: string): Promise<Track[]> {
-        const keyword = query.trim();
-        if (!keyword) {
-            return [];
-        }
-        let parsed = await searchWithMixin(keyword, await getMixinKey());
-        if (parsed.code !== 0) {
-            // 签名素材过期是常见原因：清掉重取一次再试，还失败才报错。
-            parsed = await searchWithMixin(keyword, await getMixinKey(true));
-        }
-        if (parsed.code !== 0) {
-            const detail =
-                typeof parsed.message === 'string' && parsed.message
-                    ? parsed.message
-                    : `code ${String(parsed.code)}`;
-            throw new Error(`B 站搜索失败（${detail}）`);
-        }
-        const items = Array.isArray(parsed.data?.result) ? parsed.data.result : [];
-        const tracks: Track[] = [];
-        for (const raw of items as Array<Record<string, unknown>>) {
-            const bvid = typeof raw.bvid === 'string' ? raw.bvid : '';
-            const title = typeof raw.title === 'string' ? stripEmTags(raw.title) : '';
-            if (!bvid || !title) {
-                continue;
-            }
-            const artist = typeof raw.author === 'string' && raw.author ? raw.author : '未知歌手';
-            tracks.push({
-                id: `bilibili:${bvid}`,
-                title,
-                artist,
-                durationMs: parseBiliDuration(raw.duration),
-                coverUrl: toHttps(raw.pic),
-                source: 'bilibili'
-            });
-        }
-        return tracks;
+        return searchBilibiliVideos(query);
     }
 
     async resolveStream(track: Track): Promise<string> {
@@ -199,18 +367,7 @@ class BilibiliSource implements AudioSource {
         if (!bvid) {
             throw new Error('B 站视频号不对，请重新搜索再试');
         }
-        const pages = (await fetchJson(
-            `${PAGELIST_URL}?bvid=${encodeURIComponent(bvid)}&jsonp=jsonp`,
-            'B 站分 P 信息拿不到'
-        )) as { code?: unknown; data?: unknown };
-        if (pages.code !== 0 || !Array.isArray(pages.data) || pages.data.length === 0) {
-            throw new Error('B 站视频没有分 P 信息');
-        }
-        const first = pages.data[0] as { cid?: unknown };
-        const cid = typeof first.cid === 'number' ? first.cid : 0;
-        if (cid <= 0) {
-            throw new Error('B 站视频没有分 P 信息');
-        }
+        const cid = await getCid(bvid);
         const play = (await fetchJson(
             `${PLAYURL_URL}?bvid=${encodeURIComponent(bvid)}&cid=${cid}&fnval=4048&fourk=1`,
             'B 站音频流拿不到'

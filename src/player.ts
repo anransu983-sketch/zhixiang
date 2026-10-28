@@ -32,7 +32,7 @@ import type { LyricLine } from './lyrics';
 import { openLiveWallpaperPicker, setWallpaperState } from './native/wallpaper-plugin';
 import { loadVisualToggles, saveVisualToggles, VisualStage } from './visuals';
 import type { VisualToggles } from './visuals';
-import { getLocalCoverDataUrl, getLocalCoverFromNetease } from './sources/local';
+import { getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalSidecarCoverDataUrl } from './sources/local';
 import { posterFallbackBackground, posterHue } from './posters';
 import { getLastYtmStreamMeta } from './sources/ytm';
 import type { Track } from './types';
@@ -640,7 +640,11 @@ function buildPlayerPage(): HTMLElement {
                 hideCover();
                 return;
             }
-            void getLocalCoverDataUrl(albumId).then((dataUrl) => {
+            // 0.1.106：sidecar 同名图优先；没有再走原有链
+            //（MediaStore 专辑图 → 网易云补源），原有体不动。
+            void getLocalSidecarCoverDataUrl(track)
+                .then((sidecar) => sidecar ?? getLocalCoverDataUrl(albumId))
+                .then((dataUrl) => {
                 if (track.id !== coverForTrackId) {
                     return;
                 }

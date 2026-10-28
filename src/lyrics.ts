@@ -26,6 +26,7 @@ import { httpGet } from './native/http';
 import { withSessionCookie } from './sources/netease-session';
 import { neteaseSource } from './sources/netease';
 import { getLocalEmbeddedLyrics } from './sources/local';
+import { getBilibiliSubtitleLines } from './sources/bilibili';
 import { getYtmCaptions } from './sources/ytm';
 import type { Track } from './types';
 
@@ -410,7 +411,9 @@ function saveLocalLyricCache(cache: Record<string, LocalLyricCacheEntry>): void 
     }
 }
 
-async function fetchLocalLyrics(track: Track): Promise<LyricResult | null> {
+// 0.1.106 批量写回用：导出给 batch-writeback（本地歌词联网补源全链路，
+// 含内嵌优先＋缓存＋网易云＋LRCLIB；调用方先查内嵌判“已有”，这里命中才写）。
+export async function fetchLocalLyrics(track: Track): Promise<LyricResult | null> {
     // 0.1.103 内嵌歌词（在联网补源之前）：文件自带的词优先于联网匹配。
     // 内嵌结果不进联网缓存——缓存按歌名歌手时长键控，内嵌是按文件走的，
     // 混进去会串到同名不同文件上。
@@ -654,9 +657,12 @@ export async function fetchLyrics(track: Track): Promise<LyricResult> {
         return fetchYtmLyrics(track);
     }
     if (track.source === 'bilibili') {
-        // 0.1.104：B 站源 v1 不接字幕轨，先复用本地那套联网补源
-        // （网易云搜＋LRCLIB，按歌名歌手时长匹配）；内嵌那步对 B 站曲
-        // 自动落空（路径缓存里没有 B 站 id），不影响。
+        // 0.1.105：先试 B 站 CC 字幕轨（有轨才用，实测音乐视频多无轨）；
+        // 无轨或取不到时回落本地那套联网补源（网易云搜＋LRCLIB）。
+        const cc = await getBilibiliSubtitleLines(track);
+        if (cc) {
+            return { lines: cc, note: null };
+        }
         const matched = await fetchLocalLyrics(track);
         return matched ?? { lines: [], note: '这首歌暂无歌词。' };
     }

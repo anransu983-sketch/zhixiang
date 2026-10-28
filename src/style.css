@@ -720,8 +720,76 @@ body {
 }
 
 .tab-page.has-query .poster-grid,
-.tab-page.has-query .poster-shelf-wrap {
+.tab-page.has-query .poster-shelf-wrap,
+.tab-page.has-query .bili-discovery {
     display: none;
+}
+
+/* 0.1.105 B 站发现页：今日推荐大卡＋排行榜栏（与截图四栏一致）。 */
+.bili-discovery h2 {
+    margin: 20px 0 10px;
+}
+.bili-featured {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px;
+    border-radius: 18px;
+    background: linear-gradient(135deg, rgba(232, 160, 191, 0.35), rgba(120, 80, 180, 0.35));
+}
+.bili-featured-cover {
+    width: 56px;
+    height: 56px;
+    flex-shrink: 0;
+    border-radius: 12px;
+    object-fit: cover;
+}
+.bili-featured-info {
+    flex: 1;
+    min-width: 0;
+}
+.bili-featured-title {
+    font-weight: 700;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+.bili-featured-artist {
+    opacity: 0.7;
+    font-size: 13px;
+    margin-top: 2px;
+}
+.bili-featured-play {
+    border: 0;
+    border-radius: 999px;
+    padding: 10px 16px;
+    background: var(--theme-accent, var(--accent));
+    color: #fff;
+    font-weight: 700;
+    white-space: nowrap;
+}
+.bili-featured-play:disabled {
+    opacity: 0.5;
+}
+.bili-chart-tabs {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    margin: 4px 0 12px;
+}
+.bili-chart-tab {
+    border: 1px solid var(--hairline);
+    background: var(--surface-2);
+    border-radius: 999px;
+    padding: 8px 14px;
+    white-space: nowrap;
+}
+.bili-chart-tab.is-active {
+    background: var(--theme-accent, var(--accent));
+    color: #fff;
+    border-color: transparent;
 }
 
 .poster-notice {

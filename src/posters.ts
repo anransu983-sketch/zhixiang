@@ -6,7 +6,7 @@
 // - YTM 热门专辑：见 sources/ytm.ts 的 fetchYtmChartPosters 实测注释。
 // 本模块不发任何新接口请求，只做分组与分路组装；各路请求逻辑归各自音源文件。
 
-import { getLocalCoverDataUrl, getLocalCoverFromNetease, localSource } from './sources/local';
+import { getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalSidecarCoverDataUrl, localSource } from './sources/local';
 import { fetchNeteaseChartPosters } from './sources/netease';
 import { fetchYtmChartPosters } from './sources/ytm';
 import type { Poster, Track } from './types';
@@ -88,9 +88,20 @@ export async function loadLocalAlbumPosters(): Promise<Poster[]> {
     // 专辑图时用它），没有再走网易云搜索匹配。
     return Promise.all(
         topAlbums.map(async ([album, albumTracks]) => {
-            let coverUrl = albumTracks.find(
-                (track) => track.coverUrl && !track.coverUrl.startsWith('content://')
-            )?.coverUrl;
+            let coverUrl: string | undefined;
+            // 0.1.106：sidecar 同名图优先（写回的歌先认自己目录里的图），
+            // 前 3 首里有就用，没有再走原有链。
+            for (const track of albumTracks.slice(0, 3)) {
+                coverUrl = (await getLocalSidecarCoverDataUrl(track)) ?? undefined;
+                if (coverUrl) {
+                    break;
+                }
+            }
+            if (!coverUrl) {
+                coverUrl = albumTracks.find(
+                    (track) => track.coverUrl && !track.coverUrl.startsWith('content://')
+                )?.coverUrl;
+            }
             if (!coverUrl) {
                 const contentCover = albumTracks.find((track) =>
                     track.coverUrl?.startsWith('content://')

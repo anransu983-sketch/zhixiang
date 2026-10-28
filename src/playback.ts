@@ -51,6 +51,7 @@
 
 import { Capacitor } from '@capacitor/core';
 import { getSource } from './sources/index';
+import { findBilibiliFallback } from './sources/fallback';
 import { NETEASE_MINT_UA } from './sources/netease';
 import { eapiRequest } from './sources/netease-eapi';
 import { isYtmGateError, resolveYtmStream } from './sources/ytm';
@@ -643,6 +644,24 @@ async function tryPlayFrom(
             queueIndex = i;
             return { played: true, failed, stale: false };
         } catch (error) {
+            // 0.1.105：网易云曲目起不来时，先试 B 站兜底（歌名歌手时长评分）；
+            // 兜底成功则把队列里这首换成 B 站版继续播，不计入失败跳歌。
+            if (track.source === 'netease' && intent === playIntent) {
+                const fallback = await findBilibiliFallback(track);
+                if (fallback && intent === playIntent) {
+                    try {
+                        const fbResult = await startTrack(fallback, crossfade);
+                        if (fbResult === 'stale') {
+                            return { played: false, failed, stale: true };
+                        }
+                        queue[i] = fallback;
+                        queueIndex = i;
+                        return { played: true, failed, stale: false };
+                    } catch {
+                        // 兜底也失败：按原路计失败、继续跳歌。
+                    }
+                }
+            }
             failed += 1;
             console.log(
                 `[Playback] 跳过 ${track.title}：${error instanceof Error ? error.message : '未知原因'}`

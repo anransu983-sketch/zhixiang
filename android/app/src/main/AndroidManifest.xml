@@ -80,4 +80,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <!-- 词图写回（0.1.106）：sidecar 写到音频同目录须所有文件访问权限；
+         仅声明，不主动索取，用户在卡片里点检查权限时才去设置页开。 -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 </manifest>
