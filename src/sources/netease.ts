@@ -338,7 +338,21 @@ export async function fetchNeteaseChartPosters(): Promise<Poster[]> {
     // 0.1.92：榜单封面去重——多榜榜首是同一首歌时（如飙升榜与新歌榜同为
     // 《宝船》），后面的榜跳过前面用过的图，取自己榜里下一首有图的，
     // 免得三张卡出现同一张封面。
-    const usedTrackCovers = new Set<string>();
+    // 0.1.93：去重键加严——0.1.92 只比封面链接，同一张图换个 CDN 域名
+    // （p1/p2）就比不出来；这次按歌曲 id 去重，同一首歌直接跳过，
+    // 再加封面路径（去域名）兜底不同歌共用同一张图的情况。
+    const usedSongIds = new Set<string>();
+    const usedCoverPaths = new Set<string>();
+    const coverPath = (url: string | undefined): string | undefined => {
+        if (!url) {
+            return undefined;
+        }
+        try {
+            return new URL(url).pathname;
+        } catch {
+            return url;
+        }
+    };
     for (const playlistId of CHART_PLAYLIST_IDS) {
         try {
             const response = await httpGet(
@@ -365,13 +379,20 @@ export async function fetchNeteaseChartPosters(): Promise<Poster[]> {
                 .map(chartSongToTrack);
             // 0.1.90：榜单卡片封面改用榜内歌曲的专辑封面（取前 20 首里第一张
             // 有图的），不再用歌单那张渐变底＋白字图；榜内全无图时才回落歌单封面。
-            const trackCover =
+            const chosen =
                 tracks.find(
-                    (track) => track.coverUrl && !usedTrackCovers.has(track.coverUrl)
-                )?.coverUrl ??
-                tracks.find((track) => track.coverUrl)?.coverUrl;
-            if (trackCover) {
-                usedTrackCovers.add(trackCover);
+                    (track) =>
+                        track.coverUrl &&
+                        !usedSongIds.has(track.id) &&
+                        !usedCoverPaths.has(coverPath(track.coverUrl) ?? '')
+                ) ?? tracks.find((track) => track.coverUrl);
+            const trackCover = chosen?.coverUrl;
+            if (chosen) {
+                usedSongIds.add(chosen.id);
+                const path = coverPath(chosen.coverUrl);
+                if (path) {
+                    usedCoverPaths.add(path);
+                }
             }
             posters.push({
                 id: `netease-chart:${playlistId}`,
