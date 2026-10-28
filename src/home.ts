@@ -1921,9 +1921,21 @@ function renderPosterModule(definition: PosterSectionDefinition): HTMLElement {
         button.className = 'poster-layout-btn';
         button.dataset.layout = layout.id;
         button.textContent = layout.label;
-        button.classList.toggle('is-active', layout.id === currentPosterLayout);
+        // 0.1.91：开关高亮跟本模块实际版式走（混搭钉住的模块不再谎报全局版式）。
+        button.classList.toggle('is-active', layout.id === resolvePosterLayout(definition.key));
         button.addEventListener('click', () => {
-            applyPosterLayout(layout.id);
+            // 0.1.91：模块上的开关只改本模块（写本源混搭），不再只改全局——
+            // 混搭钉住的模块以前点开关只动高亮、画面不动。
+            applyPosterLayoutMix(definition.key, layout.id);
+            for (const other of layoutSwitch.querySelectorAll('.poster-layout-btn')) {
+                other.classList.toggle(
+                    'is-active',
+                    (other as HTMLElement).dataset.layout === layout.id
+                );
+            }
+            requestAnimationFrame(() => {
+                positionPosterThumbs();
+            });
         });
         posterLayoutButtons.push(button);
         layoutSwitch.appendChild(button);
