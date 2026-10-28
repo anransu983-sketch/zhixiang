@@ -335,6 +335,10 @@ function chartSongToTrack(raw: NeteaseChartSong): Track {
 
 export async function fetchNeteaseChartPosters(): Promise<Poster[]> {
     const posters: Poster[] = [];
+    // 0.1.92：榜单封面去重——多榜榜首是同一首歌时（如飙升榜与新歌榜同为
+    // 《宝船》），后面的榜跳过前面用过的图，取自己榜里下一首有图的，
+    // 免得三张卡出现同一张封面。
+    const usedTrackCovers = new Set<string>();
     for (const playlistId of CHART_PLAYLIST_IDS) {
         try {
             const response = await httpGet(
@@ -361,7 +365,14 @@ export async function fetchNeteaseChartPosters(): Promise<Poster[]> {
                 .map(chartSongToTrack);
             // 0.1.90：榜单卡片封面改用榜内歌曲的专辑封面（取前 20 首里第一张
             // 有图的），不再用歌单那张渐变底＋白字图；榜内全无图时才回落歌单封面。
-            const trackCover = tracks.find((track) => track.coverUrl)?.coverUrl;
+            const trackCover =
+                tracks.find(
+                    (track) => track.coverUrl && !usedTrackCovers.has(track.coverUrl)
+                )?.coverUrl ??
+                tracks.find((track) => track.coverUrl)?.coverUrl;
+            if (trackCover) {
+                usedTrackCovers.add(trackCover);
+            }
             posters.push({
                 id: `netease-chart:${playlistId}`,
                 title:

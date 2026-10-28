@@ -6,7 +6,7 @@
 // - YTM 热门专辑：见 sources/ytm.ts 的 fetchYtmChartPosters 实测注释。
 // 本模块不发任何新接口请求，只做分组与分路组装；各路请求逻辑归各自音源文件。
 
-import { getLocalCoverFromNetease, localSource } from './sources/local';
+import { getLocalCoverDataUrl, getLocalCoverFromNetease, localSource } from './sources/local';
 import { fetchNeteaseChartPosters } from './sources/netease';
 import { fetchYtmChartPosters } from './sources/ytm';
 import type { Poster, Track } from './types';
@@ -78,13 +78,34 @@ export async function loadLocalAlbumPosters(): Promise<Poster[]> {
     const topAlbums = [...groups.entries()]
         .sort((a, b) => b[1].length - a[1].length)
         .slice(0, LOCAL_ALBUM_LIMIT);
-    // 0.1.86 本地海报墙补封面：专辑内没有 MediaStore 封面时，对代表曲走
+    // 0.1.86 本地海报墙补封面：专辑内没有可用封面时，对代表曲走
     // 网易云搜索匹配（同播放页/迷你栏的 getLocalCoverFromNetease，封面不设
     // 时长门）；三张专辑并行查，查不到或失败就留空、渲染时仍渐变占位。
     // 海报墙与 3D 歌单架共用这批数据（posterCache），两处同时受益。
+    // 0.1.92 修正：本地 MediaStore 专辑图是 content://，WebView 的 <img>
+    // 读不了，且旧逻辑把它当“已有封面”直接跳过网易云补源，导致本地海报
+    // 永远渐变；content:// 一律不算有封面，先向原生要 dataUrl（真有内嵌/
+    // 专辑图时用它），没有再走网易云搜索匹配。
     return Promise.all(
         topAlbums.map(async ([album, albumTracks]) => {
-            let coverUrl = albumTracks.find((track) => track.coverUrl)?.coverUrl;
+            let coverUrl = albumTracks.find(
+                (track) => track.coverUrl && !track.coverUrl.startsWith('content://')
+            )?.coverUrl;
+            if (!coverUrl) {
+                const contentCover = albumTracks.find((track) =>
+                    track.coverUrl?.startsWith('content://')
+                )?.coverUrl;
+                const albumId = contentCover
+                    ? Number(contentCover.split('/').pop())
+                    : Number.NaN;
+                if (Number.isInteger(albumId) && albumId > 0) {
+                    try {
+                        coverUrl = (await getLocalCoverDataUrl(albumId)) ?? undefined;
+                    } catch {
+                        coverUrl = undefined;
+                    }
+                }
+            }
             if (!coverUrl) {
                 for (const track of albumTracks.slice(0, 3)) {
                     try {
