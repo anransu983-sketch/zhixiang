@@ -27,7 +27,7 @@ import {
     togglePlay
 } from './playback';
 import type { PlaybackState, RepeatMode } from './playback';
-import { fetchLyrics, findCurrentLineIndex } from './lyrics';
+import { approximateWords, fetchLyrics, findCurrentLineIndex } from './lyrics';
 import type { LyricLine } from './lyrics';
 import { openLiveWallpaperPicker, setWallpaperState } from './native/wallpaper-plugin';
 import { loadVisualToggles, saveVisualToggles, VisualStage } from './visuals';
@@ -46,6 +46,7 @@ let updateDegradedNotePage: (() => void) | null = null;
 let toggles: VisualToggles = loadVisualToggles();
 let lyricLines: LyricLine[] = [];
 let currentLineIndex = -1;
+let currentSungWord = -1;
 let lyricGeneration = 0;
 
 const FAVORITES_KEY = 'zx_favorites_v1';
@@ -751,8 +752,24 @@ function buildPlayerPage(): HTMLElement {
             const lineEl = document.createElement('p');
             lineEl.className = 'player-lyric-line';
             lineEl.dataset.index = String(index);
-            // 只展示，不绑点击、不做跳转。
-            lineEl.textContent = line.text;
+            // 只展示，不绑点击、不做跳转。定时行按词分 span（真逐字或
+            // 行内均分近似），纯文本行保持整行文本。
+            const nextStart =
+                index + 1 < lyricLines.length ? lyricLines[index + 1]!.timeMs : null;
+            const words = Number.isFinite(line.timeMs)
+                ? approximateWords(line, nextStart)
+                : [];
+            if (words.length > 0) {
+                for (const word of words) {
+                    const wordEl = document.createElement('span');
+                    wordEl.className = 'player-lyric-word';
+                    wordEl.dataset.start = String(word.startMs);
+                    wordEl.textContent = word.text;
+                    lineEl.appendChild(wordEl);
+                }
+            } else {
+                lineEl.textContent = line.text;
+            }
             lyricBox.appendChild(lineEl);
         });
         // 纯文本词没有可居中的当前行：去 spacer padding，从顶正常排，
@@ -762,6 +779,7 @@ function buildPlayerPage(): HTMLElement {
         lyricBox.classList.toggle('is-plain', lyricLines.length > 0 && !timed);
         lyricBox.scrollTop = 0;
         currentLineIndex = -1;
+        currentSungWord = -1;
         // 折叠条默认露首行；纯文本没有当前行，条就一直是首行。
         lyricBar.textContent = lyricLines[0]?.text ?? '';
         if (lyricLines.length === 0) {
@@ -780,6 +798,11 @@ function buildPlayerPage(): HTMLElement {
         children.forEach((child, childIndex) => {
             child.classList.toggle('is-active', childIndex === index);
         });
+        // 切行时清掉上一行的逐字高亮，下一 tick 的词更新再重算。
+        lyricBox.querySelectorAll('.player-lyric-word.is-sung').forEach((word) => {
+            word.classList.remove('is-sung');
+        });
+        currentSungWord = -1;
         if (index < 0) {
             return;
         }
@@ -880,6 +903,27 @@ function buildPlayerPage(): HTMLElement {
                 highlightLine(index);
             }
             void pushWallpaperState();
+        }
+        // 逐字高亮：只动当前行的词 span，唱到的词边界变了才改 DOM。
+        if (overlay !== null && !overlay.hidden && currentLineIndex >= 0) {
+            const positionMs = state.currentTime * 1000;
+            const children = lyricBox.querySelectorAll('.player-lyric-line');
+            const active = children[currentLineIndex] as HTMLElement | undefined;
+            const words = active?.querySelectorAll('.player-lyric-word');
+            if (words && words.length > 0) {
+                let sung = -1;
+                words.forEach((wordEl, wordIndex) => {
+                    if (Number(wordEl.getAttribute('data-start')) <= positionMs) {
+                        sung = wordIndex;
+                    }
+                });
+                if (sung !== currentSungWord) {
+                    currentSungWord = sung;
+                    words.forEach((wordEl, wordIndex) => {
+                        wordEl.classList.toggle('is-sung', wordIndex <= sung);
+                    });
+                }
+            }
         }
     });
 

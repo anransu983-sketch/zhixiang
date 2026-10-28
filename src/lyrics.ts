@@ -3,7 +3,9 @@
 // 实探结论（2026-10-25 沙箱 curl，无登录、无 cookie）：
 // - 网易云 GET https://music.163.com/api/song/lyric?id=<歌曲 id>&lv=-1&kv=-1&tv=-1
 //   回 200 JSON，lrc.lyric 就是标准 LRC 文本（含 [00:40.66] 这类时间标签），
-//   无歌词的曲返回空串或缺 lrc 字段。本模块只读 lrc.lyric，不读翻译与逐字。
+//   无歌词的曲返回空串或缺 lrc 字段。同一响应里 yrc.lyric 是逐字词
+//   （有才回），本模块读它做逐字高亮；没有逐字时播放页按行内均分
+//   做近似高亮（仅显示效果，不是真实时间轴）。
 // - YTM（2026-10-26 起接）：第一顺位是取链那步 player 返回里的
 //   captions.playerCaptionsTracklistRenderer.captionTracks，取链时已由
 //   ytm.ts 按 videoId 缓存，本模块不另发 player 请求。选轨偏好中文、
@@ -26,9 +28,17 @@ import { neteaseSource } from './sources/netease';
 import { getYtmCaptions } from './sources/ytm';
 import type { Track } from './types';
 
+export interface LyricWord {
+    text: string;
+    startMs: number;
+    durationMs: number;
+}
+
 export interface LyricLine {
     timeMs: number;
     text: string;
+    // 真逐字（网易云 YRC）才有；没有时播放页用 approximateWords 近似。
+    words?: LyricWord[];
 }
 
 export interface LyricResult {
@@ -82,6 +92,97 @@ export function parseLrc(text: string): LyricLine[] {
     }
     lines.sort((a, b) => a.timeMs - b.timeMs);
     return lines;
+}
+
+// 解析网易云 YRC 逐字词：行标签 [起始毫秒,持续毫秒]，后面跟
+// 词(相对行首偏移毫秒,持续毫秒) 串；偏移相对行首（YRC 口径）。
+// 行首标签不合规或一行无词时该行不进逐字（调用方按 LRC 行处理）。
+// 空白 token（英文词间空格常单独成 token）并入上一词尾，不单独成词。
+export function parseYrc(text: string): LyricLine[] {
+    const lines: LyricLine[] = [];
+    const lineTag = /^\[(\d+),(\d+)\]/;
+    const wordPattern = /([^(\n]+?)\((\d+),(\d+)\)/g;
+    for (const rawLine of text.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line) {
+            continue;
+        }
+        const tag = lineTag.exec(line);
+        if (!tag) {
+            continue;
+        }
+        const startMs = Number(tag[1]);
+        const rest = line.slice(tag[0].length);
+        const words: LyricWord[] = [];
+        let match: RegExpExecArray | null;
+        wordPattern.lastIndex = 0;
+        while ((match = wordPattern.exec(rest)) !== null) {
+            const raw = match[1] ?? '';
+            if (!raw.trim()) {
+                if (words.length > 0) {
+                    words[words.length - 1]!.text += raw;
+                }
+                continue;
+            }
+            words.push({
+                text: raw,
+                startMs: startMs + Number(match[2]),
+                durationMs: Number(match[3])
+            });
+        }
+        if (words.length === 0) {
+            continue;
+        }
+        lines.push({ timeMs: startMs, text: words.map((word) => word.text).join('').trim(), words });
+    }
+    lines.sort((a, b) => a.timeMs - b.timeMs);
+    return lines;
+}
+
+// 没有真逐字的定时行：把行文本切成字/词，在本行到下一行之间均分，
+// 仅供播放页逐字高亮显示用，不是真实时间轴。CJK 逐字，拉丁按词切，
+// 空格并入前一词尾；末行无下一行时按 4 秒均分。
+export function approximateWords(line: LyricLine, nextStartMs: number | null): LyricWord[] {
+    if (line.words && line.words.length > 0) {
+        return line.words;
+    }
+    const cjk = /[\u2e80-\u9fff\u3040-\u30ff\uac00-\ud7af]/;
+    const units: string[] = [];
+    let latin = '';
+    for (const ch of line.text) {
+        if (cjk.test(ch)) {
+            if (latin) {
+                units.push(latin);
+                latin = '';
+            }
+            units.push(ch);
+        } else if (/\s/.test(ch)) {
+            if (latin) {
+                latin += ch;
+            } else if (units.length > 0) {
+                units[units.length - 1] += ch;
+            }
+        } else {
+            latin += ch;
+        }
+    }
+    if (latin) {
+        units.push(latin);
+    }
+    if (units.length === 0) {
+        return [];
+    }
+    const start = line.timeMs;
+    let end = nextStartMs ?? start + 4000;
+    if (end <= start) {
+        end = start + 1000;
+    }
+    const per = (end - start) / units.length;
+    return units.map((text, i) => ({
+        text,
+        startMs: start + per * i,
+        durationMs: per
+    }));
 }
 
 // 按播放位置找当前行：最后一行 timeMs <= positionMs 的行；
@@ -480,14 +581,37 @@ async function fetchNeteaseLyricById(songId: string): Promise<LyricResult> {
         }
         const parsed = JSON.parse(response.body) as {
             lrc?: { lyric?: unknown } | null;
+            yrc?: { lyric?: unknown } | null;
         };
         const lyricText = parsed.lrc?.lyric;
-        if (typeof lyricText !== 'string' || !lyricText.trim()) {
+        const lines =
+            typeof lyricText === 'string' && lyricText.trim() ? parseLrc(lyricText) : [];
+        // 逐字：YRC 行按起始时间（±100ms）或去空白后文本相等挂到 LRC 行上；
+        // LRC 为空但 YRC 有行时直接用 YRC 行；都没有才算无词。
+        const yrcText = parsed.yrc?.lyric;
+        const yrcLines =
+            typeof yrcText === 'string' && yrcText.trim() ? parseYrc(yrcText) : [];
+        if (lines.length === 0 && yrcLines.length === 0) {
             return { lines: [], note: '这首歌暂无歌词。' };
         }
-        const lines = parseLrc(lyricText);
         if (lines.length === 0) {
-            return { lines: [], note: '这首歌暂无歌词。' };
+            return { lines: yrcLines, note: null };
+        }
+        let attached = 0;
+        const plain = (text: string): string => text.replace(/\s+/g, '');
+        for (const line of lines) {
+            const hit = yrcLines.find(
+                (yrc) =>
+                    Math.abs(yrc.timeMs - line.timeMs) <= 100 ||
+                    (plain(yrc.text) !== '' && plain(yrc.text) === plain(line.text))
+            );
+            if (hit?.words) {
+                line.words = hit.words;
+                attached += 1;
+            }
+        }
+        if (attached > 0) {
+            console.log(`[Lyrics] 网易云逐字词 ${attached}/${lines.length} 行`);
         }
         return { lines, note: null };
     } catch {

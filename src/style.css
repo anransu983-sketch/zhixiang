@@ -1514,6 +1514,15 @@ body {
     font-size: 22px;
 }
 
+/* 逐字高亮：当前行内已唱过的字/词用主题色，未唱的保持行色。 */
+.player-lyric-word {
+    transition: color 0.15s ease;
+}
+
+.player-lyric-word.is-sung {
+    color: var(--theme-accent, #f9a8d4);
+}
+
 /* 行投影（0.1.51）：浅色封面上的可读性兜底；若滚动发顿就先砍这条。 */
 .player-lyrics .player-lyric-line {
     text-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
