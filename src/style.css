@@ -829,11 +829,13 @@ body {
     position: absolute;
     left: 50%;
     top: 50%;
-    width: 28px;
-    height: 28px;
-    margin: -14px 0 0 -14px;
+    width: 16px;
+    height: 16px;
+    margin: -8px 0 0 -8px;
+    box-sizing: border-box;
     border-radius: 50%;
-    background: linear-gradient(135deg, #f9a8d4, #c084fc);
+    border: 3px solid #f9a8d4;
+    background: transparent;
     z-index: 1;
 }
 
@@ -2877,6 +2879,13 @@ html[data-fx="lite"] .home .login-area > h2 {
     color: var(--text-3);
     font-size: 13px;
     margin: 0 0 12px;
+}
+
+/* 听歌钥匙头里的副标题不换行：不给它 nowrap 时，flex 列能被长登录
+   状态行挤到只剩一字宽，副标题就从中间断开；nowrap 把列的最小宽
+   撑到副标题整行宽，挤压改由状态行自己换行承担。 */
+.login-key-head-text .login-area-sub {
+    white-space: nowrap;
 }
 
 .layout-mix-head {
