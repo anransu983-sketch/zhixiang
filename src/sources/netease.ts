@@ -129,7 +129,8 @@ class NeteaseSource implements AudioSource {
             value.replace(/\s+/g, ' ').trim().toLowerCase();
         const stripVersion = (value: string): string =>
             value
-                .replace(/\s*[（(][^）)]*(DJ|抖音|Remix|REMIX)[^）)]*[）)]/g, '')
+                // 与 lyrics.ts cleanLocalTitle 同表（0.1.106 放宽版），两侧同步剥。
+                .replace(/\s*[（(][^）)]*(DJ|抖音|Remix|REMIX|原版|正式版|完整版|Live|LIVE|现场版|伴奏|纯享|Acoustic)[^）)]*[）)]/g, '')
                 .replace(/\s+/g, ' ')
                 .trim()
                 .toLowerCase();

@@ -177,6 +177,8 @@ function buildPlayerPage(): HTMLElement {
     const cover = document.createElement('img');
     cover.className = 'player-cover';
     cover.alt = '封面';
+    // 0.1.106：与首页封面同理，B 站图床禁非 B 站 Referer，不带则通。
+    cover.referrerPolicy = 'no-referrer';
     const coverPlaceholder = document.createElement('div');
     coverPlaceholder.className = 'player-cover-ph';
     coverPlaceholder.textContent = '♪';

@@ -176,6 +176,9 @@ export function renderHome(): HTMLElement {
     const cover = document.createElement('img');
     cover.className = 'np-cover';
     cover.alt = '';
+    // 0.1.106：B 站图床（hdslb）见非 B 站 Referer 直接 403，App 页源是
+    // https://localhost，封面全灭；不带 Referer 则 200，故全部封面图禁 Referer。
+    cover.referrerPolicy = 'no-referrer';
     cover.onerror = () => {
         cover.hidden = true;
         coverPlaceholder.hidden = false;
@@ -2417,6 +2420,7 @@ function renderPosterCard(poster: Poster, playNotice: HTMLElement): HTMLElement 
         // 其它形态下 CSS 把它藏起来，不额外发请求（同地址走缓存）。
         const blur = document.createElement('img');
         blur.className = 'poster-cover-blur';
+        blur.referrerPolicy = 'no-referrer';
         blur.src = poster.coverUrl;
         blur.alt = '';
         blur.onerror = () => {
@@ -2425,6 +2429,7 @@ function renderPosterCard(poster: Poster, playNotice: HTMLElement): HTMLElement 
         coverWrap.appendChild(blur);
         const cover = document.createElement('img');
         cover.className = 'poster-cover';
+        cover.referrerPolicy = 'no-referrer';
         cover.src = poster.coverUrl;
         cover.alt = '';
         cover.onerror = () => {
@@ -2980,6 +2985,7 @@ function renderBilibiliDiscoverySection(status: HTMLElement): HTMLElement {
     const featuredCover = document.createElement('img');
     featuredCover.className = 'bili-featured-cover';
     featuredCover.alt = '';
+    featuredCover.referrerPolicy = 'no-referrer';
     featuredCover.hidden = true;
     featuredCover.onerror = () => {
         featuredCover.hidden = true;
@@ -3271,6 +3277,7 @@ function renderTracks(list: HTMLElement, tracks: Track[], status: HTMLElement): 
         if (track.coverUrl) {
             const cover = document.createElement('img');
             cover.className = 'track-cover';
+            cover.referrerPolicy = 'no-referrer';
             cover.src = track.coverUrl;
             cover.alt = '';
             cover.onerror = () => {

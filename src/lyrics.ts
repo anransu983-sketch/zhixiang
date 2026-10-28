@@ -359,8 +359,11 @@ async function fetchYtmLyrics(track: Track): Promise<LyricResult> {
 // 本地标题常带 DJ/抖音装饰（(DJ版)、_-_抖音…），查词库前先去掉，
 // 只去装饰，不改歌名本身。
 function cleanLocalTitle(title: string): string {
+    // 0.1.106：版本后缀放宽——B 站标题常带（原版）（正式版）（Live）等，
+    // 旧表只认 DJ/抖音/Remix，带后缀的标题在网易云/LRCLIB 两边都对不上
+    // （如“于是我写了一首歌（原版）”），直接 miss。括号内含关键词即剥。
     return title
-        .replace(/\s*[（(][^）)]*(DJ|抖音|Remix|REMIX)[^）)]*[）)]/g, '')
+        .replace(/\s*[（(][^）)]*(DJ|抖音|Remix|REMIX|原版|正式版|完整版|Live|LIVE|现场版|伴奏|纯享|Acoustic)[^）)]*[）)]/g, '')
         .replace(/\s*[-_]+抖音.*$/u, '')
         .replace(/\s+/g, ' ')
         .trim();
