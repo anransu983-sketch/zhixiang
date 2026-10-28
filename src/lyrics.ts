@@ -369,6 +369,101 @@ function cleanLocalTitle(title: string): string {
         .trim();
 }
 
+// 0.1.107：B 站视频标题不是歌名——《海底》 一支榴莲 原版 配唯美mv 这类，
+// 歌名在《》里、歌手跟在后面、UP 主（author 字段）不是歌手。直接拿视频标题
+// ＋UP 主去查词库必然 miss（标题对不上、歌手也对不上）。先把视频标题拆成
+// 若干（歌名，歌手）候选逐个试，命中即停。
+const BILI_DESCRIPTOR_TOKEN =
+    /^(原版|完整版|官方|唯美|高清|超清|无损|音质|现场|live|mv|配|字幕|中字|4k|8k|cover|翻唱|纯享|正式版|伴奏|修复|精修|混剪|合集|试听|首发|独家)$/i;
+
+function isBiliDescriptorToken(token: string): boolean {
+    return (
+        BILI_DESCRIPTOR_TOKEN.test(token) ||
+        /配|唯美|MV|mv/.test(token)
+    );
+}
+
+function parseBiliTitleCandidates(
+    videoTitle: string,
+    uploader: string
+): Array<{ title: string; artist: string }> {
+    const candidates: Array<{ title: string; artist: string }> = [];
+    const push = (title: string, artist: string): void => {
+        const cleanTitle = cleanLocalTitle(title);
+        const cleanArtist = artist.replace(/\s+/g, ' ').trim();
+        if (!cleanTitle) {
+            return;
+        }
+        if (!candidates.some((c) => c.title === cleanTitle && c.artist === cleanArtist)) {
+            candidates.push({ title: cleanTitle, artist: cleanArtist });
+        }
+    };
+    // 先去 【...】 段（如【无损音质】、【歌词手写】），再拆。
+    const base = videoTitle
+        .replace(/【[^】]*】/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const quoted = base.match(/《([^》]+)》/);
+    if (quoted && quoted[1]) {
+        const song = quoted[1].trim();
+        const rest = base
+            .replace(/《[^》]+》/, ' ')
+            .replace(/^[\s\-－—–|｜/／]+/, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+        const singerTokens = rest.split(' ').filter((t) => t && !isBiliDescriptorToken(t));
+        const singer = singerTokens.join(' ');
+        if (singer) {
+            push(song, singer);
+            // 歌手名后可能跟英文别名（如“周杰伦 Jay Chou”），首 token 也试一次，
+            // 免得全名在网易云歌手比对上两边都不包含。
+            const first = singerTokens[0];
+            if (first && first !== singer) {
+                push(song, first);
+            }
+        }
+        push(song, '');
+    } else {
+        // 无《》：按分隔符两边都试（“歌手 - 歌名”与“歌名 - 歌手”都常见），
+        // 错的那组在网易云标题比对上自然落空，不会误中。
+        const parts = base
+            .split(/\s*[-－—–|｜/／]\s*/)
+            .map((part) => part.trim())
+            .filter((part) => part);
+        if (parts.length === 2) {
+            push(parts[0]!, parts[1]!);
+            push(parts[1]!, parts[0]!);
+        }
+    }
+    // 兜底：整标题只按歌名查（歌手空着，searchForLocal 只比标题）。
+    push(base, '');
+    // UP 主本人也可能是歌手（如自制原创），最后再试一次原值。
+    if (uploader && uploader !== '未知歌手') {
+        push(base, uploader);
+    }
+    return candidates;
+}
+
+async function fetchBilibiliLyrics(track: Track): Promise<LyricResult> {
+    // 0.1.105：先试 B 站 CC 字幕轨（有轨才用，实测音乐视频多无轨）。
+    const cc = await getBilibiliSubtitleLines(track);
+    if (cc) {
+        return { lines: cc, note: null };
+    }
+    // 无轨时回落联网补源，但不用视频标题＋UP 主原值查，改拆出来的候选逐个试。
+    for (const candidate of parseBiliTitleCandidates(track.title, track.artist)) {
+        const matched = await fetchLocalLyrics({
+            ...track,
+            title: candidate.title,
+            artist: candidate.artist
+        });
+        if (matched) {
+            return matched;
+        }
+    }
+    return { lines: [], note: '这首歌暂无歌词。' };
+}
+
 // 本地 LRCLIB 缓存：命中与干净 miss 都存，7 天过期，最多 200 条；
 // 纯文本行的时间记 Infinity，JSON 存不下 Infinity，所以分 kind 存：
 // synced 存 texts + times，plain 只存 texts，恢复时再拼 Infinity。
@@ -660,14 +755,7 @@ export async function fetchLyrics(track: Track): Promise<LyricResult> {
         return fetchYtmLyrics(track);
     }
     if (track.source === 'bilibili') {
-        // 0.1.105：先试 B 站 CC 字幕轨（有轨才用，实测音乐视频多无轨）；
-        // 无轨或取不到时回落本地那套联网补源（网易云搜＋LRCLIB）。
-        const cc = await getBilibiliSubtitleLines(track);
-        if (cc) {
-            return { lines: cc, note: null };
-        }
-        const matched = await fetchLocalLyrics(track);
-        return matched ?? { lines: [], note: '这首歌暂无歌词。' };
+        return fetchBilibiliLyrics(track);
     }
     const prefix = 'netease:';
     if (!track.id.startsWith(prefix) || track.id.length === prefix.length) {
