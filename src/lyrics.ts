@@ -273,7 +273,9 @@ interface LocalLyricCacheEntry {
     times?: number[];
 }
 
-const LOCAL_LYRIC_CACHE_KEY = 'zx_lrclib_local_v1';
+// 0.1.89：v1 键下的旧 miss 会挡住 0.1.85 后加的网易云补源（缓存查在补源之前，
+// 7 天 TTL 内直接回空），升 v2 让旧 miss 全作废、重新走网易云匹配。
+const LOCAL_LYRIC_CACHE_KEY = 'zx_lrclib_local_v2';
 const LOCAL_LYRIC_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const LOCAL_LYRIC_CACHE_MAX = 200;
 
