@@ -2229,7 +2229,7 @@ function renderDailySection(
     return section;
 }
 
-// 0.1.87 我的导入：本地页在全量扫描之外另建的分组。用户从扫描结果里勾选
+// 0.1.87 私藏（原我的导入）：本地页在全量扫描之外另建的分组。用户从扫描结果里勾选
 // 歌曲导进来，分组只显示自己挑的；删除只删芷湘的库记录，文件不动，可重新导入。
 function renderMyImportsSection(): HTMLElement {
     const section = document.createElement('section');
@@ -2238,11 +2238,11 @@ function renderMyImportsSection(): HTMLElement {
     const head = document.createElement('div');
     head.className = 'daily-head';
     const heading = document.createElement('h2');
-    heading.textContent = '我的导入';
+    heading.textContent = '私藏';
     head.appendChild(heading);
     const sub = document.createElement('span');
     sub.className = 'daily-sub';
-    sub.textContent = '自己挑的歌 · 删除只删库记录不删文件';
+    sub.textContent = '亲手挑的歌 · 删除只删库记录不删文件';
     head.appendChild(sub);
     section.appendChild(head);
 
@@ -2292,7 +2292,7 @@ function renderMyImportsSection(): HTMLElement {
         try {
             tracks = await resolve();
         } catch {
-            notice.textContent = '我的导入暂时加载不出来，请稍后再试';
+            notice.textContent = '私藏暂时加载不出来，请稍后再试';
             playAll.disabled = true;
             openPageButton.disabled = true;
             return;
@@ -2326,7 +2326,7 @@ function renderMyImportsSection(): HTMLElement {
         page.appendChild(pageHead);
         const pageSub = document.createElement('p');
         pageSub.className = 'daily-page-sub';
-        pageSub.textContent = '从扫描结果里勾选，导入到我的导入';
+        pageSub.textContent = '从扫描结果里勾选，导入到私藏';
         page.appendChild(pageSub);
         const confirmButton = document.createElement('button');
         confirmButton.type = 'button';
@@ -2409,7 +2409,7 @@ function renderMyImportsSection(): HTMLElement {
         });
         pageHead.appendChild(back);
         const pageTitle = document.createElement('h2');
-        pageTitle.textContent = '我的导入';
+        pageTitle.textContent = '私藏';
         pageHead.appendChild(pageTitle);
         page.appendChild(pageHead);
         const pagePlayAll = document.createElement('button');
