@@ -3209,6 +3209,43 @@ body[data-zx-theme] .mag-card {
     font-size: 13px;
     margin: 6px 0 4px;
 }
+/* 0.1.86 收起模块头（主题衣橱 / 雨窗，同听歌钥匙折叠写法）：外面只露标题＋
+   副标题＋当前选项＋箭头，内容收在 body 里，点标题展开。 */
+.zx-appearance-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+.zx-appearance-head-text {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+.zx-appearance-head-title {
+    font-size: 20px;
+    font-weight: 700;
+}
+.zx-appearance-summary {
+    color: var(--text-2);
+    font-size: 12px;
+    margin-top: 4px;
+}
+.zx-appearance-head-chev {
+    color: var(--text-3);
+    font-size: 18px;
+    line-height: 1.4;
+}
+.zx-appearance-body {
+    margin-top: 12px;
+}
 .zx-appearance-row {
     display: flex;
     align-items: center;

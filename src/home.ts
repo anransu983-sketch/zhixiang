@@ -1099,19 +1099,36 @@ function renderLoginArea(): HTMLElement {
     return area;
 }
 
-// 0.1.85 主题衣橱：三套主题行式列表（仿图二：浅色大圆角卡、标题左控件右），
-// 末行主题配色只展示当前主色色值，不做自定义取色器。
+// 0.1.86 主题衣橱改成收起模块（同听歌钥匙）：外面只露模块头（标题＋副标题＋
+// 当前主题＋箭头），点标题展开后三行主题与主题配色行才在模块里面出现。默认收起。
 function renderThemeWardrobe(): HTMLElement {
     const section = document.createElement('section');
     section.className = 'zx-appearance-card';
 
-    const heading = document.createElement('h2');
+    const head = document.createElement('button');
+    head.type = 'button';
+    head.className = 'zx-appearance-head';
+    const headText = document.createElement('span');
+    headText.className = 'zx-appearance-head-text';
+    const heading = document.createElement('span');
+    heading.className = 'zx-appearance-head-title';
     heading.textContent = '主题衣橱';
-    section.appendChild(heading);
-    const sub = document.createElement('p');
+    const sub = document.createElement('span');
     sub.className = 'zx-appearance-sub';
     sub.textContent = '三套主题 · 一处换装';
-    section.appendChild(sub);
+    const summary = document.createElement('span');
+    summary.className = 'zx-appearance-summary';
+    headText.append(heading, sub, summary);
+    const headChev = document.createElement('span');
+    headChev.className = 'zx-appearance-head-chev';
+    headChev.textContent = '▾';
+    head.append(headText, headChev);
+    section.appendChild(head);
+
+    const body = document.createElement('div');
+    body.className = 'zx-appearance-body';
+    body.hidden = true;
+    section.appendChild(body);
 
     const checks = new Map<string, HTMLElement>();
     const hexText = document.createElement('span');
@@ -1124,6 +1141,7 @@ function renderThemeWardrobe(): HTMLElement {
         }
         const theme = THEMES.find((item) => item.id === current) ?? THEMES[0]!;
         hexText.textContent = theme.accent;
+        summary.textContent = `当前：${theme.name}`;
     };
     for (const theme of THEMES) {
         const row = document.createElement('div');
@@ -1148,7 +1166,7 @@ function renderThemeWardrobe(): HTMLElement {
             applyTheme(theme.id);
             refresh();
         });
-        section.appendChild(row);
+        body.appendChild(row);
     }
     const colorRow = document.createElement('div');
     colorRow.className = 'zx-appearance-row zx-theme-color-row';
@@ -1164,23 +1182,46 @@ function renderThemeWardrobe(): HTMLElement {
     palette.className = 'zx-theme-palette';
     palette.textContent = '🎨';
     colorRow.appendChild(palette);
-    section.appendChild(colorRow);
+    body.appendChild(colorRow);
+    head.addEventListener('click', () => {
+        body.hidden = !body.hidden;
+        headChev.textContent = body.hidden ? '▾' : '▴';
+    });
     refresh();
     return section;
 }
 
-// 0.1.85 雨窗：雨滴三档，与播放页视觉面板共用同一份存储。
+
+// 0.1.86 雨窗改成收起模块（同听歌钥匙）：外面只露模块头（标题＋副标题＋
+// 当前档位＋箭头），点标题展开后三档才在模块里面出现。默认收起。
 function renderRainWindow(): HTMLElement {
     const section = document.createElement('section');
     section.className = 'zx-appearance-card';
 
-    const heading = document.createElement('h2');
+    const head = document.createElement('button');
+    head.type = 'button';
+    head.className = 'zx-appearance-head';
+    const headText = document.createElement('span');
+    headText.className = 'zx-appearance-head-text';
+    const heading = document.createElement('span');
+    heading.className = 'zx-appearance-head-title';
     heading.textContent = '雨窗';
-    section.appendChild(heading);
-    const sub = document.createElement('p');
+    const sub = document.createElement('span');
     sub.className = 'zx-appearance-sub';
     sub.textContent = '水滴落在玻璃上 · 三档可选';
-    section.appendChild(sub);
+    const summary = document.createElement('span');
+    summary.className = 'zx-appearance-summary';
+    headText.append(heading, sub, summary);
+    const headChev = document.createElement('span');
+    headChev.className = 'zx-appearance-head-chev';
+    headChev.textContent = '▾';
+    head.append(headText, headChev);
+    section.appendChild(head);
+
+    const body = document.createElement('div');
+    body.className = 'zx-appearance-body';
+    body.hidden = true;
+    section.appendChild(body);
 
     const modes: Array<{ mode: number; name: string; desc: string }> = [
         { mode: 0, name: '关', desc: '无效果，壁纸保持干净' },
@@ -1194,6 +1235,8 @@ function renderRainWindow(): HTMLElement {
             check.textContent = mode === current ? '✓' : '';
             check.parentElement?.classList.toggle('is-active', mode === current);
         }
+        const currentMode = modes.find((item) => item.mode === current);
+        summary.textContent = `当前：${currentMode ? currentMode.name : '动态滑落'}`;
     };
     for (const item of modes) {
         const row = document.createElement('div');
@@ -1218,11 +1261,16 @@ function renderRainWindow(): HTMLElement {
             saveVisualToggles({ ...loadVisualToggles(), rainMode: item.mode });
             refresh();
         });
-        section.appendChild(row);
+        body.appendChild(row);
     }
+    head.addEventListener('click', () => {
+        body.hidden = !body.hidden;
+        headChev.textContent = body.hidden ? '▾' : '▴';
+    });
     refresh();
     return section;
 }
+
 
 // 0.1.85 轻装模式：一行性能开关，body 加 perf-mode 类。
 function renderPerfModeSection(): HTMLElement {

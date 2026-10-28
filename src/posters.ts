@@ -6,7 +6,7 @@
 // - YTM 热门专辑：见 sources/ytm.ts 的 fetchYtmChartPosters 实测注释。
 // 本模块不发任何新接口请求，只做分组与分路组装；各路请求逻辑归各自音源文件。
 
-import { localSource } from './sources/local';
+import { getLocalCoverFromNetease, localSource } from './sources/local';
 import { fetchNeteaseChartPosters } from './sources/netease';
 import { fetchYtmChartPosters } from './sources/ytm';
 import type { Poster, Track } from './types';
@@ -75,17 +75,38 @@ export async function loadLocalAlbumPosters(): Promise<Poster[]> {
         list.push(track);
         groups.set(album, list);
     }
-    return [...groups.entries()]
+    const topAlbums = [...groups.entries()]
         .sort((a, b) => b[1].length - a[1].length)
-        .slice(0, LOCAL_ALBUM_LIMIT)
-        .map(([album, albumTracks]) => ({
-            id: `local-album:${album}`,
-            title: album,
-            subtitle: albumTracks[0]?.artist,
-            coverUrl: albumTracks.find((track) => track.coverUrl)?.coverUrl,
-            source: 'local' as const,
-            tracks: albumTracks
-        }));
+        .slice(0, LOCAL_ALBUM_LIMIT);
+    // 0.1.86 本地海报墙补封面：专辑内没有 MediaStore 封面时，对代表曲走
+    // 网易云搜索匹配（同播放页/迷你栏的 getLocalCoverFromNetease，封面不设
+    // 时长门）；三张专辑并行查，查不到或失败就留空、渲染时仍渐变占位。
+    // 海报墙与 3D 歌单架共用这批数据（posterCache），两处同时受益。
+    return Promise.all(
+        topAlbums.map(async ([album, albumTracks]) => {
+            let coverUrl = albumTracks.find((track) => track.coverUrl)?.coverUrl;
+            if (!coverUrl) {
+                for (const track of albumTracks.slice(0, 3)) {
+                    try {
+                        coverUrl = (await getLocalCoverFromNetease(track)) ?? undefined;
+                    } catch {
+                        coverUrl = undefined;
+                    }
+                    if (coverUrl) {
+                        break;
+                    }
+                }
+            }
+            return {
+                id: `local-album:${album}`,
+                title: album,
+                subtitle: albumTracks[0]?.artist,
+                coverUrl,
+                source: 'local' as const,
+                tracks: albumTracks
+            };
+        })
+    );
 }
 
 export const POSTER_SECTIONS: PosterSectionDefinition[] = [
