@@ -25,6 +25,7 @@
 import { httpGet } from './native/http';
 import { withSessionCookie } from './sources/netease-session';
 import { neteaseSource } from './sources/netease';
+import { getLocalEmbeddedLyrics } from './sources/local';
 import { getYtmCaptions } from './sources/ytm';
 import type { Track } from './types';
 
@@ -410,6 +411,28 @@ function saveLocalLyricCache(cache: Record<string, LocalLyricCacheEntry>): void 
 }
 
 async function fetchLocalLyrics(track: Track): Promise<LyricResult | null> {
+    // 0.1.103 内嵌歌词（在联网补源之前）：文件自带的词优先于联网匹配。
+    // 内嵌结果不进联网缓存——缓存按歌名歌手时长键控，内嵌是按文件走的，
+    // 混进去会串到同名不同文件上。
+    const embedded = await getLocalEmbeddedLyrics(track);
+    if (embedded) {
+        const lines = parseLrc(embedded.text);
+        if (lines.length > 0) {
+            console.log(`[Lyrics] 本地内嵌歌词 ${embedded.source} 同步词 ${lines.length} 行`);
+            return { lines, note: null };
+        }
+        const texts = embedded.text
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter((line) => line.length > 0);
+        if (texts.length > 0) {
+            console.log(`[Lyrics] 本地内嵌歌词 ${embedded.source} 纯文本 ${texts.length} 行`);
+            return {
+                lines: texts.map((text) => ({ timeMs: Number.POSITIVE_INFINITY, text })),
+                note: null
+            };
+        }
+    }
     const title = cleanLocalTitle(track.title);
     if (!title) {
         return null;

@@ -19,6 +19,9 @@ interface LocalRawTrack {
 interface LocalMusicPlugin {
     scan(): Promise<{ tracks: LocalRawTrack[] }>;
     coverArt(options: { albumId: number }): Promise<{ dataUrl: string }>;
+    embeddedLyrics(options: {
+        path: string;
+    }): Promise<{ found: boolean; lyrics: string; source: string }>;
 }
 
 const LocalMusic = registerPlugin<LocalMusicPlugin>('LocalMusic');
@@ -61,6 +64,25 @@ class LocalMusicSource implements AudioSource {
             throw new Error('找不到这首歌的本地文件，请重新打开本地音乐再试');
         }
         return Capacitor.convertFileSrc(path);
+    }
+
+    // 内嵌歌词（0.1.103）：按扫描时记下的文件路径向原生要文件自带的词。
+    // 路径不在缓存里（例如 App 重启后直接点了旧列表）时不重扫，
+    // 回 null 让调用方落到联网补源；原生读失败同样回 null。
+    async embeddedLyrics(track: Track): Promise<{ text: string; source: string } | null> {
+        const path = this.paths.get(track.id);
+        if (!path) {
+            return null;
+        }
+        try {
+            const result = await LocalMusic.embeddedLyrics({ path });
+            if (result.found && typeof result.lyrics === 'string' && result.lyrics.trim()) {
+                return { text: result.lyrics, source: result.source || 'embedded' };
+            }
+        } catch {
+            // 原生读不到就当没有，落到联网补源。
+        }
+        return null;
     }
 
     private async loadAll(force = false): Promise<Track[]> {
@@ -148,6 +170,12 @@ export async function getLocalCoverFromNetease(track: Track): Promise<string | n
 }
 
 export const localSource = new LocalMusicSource();
+
+export async function getLocalEmbeddedLyrics(
+    track: Track
+): Promise<{ text: string; source: string } | null> {
+    return localSource.embeddedLyrics(track);
+}
 
 export function getLocalNotice(): string | null {
     return localSource.notice;

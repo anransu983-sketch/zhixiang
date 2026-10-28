@@ -215,6 +215,28 @@ public class LocalMusicPlugin extends Plugin {
         }
     }
 
+    // 内嵌歌词（0.1.103）：读文件自带的词（同名 .lrc / MP3 USLT /
+    // FLAC 注释 / M4A ©lyr），见 EmbeddedLyrics。读不到只回 found=false，
+    // TS 侧落到联网补源；文件读失败也只 reject，TS 侧同样落到补源。
+    @PluginMethod
+    public void embeddedLyrics(PluginCall call) {
+        String path = call.getString("path");
+        if (path == null || path.isEmpty()) {
+            call.reject("缺少文件路径", "NO_PATH");
+            return;
+        }
+        try {
+            EmbeddedLyrics.Result result = EmbeddedLyrics.read(path);
+            JSObject out = new JSObject();
+            out.put("found", result != null);
+            out.put("lyrics", result != null ? result.text : "");
+            out.put("source", result != null ? result.source : "");
+            call.resolve(out);
+        } catch (Exception e) {
+            call.reject("读内嵌歌词失败", "READ_FAILED", e);
+        }
+    }
+
     private boolean hasAudioPermission() {
         if (getContext() == null) {
             return false;
