@@ -1019,6 +1019,85 @@ body {
     scroll-snap-type: x mandatory;
 }
 
+/* 歌单架控制条（0.1.101）：搜索收拢＋随机挑歌＋高潮试听。 */
+.shelf-controls {
+    display: flex;
+    gap: 8px;
+    margin: 4px 0 8px;
+}
+
+.shelf-search {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 12px;
+    border: none;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    font-size: 13px;
+    outline: none;
+}
+
+.shelf-search::placeholder {
+    color: rgba(255, 255, 255, 0.5);
+}
+
+.shelf-btn {
+    flex: none;
+    padding: 6px 12px;
+    border: none;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+    font-size: 13px;
+}
+
+/* 私人漫游（0.1.101）：我的页卡片里的场景按钮与状态行。 */
+.roam-scene-row {
+    display: flex;
+    gap: 8px;
+    padding: 0 16px 8px;
+}
+
+.roam-scene-btn {
+    flex: 1;
+    padding: 8px 0;
+    border: none;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+    font-size: 14px;
+}
+
+.roam-scene-btn.is-active {
+    background: var(--theme-accent, #f9a8d4);
+    color: #1c1424;
+    font-weight: 700;
+}
+
+.roam-status-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0 16px 12px;
+}
+
+.roam-status {
+    color: rgba(255, 255, 255, 0.65);
+    font-size: 13px;
+}
+
+.roam-end-btn {
+    flex: none;
+    padding: 6px 12px;
+    border: none;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+    font-size: 13px;
+}
+
 .shelf-viewport {
     display: inline-block;
     min-width: 100%;

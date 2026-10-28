@@ -22,6 +22,16 @@
 // - 播放停止/暂停时只画一帧静态画面就停画，不空转；状态变化时由
 //   播放页调用 poke() 重启动画。toggle 变化也调 poke() 立即生效。
 
+import { sampleCoverColor } from './cover-color';
+
+// #rrggbb 转 rgba() 字符串（封面取色晕染与脉动辉光用）。
+function hexToRgba(hex: string, alpha: number): string {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 export interface VisualToggles {
     rainMode: number;
     particles: boolean;
@@ -137,6 +147,9 @@ export class VisualStage {
     private seededHeight = 0;
     private bgCanvas: HTMLCanvasElement | null = null;
     private bgKey = '';
+    // 封面取色（0.1.101）：当前封面的主色，采样失败时 null（用主题粉兜底）。
+    private coverColor: string | null = null;
+    private coverColorSrc = '';
     private freqData: Uint8Array<ArrayBuffer> | null = null;
     private onVisibilityChange = (): void => {
         if (!document.hidden) {
@@ -384,6 +397,22 @@ export class VisualStage {
             if (bg) {
                 ctx.drawImage(bg, 0, 0);
             }
+            // 封面取色晕染：主色径向晕开、边缘淡出，给模糊底加一层 Monet 味；
+            // 封面元素在画布上层，不会被盖住。无取色时不画，保持旧观感。
+            if (cover && this.coverColor) {
+                const wash = ctx.createRadialGradient(
+                    width / 2,
+                    height / 2,
+                    0,
+                    width / 2,
+                    height / 2,
+                    Math.max(width, height) / 2
+                );
+                wash.addColorStop(0, hexToRgba(this.coverColor, 0.32));
+                wash.addColorStop(1, hexToRgba(this.coverColor, 0));
+                ctx.fillStyle = wash;
+                ctx.fillRect(0, 0, width, height);
+            }
         } else {
             ctx.fillStyle = '#14101c';
             ctx.fillRect(0, 0, width, height);
@@ -406,19 +435,21 @@ export class VisualStage {
             this.drawSword(ctx, width, height);
         }
 
-        // 脉动作用在封面元素上，不在画布里画。
+        // 脉动作用在封面元素上，不在画布里画。辉光颜色跟封面主色走，
+        // 采不到时回落旧的主题粉。
         if (toggles.pulse) {
+            const glow = this.coverColor ?? '#e8a0bf';
             if (energy !== null) {
                 const scale = 1 + energy * 0.06;
                 this.coverElement.style.transform = `scale(${scale.toFixed(3)})`;
                 this.coverElement.style.boxShadow = `0 0 ${Math.round(
                     12 + energy * 36
-                )}px rgba(232, 160, 191, ${0.35 + energy * 0.45})`;
+                )}px ${hexToRgba(glow, 0.35 + energy * 0.45)}`;
             } else if (animated) {
                 // 降级呼吸：跟随播放状态的缓慢呼吸，不伪造频谱。
                 const scale = 1 + 0.02 * Math.sin(time / 900);
                 this.coverElement.style.transform = `scale(${scale.toFixed(3)})`;
-                this.coverElement.style.boxShadow = '0 0 18px rgba(232, 160, 191, 0.4)';
+                this.coverElement.style.boxShadow = `0 0 18px ${hexToRgba(glow, 0.4)}`;
             } else {
                 this.coverElement.style.transform = 'scale(1)';
                 this.coverElement.style.boxShadow = '';
@@ -436,9 +467,22 @@ export class VisualStage {
     // 水滴的透镜采样也从这张底图里取（与主画布同尺寸同坐标）。
     private ensureBackground(width: number, height: number): HTMLCanvasElement | null {
         const cover = this.options.getCoverImage();
-        const key = `${width}x${height}|${
-            cover && cover.complete && cover.naturalWidth > 0 ? cover.src : 'none'
-        }`;
+        const coverSrc =
+            cover && cover.complete && cover.naturalWidth > 0 ? cover.src : 'none';
+        // 封面换了就重采主色（异步；采到后强制重画一帧让晕染与辉光生效，
+        // 静态帧下也要把 staticDrawn 清掉，否则 poke() 不重画）。
+        if (coverSrc !== 'none' && coverSrc !== this.coverColorSrc) {
+            this.coverColorSrc = coverSrc;
+            this.coverColor = null;
+            void sampleCoverColor(coverSrc).then((hex) => {
+                if (hex && this.coverColorSrc === coverSrc) {
+                    this.coverColor = hex;
+                    this.staticDrawn = false;
+                    this.poke();
+                }
+            });
+        }
+        const key = `${width}x${height}|${coverSrc}`;
         if (this.bgCanvas && this.bgKey === key) {
             return this.bgCanvas;
         }

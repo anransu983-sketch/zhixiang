@@ -284,6 +284,12 @@ function aggregate(list: PlaySession[]): FootprintStats {
 }
 
 /** 指定月的足迹（month 1-12）；传 null 则为全部累计。 */
+// 原始播放记录（0.1.101 私人漫游用）：按 trackId 聚合出常听曲目。
+// 只读、不改写；返回副本，调用方不改原缓存。
+export function getPlaySessions(): PlaySession[] {
+    return [...loadSessions()];
+}
+
 export function getFootprint(year: number | null, month: number | null): FootprintStats {
     const all = loadSessions();
     if (year === null || month === null) {

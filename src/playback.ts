@@ -993,6 +993,30 @@ export function pause(): void {
     emitTrackChange();
 }
 
+// 跳转（0.1.101 歌单架高潮试听用）：只动当前发声槽的 audio.currentTime，
+// 进度状态由已有的 timeupdate 回写，不另维护。无正在播的槽、
+// 秒数非法或流不支持跳转时静默（保持原位播，不抛错打断试听）。
+export function seekTo(seconds: number): void {
+    const audio = activeSlot?.audio;
+    if (!audio || !Number.isFinite(seconds) || seconds < 0) {
+        return;
+    }
+    try {
+        audio.currentTime = seconds;
+    } catch {
+        // 流不支持跳转时保持原位。
+    }
+}
+
+// 队尾续推（0.1.101 私人漫游用）：把一批曲目追加到当前队列尾，
+// 不动当前播放位置与当前曲；调用方负责去重。队列为空时不追加。
+export function appendToQueue(tracks: Track[]): void {
+    if (tracks.length === 0 || queue.length === 0) {
+        return;
+    }
+    queue.push(...tracks);
+}
+
 export async function resume(): Promise<void> {
     if (!activeSlot || !currentTrack || playing) {
         return;

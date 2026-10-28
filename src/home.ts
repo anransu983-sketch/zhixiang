@@ -30,6 +30,14 @@ import { nearestTraditionalColor } from './traditional-colors';
 import { SOURCES } from './sources/index';
 import { getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalNotice, localSource } from './sources/local';
 import { addMyImportIds, loadMyImportIds, removeMyImportId } from './my-imports';
+import {
+    ROAM_SCENE_NAMES,
+    endRoaming,
+    getRoamState,
+    onRoamChange,
+    startRoaming
+} from './roaming';
+import type { RoamScene } from './roaming';
 import { fetchNeteaseDailySongs } from './sources/netease';
 import { fetchYtmDailyTracks, probeYtmHome } from './sources/ytm';
 import {
@@ -338,6 +346,7 @@ export function renderHome(): HTMLElement {
             page.appendChild(renderRainWindow());
             page.appendChild(renderPerfModeSection());
             page.appendChild(renderLayoutMixSection());
+            page.appendChild(renderRoamingSection());
             page.appendChild(renderFootprintEntry());
             page.appendChild(renderDeveloperSection());
             const record: TabPage = { page };
@@ -1556,6 +1565,88 @@ function renderRainWindow(): HTMLElement {
 
 
 // 0.1.85 轻装模式：一行性能开关，body 加 perf-mode 类。
+// 私人漫游（0.1.101）：我的页卡片，熟悉/探索/拼图三场景；
+// 漫游中显示场景与已播数，结束漫游回到原队列（见 roaming.ts）。
+function renderRoamingSection(): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'zx-appearance-card';
+
+    const row = document.createElement('div');
+    row.className = 'zx-appearance-row';
+    const icon = document.createElement('span');
+    icon.className = 'zx-rain-icon';
+    icon.textContent = '🧭';
+    row.appendChild(icon);
+    const text = document.createElement('span');
+    text.className = 'zx-appearance-row-text';
+    const name = document.createElement('b');
+    name.textContent = '私人漫游';
+    const desc = document.createElement('p');
+    desc.textContent = '连续推荐着播，队尾自动续推，结束回到原队列';
+    text.append(name, desc);
+    row.appendChild(text);
+    section.appendChild(row);
+
+    const sceneRow = document.createElement('div');
+    sceneRow.className = 'roam-scene-row';
+    const sceneButtons: HTMLButtonElement[] = [];
+    (['familiar', 'explore', 'puzzle'] as RoamScene[]).forEach((scene) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'roam-scene-btn';
+        button.dataset.scene = scene;
+        button.textContent = ROAM_SCENE_NAMES[scene];
+        button.addEventListener('click', () => {
+            status.textContent = '正在拼歌单…';
+            void startRoaming(scene).then((result) => {
+                if (!result.ok) {
+                    status.textContent = result.note;
+                }
+                refresh();
+            });
+        });
+        sceneButtons.push(button);
+        sceneRow.appendChild(button);
+    });
+    section.appendChild(sceneRow);
+
+    const statusRow = document.createElement('div');
+    statusRow.className = 'roam-status-row';
+    const status = document.createElement('span');
+    status.className = 'roam-status';
+    const endButton = document.createElement('button');
+    endButton.type = 'button';
+    endButton.className = 'roam-end-btn';
+    endButton.textContent = '结束漫游';
+    endButton.hidden = true;
+    endButton.addEventListener('click', () => {
+        status.textContent = '正在回到原队列…';
+        void endRoaming().then(refresh);
+    });
+    statusRow.append(status, endButton);
+    section.appendChild(statusRow);
+
+    const refresh = (): void => {
+        const state = getRoamState();
+        if (state.active && state.scene) {
+            status.textContent = `漫游中：${ROAM_SCENE_NAMES[state.scene]} · 已播 ${state.played} 首`;
+            endButton.hidden = false;
+            sceneButtons.forEach((button) => {
+                button.classList.toggle('is-active', button.dataset.scene === state.scene);
+            });
+        } else {
+            status.textContent = '选个场景开始漫游。';
+            endButton.hidden = true;
+            sceneButtons.forEach((button) => {
+                button.classList.remove('is-active');
+            });
+        }
+    };
+    onRoamChange(refresh);
+    refresh();
+    return section;
+}
+
 function renderPerfModeSection(): HTMLElement {
     const section = document.createElement('section');
     section.className = 'zx-appearance-card';

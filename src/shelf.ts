@@ -9,7 +9,7 @@
 // 正在播的歌单用 onTrackChange + 曲目 id 匹配做简单高亮。
 // 任何一路失败或为空，都只在该层留一句中文提示，不拖垮整架。
 
-import { getCurrentState, onTrackChange, playQueue } from './playback';
+import { getCurrentState, onTrackChange, playQueue, seekTo } from './playback';
 import type { PlaybackState } from './playback';
 import { friendlyPosterError, posterFallbackBackground, posterHue } from './posters';
 import type { PosterSectionDefinition } from './posters';
@@ -65,6 +65,103 @@ export function renderShelfLayer(
     notice.textContent = '正在加载…';
     layer.appendChild(notice);
 
+    // 架内控制条（0.1.101）：搜索收拢＋随机挑歌＋高潮试听，只动本层已加载的歌单，
+    // 不另发请求。搜索按标题＋副标题过滤；随机与试听都只在可见歌单里挑。
+    const controls = document.createElement('div');
+    controls.className = 'shelf-controls';
+    const search = document.createElement('input');
+    search.type = 'search';
+    search.className = 'shelf-search';
+    search.placeholder = '搜这架上的歌单';
+    search.setAttribute('aria-label', '搜索歌单');
+    const randomButton = document.createElement('button');
+    randomButton.type = 'button';
+    randomButton.className = 'shelf-btn';
+    randomButton.textContent = '随机挑歌';
+    const previewButton = document.createElement('button');
+    previewButton.type = 'button';
+    previewButton.className = 'shelf-btn';
+    previewButton.textContent = '高潮试听';
+    controls.append(search, randomButton, previewButton);
+    layer.insertBefore(controls, scroll);
+
+    let loadedPosters: Poster[] = [];
+    const visiblePosters = (): Poster[] => {
+        const query = search.value.trim().toLowerCase();
+        if (!query) {
+            return loadedPosters;
+        }
+        return loadedPosters.filter((poster) =>
+            `${poster.title} ${poster.subtitle ?? ''}`.toLowerCase().includes(query));
+    };
+    const applyFilter = (): void => {
+        const query = search.value.trim().toLowerCase();
+        let visible = 0;
+        for (const [id, record] of records) {
+            const poster = postersById.get(id);
+            const hit =
+                !query ||
+                `${poster?.title ?? ''} ${poster?.subtitle ?? ''}`
+                    .toLowerCase()
+                    .includes(query);
+            record.hidden = !hit;
+            if (hit) {
+                visible += 1;
+            }
+        }
+        // 只在已加载时接管 notice；加载中／失败时 notice 另有用途，不抢。
+        if (loadedPosters.length > 0) {
+            board.hidden = visible === 0;
+            notice.hidden = visible > 0;
+            if (visible === 0) {
+                notice.textContent = '没有匹配的歌单，换个词试试。';
+            }
+        }
+    };
+    search.addEventListener('input', applyFilter);
+
+    const pickRandom = (): { poster: Poster; index: number } | null => {
+        const pool = visiblePosters().filter((poster) => poster.tracks.length > 0);
+        if (pool.length === 0) {
+            return null;
+        }
+        const poster = pool[Math.floor(Math.random() * pool.length)]!;
+        const index = Math.floor(Math.random() * poster.tracks.length);
+        return { poster, index };
+    };
+    const playPicked = (picked: { poster: Poster; index: number } | null, chorus: boolean): void => {
+        if (!picked) {
+            playNotice.textContent =
+                loadedPosters.length === 0
+                    ? '这架还没有歌单。'
+                    : '没有匹配的歌单，换个词试试。';
+            playNotice.hidden = false;
+            return;
+        }
+        void (async () => {
+            try {
+                await playQueue(picked.poster.tracks, picked.index);
+                if (chorus) {
+                    // 高潮点按 45% 估算（无副歌检测）；流不支持跳转时从头播。
+                    const track = picked.poster.tracks[picked.index];
+                    if (track && track.durationMs && track.durationMs > 0) {
+                        seekTo((track.durationMs * 0.45) / 1000);
+                    }
+                }
+                playNotice.hidden = true;
+            } catch (error) {
+                playNotice.textContent = friendlyPlayError(error);
+                playNotice.hidden = false;
+            }
+        })();
+    };
+    randomButton.addEventListener('click', () => {
+        playPicked(pickRandom(), false);
+    });
+    previewButton.addEventListener('click', () => {
+        playPicked(pickRandom(), true);
+    });
+
     const records = new Map<string, HTMLElement>();
     const postersById = new Map<string, Poster>();
     const refreshHighlight = (state: PlaybackState): void => {
@@ -93,6 +190,7 @@ export function renderShelfLayer(
             notice.textContent = definition.emptyNotice;
             return;
         }
+        loadedPosters = posters;
         notice.hidden = true;
         for (const [index, poster] of posters.entries()) {
             postersById.set(poster.id, poster);
