@@ -32,6 +32,7 @@ import { BILI_CHART_ZONES, fetchBilibiliChart } from './sources/bilibili';
 import type { BiliChartZone } from './sources/bilibili';
 import { checkAllFilesAccess, getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalNotice, getLocalSidecarCoverDataUrl, localSource, requestAllFilesAccess } from './sources/local';
 import { addMyImportIds, loadMyImportIds, removeMyImportId } from './my-imports';
+import { biliQrImageUrl, checkBiliQr, clearBiliSession, fetchBiliFavFolders, fetchBiliFavTracks, fetchBiliQrKey, loadBiliSession, validateBiliSession, type BiliFavFolder } from './sources/bilibili-session';
 import { addTrackToPlaylist, createPlaylist, deletePlaylist, loadPlaylists, removeTrackFromPlaylist, renamePlaylist, trackKey } from './playlists';
 import { runBatchWriteback } from './batch-writeback';
 import {
@@ -401,6 +402,7 @@ export function renderHome(): HTMLElement {
         }
 
         if (tabId === 'bilibili') {
+            page.appendChild(renderBilibiliAccountSection());
             page.appendChild(renderBilibiliDiscoverySection(status));
         }
 
@@ -3362,6 +3364,321 @@ function renderNeteaseDailySection(): HTMLElement {
 // 0.1.105 B 站发现页（参考截图：今日推荐＋音乐排行榜四栏）：
 // 今日推荐取全站音乐榜头条（个性化推荐要登录，v1 用榜单头条代替）；
 // 排行榜四栏按栏懒加载、本页内缓存；点行即播整榜（复用 renderTracks）。
+// 0.1.111 B 站登录＋收藏夹：B 站页顶的账号区（扫码登录／收藏夹歌单）。
+function renderBilibiliAccountSection(): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'daily-section';
+
+    let pollTimer: number | null = null;
+    const stopPoll = (): void => {
+        if (pollTimer !== null) {
+            window.clearInterval(pollTimer);
+            pollTimer = null;
+        }
+    };
+
+    const makeHead = (title: string, sub: string): HTMLElement => {
+        const head = document.createElement('div');
+        head.className = 'daily-head';
+        const heading = document.createElement('h2');
+        heading.textContent = title;
+        head.appendChild(heading);
+        const subEl = document.createElement('span');
+        subEl.className = 'daily-sub';
+        subEl.textContent = sub;
+        head.appendChild(subEl);
+        return head;
+    };
+
+    const renderLoggedOut = (noticeText: string): void => {
+        stopPoll();
+        section.replaceChildren();
+        section.appendChild(makeHead('B站登录', '扫码登录后，我的收藏夹会同步成可播歌单'));
+        if (noticeText) {
+            const notice = document.createElement('p');
+            notice.className = 'source-notice';
+            notice.textContent = noticeText;
+            section.appendChild(notice);
+        }
+        const loginButton = document.createElement('button');
+        loginButton.type = 'button';
+        loginButton.className = 'login-btn';
+        loginButton.textContent = '扫码登录';
+        loginButton.addEventListener('click', () => {
+            void startQr();
+        });
+        section.appendChild(loginButton);
+    };
+
+    const startQr = async (): Promise<void> => {
+        stopPoll();
+        section.replaceChildren();
+        section.appendChild(makeHead('B站登录', '用 B站 App 扫码'));
+        const status = document.createElement('p');
+        status.className = 'source-notice';
+        status.textContent = '正在取二维码…';
+        section.appendChild(status);
+        const qrWrap = document.createElement('div');
+        qrWrap.className = 'pl-qr-wrap';
+        section.appendChild(qrWrap);
+        const actions = document.createElement('div');
+        actions.className = 'pl-footer';
+        const refreshButton = document.createElement('button');
+        refreshButton.type = 'button';
+        refreshButton.className = 'login-btn';
+        refreshButton.textContent = '刷新二维码';
+        const cancelButton = document.createElement('button');
+        cancelButton.type = 'button';
+        cancelButton.className = 'login-btn';
+        cancelButton.textContent = '取消';
+        actions.append(refreshButton, cancelButton);
+        section.appendChild(actions);
+
+        let qrcodeKey = '';
+        let polls = 0;
+        const fetchKey = async (): Promise<void> => {
+            stopPoll();
+            status.textContent = '正在取二维码…';
+            try {
+                const key = await fetchBiliQrKey();
+                qrcodeKey = key.qrcodeKey;
+                qrWrap.replaceChildren();
+                const img = document.createElement('img');
+                img.className = 'pl-qr-img';
+                img.src = biliQrImageUrl(key.url);
+                img.alt = 'B站扫码二维码';
+                qrWrap.appendChild(img);
+                status.textContent = '等待扫码';
+                polls = 0;
+                pollTimer = window.setInterval(() => {
+                    void (async () => {
+                        if (!qrcodeKey) {
+                            return;
+                        }
+                        polls += 1;
+                        if (polls > 90) {
+                            stopPoll();
+                            status.textContent = '二维码已过期，点刷新重取';
+                            return;
+                        }
+                        try {
+                            const result = await checkBiliQr(qrcodeKey);
+                            if (result.code === 0) {
+                                stopPoll();
+                                if (result.session) {
+                                    renderLoggedIn();
+                                } else {
+                                    status.textContent = result.message;
+                                }
+                                return;
+                            }
+                            status.textContent = result.message;
+                            if (result.code === 86038) {
+                                stopPoll();
+                            }
+                        } catch (error) {
+                            stopPoll();
+                            status.textContent =
+                                error instanceof Error ? error.message : '扫码状态查不到';
+                        }
+                    })();
+                }, 2000);
+            } catch (error) {
+                status.textContent = error instanceof Error ? error.message : '取码失败';
+            }
+        };
+        refreshButton.addEventListener('click', () => {
+            void fetchKey();
+        });
+        cancelButton.addEventListener('click', () => {
+            renderLoggedOut('');
+        });
+        await fetchKey();
+    };
+
+    const renderLoggedIn = (): void => {
+        stopPoll();
+        const session = loadBiliSession();
+        section.replaceChildren();
+        section.appendChild(
+            makeHead(`B站 · ${session ? session.nickname : '已登录'}`, '收藏夹已同步，点夹子播整夹')
+        );
+        const logoutButton = document.createElement('button');
+        logoutButton.type = 'button';
+        logoutButton.className = 'login-btn';
+        logoutButton.textContent = '退出登录';
+        logoutButton.addEventListener('click', () => {
+            clearBiliSession();
+            renderLoggedOut('已退出 B站登录');
+        });
+        section.appendChild(logoutButton);
+        const notice = document.createElement('p');
+        notice.className = 'source-notice';
+        notice.textContent = '正在加载收藏夹…';
+        section.appendChild(notice);
+        const list = document.createElement('div');
+        list.className = 'pl-list';
+        section.appendChild(list);
+        void (async () => {
+            try {
+                const folders = await fetchBiliFavFolders();
+                if (folders.length === 0) {
+                    notice.textContent = '还没有收藏夹，先去 B站 App 收藏几个视频';
+                    return;
+                }
+                notice.textContent = `共 ${folders.length} 个收藏夹`;
+                for (const folder of folders) {
+                    const row = document.createElement('button');
+                    row.type = 'button';
+                    row.className = 'pl-row';
+                    const glyph = document.createElement('span');
+                    glyph.className = 'pl-glyph';
+                    glyph.textContent = '♪';
+                    row.appendChild(glyph);
+                    const info = document.createElement('span');
+                    info.className = 'pl-info';
+                    const name = document.createElement('span');
+                    name.className = 'pl-name';
+                    name.textContent = folder.title;
+                    const count = document.createElement('span');
+                    count.className = 'pl-count';
+                    count.textContent = `${folder.mediaCount} 条`;
+                    info.append(name, count);
+                    row.appendChild(info);
+                    const play = document.createElement('span');
+                    play.className = 'pl-play-btn';
+                    play.textContent = '▶';
+                    play.addEventListener('click', (event) => {
+                        event.stopPropagation();
+                        void (async () => {
+                            try {
+                                const tracks = await fetchBiliFavTracks(folder.id);
+                                if (tracks.length > 0) {
+                                    await playQueue(tracks, 0);
+                                } else {
+                                    notice.textContent = '这个夹子是空的';
+                                }
+                            } catch (error) {
+                                notice.textContent =
+                                    error instanceof Error ? error.message : '播不了这个夹子';
+                            }
+                        })();
+                    });
+                    row.appendChild(play);
+                    row.addEventListener('click', () => {
+                        openBiliFavPage(folder);
+                    });
+                    list.appendChild(row);
+                }
+            } catch (error) {
+                notice.textContent = error instanceof Error ? error.message : '收藏夹加载失败';
+            }
+        })();
+    };
+
+    const initNotice = document.createElement('p');
+    initNotice.className = 'source-notice';
+    initNotice.textContent = '正在确认 B站登录…';
+    section.appendChild(initNotice);
+    void (async () => {
+        const validity = await validateBiliSession();
+        if (validity === 'valid') {
+            renderLoggedIn();
+        } else if (validity === 'expired') {
+            renderLoggedOut('B站登录已过期，请重新扫码');
+        } else if (validity === 'unknown') {
+            // 网络异常时不把登录态判死：有存档仍按登录渲染，收藏夹加载失败再提示。
+            if (loadBiliSession()) {
+                renderLoggedIn();
+            } else {
+                renderLoggedOut('');
+            }
+        } else {
+            renderLoggedOut('');
+        }
+    })();
+    return section;
+}
+
+// 0.1.111 收藏夹详情页：点歌播本夹。
+function openBiliFavPage(folder: BiliFavFolder): void {
+    const page = document.createElement('div');
+    page.className = 'daily-page';
+    const pageHead = document.createElement('div');
+    pageHead.className = 'daily-page-head';
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'daily-page-back';
+    back.textContent = '返回';
+    back.addEventListener('click', () => {
+        page.remove();
+    });
+    pageHead.appendChild(back);
+    const pageTitle = document.createElement('h2');
+    pageTitle.textContent = folder.title;
+    pageHead.appendChild(pageTitle);
+    page.appendChild(pageHead);
+    const pageSub = document.createElement('p');
+    pageSub.className = 'daily-page-sub';
+    pageSub.textContent = '正在加载…';
+    page.appendChild(pageSub);
+    const trackList = document.createElement('ul');
+    trackList.className = 'track-list';
+    page.appendChild(trackList);
+    document.body.appendChild(page);
+    void (async () => {
+        try {
+            const tracks = await fetchBiliFavTracks(folder.id);
+            if (tracks.length === 0) {
+                pageSub.textContent = '这个夹子是空的';
+                return;
+            }
+            pageSub.textContent = `共 ${tracks.length} 条 · 点歌播本夹`;
+            tracks.forEach((track, index) => {
+                const row = document.createElement('li');
+                row.className = 'track-row';
+                if (track.coverUrl) {
+                    const cover = document.createElement('img');
+                    cover.className = 'track-cover';
+                    cover.referrerPolicy = 'no-referrer';
+                    cover.src = track.coverUrl;
+                    cover.alt = '';
+                    cover.onerror = () => {
+                        cover.remove();
+                    };
+                    row.appendChild(cover);
+                } else {
+                    const glyph = document.createElement('span');
+                    glyph.className = 'track-glyph';
+                    glyph.textContent = '♪';
+                    row.appendChild(glyph);
+                }
+                const info = document.createElement('div');
+                info.className = 'track-info';
+                const name = document.createElement('div');
+                name.className = 'track-title';
+                name.textContent = track.title;
+                info.appendChild(name);
+                const meta = document.createElement('div');
+                meta.className = 'track-meta';
+                meta.textContent = track.artist;
+                info.appendChild(meta);
+                row.appendChild(info);
+                const duration = document.createElement('span');
+                duration.className = 'track-duration';
+                duration.textContent = formatDuration(track.durationMs);
+                row.appendChild(duration);
+                row.addEventListener('click', () => {
+                    void playQueue(tracks, index);
+                });
+                trackList.appendChild(row);
+            });
+        } catch (error) {
+            pageSub.textContent = error instanceof Error ? error.message : '加载失败';
+        }
+    })();
+}
+
 function renderBilibiliDiscoverySection(status: HTMLElement): HTMLElement {
     const section = document.createElement('div');
     section.className = 'bili-discovery';

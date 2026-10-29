@@ -3734,3 +3734,17 @@ body.perf-mode * {
     opacity: 0.55;
     cursor: default;
 }
+
+/* 0.1.111 B 站扫码二维码 */
+.pl-qr-wrap {
+    display: flex;
+    justify-content: center;
+    margin-top: 12px;
+}
+.pl-qr-img {
+    width: 220px;
+    height: 220px;
+    padding: 12px;
+    border-radius: 12px;
+    background: #ffffff;
+}

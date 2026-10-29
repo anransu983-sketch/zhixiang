@@ -1,4 +1,4 @@
 // 应用版本号：与 package.json 的 version 保持一致，发版时一起改。
 // 用途：开发者区日志开头带上它，贴日志时一眼就能看出是哪个版本跑的——
 // 之前几次扫码日志分不出版本，排障卡过三回，特意钉死这一条。
-export const APP_VERSION = '0.1.110';
+export const APP_VERSION = '0.1.111';
