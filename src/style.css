@@ -2102,6 +2102,16 @@ body {
     font-size: 14px;
 }
 
+/* 0.1.119 hidden 必须赢：0.1.118 又犯了 display 盖 hidden 的老坑
+   （代码库里 0.1.50／0.1.53 已经吃过三次），墙和马赛克卡的
+   作者 display:grid 把 UA 的 [hidden] 盖掉了，导致砖根本没藏起来；
+   贴词面板的 display:flex 同理，一并补上。 */
+.footprint-wall[hidden],
+.footprint-wall-mosaic[hidden],
+.player-sheet[hidden] {
+    display: none;
+}
+
 .footprint-wall-expand {
     width: 100%;
     margin-top: 12px;
