@@ -175,7 +175,9 @@ function coverThumb(trackId: string, coverUrl: string | undefined, sizeClass: st
         const wrap = document.createElement('div');
         wrap.className = sizeClass;
         const img = document.createElement('img');
-        img.src = coverUrl;
+        // 0.1.122：旧 http 封面就地升 https，各家图床都支持 https，
+        // 升不上去的走 onerror 回退，不比原来差。
+        img.src = coverUrl.startsWith('http://') ? `https://${coverUrl.slice(7)}` : coverUrl;
         img.alt = '';
         // 0.1.116：B 站图床禁非 B 站 Referer，不带则通；加载失败时
         // 退回渐变占位，不留破图。
@@ -318,22 +320,33 @@ function renderWall(body: HTMLElement, stats: FootprintStats): void {
     // 不重试＋重启重算，也让排在后面的歌一直饿死。改成：墙与
     // TOP 取并集、无上限串行补，补到就写回播放记录，下次打开
     // 墙和 TOP 都有；TOP 行在本页内直接换图，不用等下次打开。
-    const targetMap = new Map<string, { trackId: string; title: string; artist: string }>();
+    const targetMap = new Map<string, { trackId: string; title: string; artist: string; coverUrl?: string }>();
     const consider = (item: { trackId: string; title: string; artist: string; coverUrl?: string }): void => {
-        if (item.coverUrl !== undefined && item.coverUrl.startsWith('http')) {
+        // 0.1.122：只认 https 真封面，旧 http 封面也进补封面队列。
+        if (item.coverUrl !== undefined && item.coverUrl.startsWith('https://')) {
             return;
         }
         if (attemptedWallCovers.has(item.trackId)) {
             return;
         }
         attemptedWallCovers.add(item.trackId);
-        targetMap.set(item.trackId, { trackId: item.trackId, title: item.title, artist: item.artist });
+        targetMap.set(item.trackId, { trackId: item.trackId, title: item.title, artist: item.artist, coverUrl: item.coverUrl });
     };
     stats.wall.forEach(consider);
     stats.topSongs.forEach(consider);
+    // 0.1.122：补封面全程打日志，调音台现场日志里能看到每首的
+    // 原封面档位（https/http/无/其他）与补到与否，定位不再靠猜。
+    console.log(`[Footprint] 补封面队列 ${targetMap.size} 首`);
     let chain = Promise.resolve();
     for (const item of targetMap.values()) {
         chain = chain.then(async () => {
+            const recorded = item.coverUrl === undefined
+                ? '无'
+                : item.coverUrl.startsWith('https://')
+                    ? 'https'
+                    : item.coverUrl.startsWith('http://')
+                        ? 'http'
+                        : '其他';
             let coverUrl: string | null = null;
             try {
                 const probe: Track = {
@@ -347,8 +360,10 @@ function renderWall(body: HTMLElement, stats: FootprintStats): void {
                 coverUrl = null;
             }
             if (!coverUrl) {
+                console.log(`[Footprint] 补封面失败 ${item.title} / ${item.artist}（原封面${recorded}，搜不到或无封面）`);
                 return;
             }
+            console.log(`[Footprint] 补封面成功 ${item.title} / ${item.artist}（原封面${recorded}）`);
             const els = tiles.get(item.trackId) ?? [];
             for (const el of els) {
                 const fresh = coverThumb(

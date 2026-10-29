@@ -97,13 +97,30 @@ function saveSessions(list: PlaySession[]): void {
     }
 }
 
+// 封面可信度：https 真封面 2，http 旧封面 1（0.1.79 之前网易云
+// 给的 picUrl 一律是 http，且聚合规则把 http:// 当“已有封面”
+// 导致旧 http 封面粘住、永远升不到 https，见 0.1.122），其余 0。
+function coverRank(url: string | undefined): number {
+    if (url === undefined) {
+        return 0;
+    }
+    if (url.startsWith('https://')) {
+        return 2;
+    }
+    if (url.startsWith('http://')) {
+        return 1;
+    }
+    return 0;
+}
+
 // 0.1.116 唱片墙补封面回写：把联网补到的封面写进历史记录，
-// 只补没有 http 封面的那几条，不动已有真封面的记录。
+// 只补没有 https 真封面的那几条；0.1.122 起 http 旧封面也补，
+// 不动已有 https 真封面的记录。
 export function updateSessionCover(trackId: string, coverUrl: string): void {
     const list = loadSessions();
     let changed = false;
     for (const session of list) {
-        if (session.trackId === trackId && !session.coverUrl?.startsWith('http')) {
+        if (session.trackId === trackId && coverRank(session.coverUrl) < 2) {
             session.coverUrl = coverUrl;
             changed = true;
         }
@@ -252,10 +269,10 @@ function aggregate(list: PlaySession[]): FootprintStats {
             }
             song.listenedMs += session.listenedMs;
             // 0.1.116：http 真封面优先，content:// 占位不许盖掉它。
+            // 0.1.122：按可信度排，https 新封面可替换旧 http 封面。
             if (
                 session.coverUrl !== undefined &&
-                (song.coverUrl === undefined ||
-                    (!song.coverUrl.startsWith('http') && session.coverUrl.startsWith('http')))
+                coverRank(session.coverUrl) > coverRank(song.coverUrl)
             ) {
                 song.coverUrl = session.coverUrl;
             }
@@ -286,10 +303,10 @@ function aggregate(list: PlaySession[]): FootprintStats {
             wall.lastPlayedAt = session.startedAt;
             // 0.1.116：同上，墙砖也只认 http 封面，后一次无封面播放
             // 不许把已有的真封面盖成 content:// 占位。
+            // 0.1.122：按可信度排，https 新封面可替换旧 http 封面。
             if (
                 session.coverUrl !== undefined &&
-                (wall.coverUrl === undefined ||
-                    (!wall.coverUrl.startsWith('http') && session.coverUrl.startsWith('http')))
+                coverRank(session.coverUrl) > coverRank(wall.coverUrl)
             ) {
                 wall.coverUrl = session.coverUrl;
             }
