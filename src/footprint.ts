@@ -18,10 +18,12 @@ import {
     getYearFootprint,
     hasAnyHistory,
     SOURCE_NAMES,
+    updateSessionCover,
 } from './playback-history';
 import type { FootprintStats } from './playback-history';
 import { posterFallbackBackground } from './posters';
-import type { SourceId } from './types';
+import { getLocalCoverFromNetease } from './sources/local';
+import type { SourceId, Track } from './types';
 
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
 const RANGE_KEY = 'zx_footprint_range_v1';
@@ -160,6 +162,14 @@ function buildFootprintPage(year: number, month: number): HTMLElement {
     return page;
 }
 
+function fallbackThumb(trackId: string, sizeClass: string): HTMLElement {
+    const fallback = document.createElement('div');
+    fallback.className = sizeClass;
+    fallback.style.background = posterFallbackBackground(trackId);
+    fallback.textContent = '♪';
+    return fallback;
+}
+
 function coverThumb(trackId: string, coverUrl: string | undefined, sizeClass: string): HTMLElement {
     if (coverUrl !== undefined && coverUrl.startsWith('http')) {
         const wrap = document.createElement('div');
@@ -167,14 +177,16 @@ function coverThumb(trackId: string, coverUrl: string | undefined, sizeClass: st
         const img = document.createElement('img');
         img.src = coverUrl;
         img.alt = '';
+        // 0.1.116：B 站图床禁非 B 站 Referer，不带则通；加载失败时
+        // 退回渐变占位，不留破图。
+        img.referrerPolicy = 'no-referrer';
+        img.onerror = () => {
+            wrap.replaceWith(fallbackThumb(trackId, sizeClass));
+        };
         wrap.appendChild(img);
         return wrap;
     }
-    const fallback = document.createElement('div');
-    fallback.className = sizeClass;
-    fallback.style.background = posterFallbackBackground(trackId);
-    fallback.textContent = '♪';
-    return fallback;
+    return fallbackThumb(trackId, sizeClass);
 }
 
 function section(titleText: string, smallText?: string): HTMLElement {
@@ -226,15 +238,63 @@ function renderHero(
     body.appendChild(hero);
 }
 
+// 0.1.116 唱片墙补封面：墙只认记录里的 http 封面，本地歌记录的是
+// content://，所以迷你条那套补源从没落到墙上。这里对无 http 封面
+// 的墙砖按最近播放顺序补网易云搜索（一次最多 24 张，串行），补到
+// 就地换图并写回历史记录，下次打开直接显示；补不到的不重复查。
+const attemptedWallCovers = new Set<string>();
+
 function renderWall(body: HTMLElement, stats: FootprintStats): void {
-    const wrap = section(`唱片墙 · ${stats.songCount} 首`);
+    const wrap = section(`唱片墙 · ${stats.songCount} 首`, '封面缺失时自动联网补');
     const wall = document.createElement('div');
     wall.className = 'footprint-wall';
+    const tiles = new Map<string, HTMLElement>();
     for (const item of stats.wall) {
-        wall.appendChild(coverThumb(item.trackId, item.coverUrl, 'footprint-wall-item'));
+        const tile = coverThumb(item.trackId, item.coverUrl, 'footprint-wall-item');
+        tiles.set(item.trackId, tile);
+        wall.appendChild(tile);
     }
     wrap.appendChild(wall);
     body.appendChild(wrap);
+    const targets = stats.wall.filter((item) => {
+        if (item.coverUrl !== undefined && item.coverUrl.startsWith('http')) {
+            return false;
+        }
+        if (attemptedWallCovers.has(item.trackId)) {
+            return false;
+        }
+        attemptedWallCovers.add(item.trackId);
+        return true;
+    }).slice(0, 24);
+    let chain = Promise.resolve();
+    for (const item of targets) {
+        chain = chain.then(async () => {
+            const tile = tiles.get(item.trackId);
+            if (!tile) {
+                return;
+            }
+            let coverUrl: string | null = null;
+            try {
+                const probe: Track = {
+                    id: item.trackId,
+                    title: item.title,
+                    artist: item.artist,
+                    source: 'local'
+                };
+                coverUrl = await getLocalCoverFromNetease(probe);
+            } catch {
+                coverUrl = null;
+            }
+            if (!coverUrl) {
+                return;
+            }
+            const fresh = coverThumb(item.trackId, coverUrl, 'footprint-wall-item');
+            tile.replaceWith(fresh);
+            tiles.set(item.trackId, fresh);
+            updateSessionCover(item.trackId, coverUrl);
+        });
+    }
+    void chain;
 }
 
 function renderTopSongs(body: HTMLElement, stats: FootprintStats): void {

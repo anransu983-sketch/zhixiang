@@ -97,6 +97,22 @@ function saveSessions(list: PlaySession[]): void {
     }
 }
 
+// 0.1.116 唱片墙补封面回写：把联网补到的封面写进历史记录，
+// 只补没有 http 封面的那几条，不动已有真封面的记录。
+export function updateSessionCover(trackId: string, coverUrl: string): void {
+    const list = loadSessions();
+    let changed = false;
+    for (const session of list) {
+        if (session.trackId === trackId && !session.coverUrl?.startsWith('http')) {
+            session.coverUrl = coverUrl;
+            changed = true;
+        }
+    }
+    if (changed) {
+        saveSessions(list);
+    }
+}
+
 function syncFromState(): void {
     const state = getCurrentState();
     const track = state.track;
@@ -235,7 +251,12 @@ function aggregate(list: PlaySession[]): FootprintStats {
                 song.plays += 1;
             }
             song.listenedMs += session.listenedMs;
-            if (session.coverUrl !== undefined && song.coverUrl === undefined) {
+            // 0.1.116：http 真封面优先，content:// 占位不许盖掉它。
+            if (
+                session.coverUrl !== undefined &&
+                (song.coverUrl === undefined ||
+                    (!song.coverUrl.startsWith('http') && session.coverUrl.startsWith('http')))
+            ) {
                 song.coverUrl = session.coverUrl;
             }
         }
@@ -263,7 +284,13 @@ function aggregate(list: PlaySession[]): FootprintStats {
             });
         } else if (session.startedAt > wall.lastPlayedAt) {
             wall.lastPlayedAt = session.startedAt;
-            if (session.coverUrl !== undefined) {
+            // 0.1.116：同上，墙砖也只认 http 封面，后一次无封面播放
+            // 不许把已有的真封面盖成 content:// 占位。
+            if (
+                session.coverUrl !== undefined &&
+                (wall.coverUrl === undefined ||
+                    (!wall.coverUrl.startsWith('http') && session.coverUrl.startsWith('http')))
+            ) {
                 wall.coverUrl = session.coverUrl;
             }
         }
