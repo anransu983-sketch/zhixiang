@@ -294,9 +294,9 @@ function renderWall(body: HTMLElement, stats: FootprintStats): void {
     overlayBottom.className = 'footprint-mosaic-bottom';
     const overlayCount = document.createElement('span');
     overlayCount.textContent = `${stats.songCount}首`;
-    const overlayHint = document.createElement('span');
-    overlayHint.textContent = '点开看全部 ▸';
-    overlayBottom.append(overlayCount, overlayHint);
+    // 0.1.120 用户选 D：卡片上只留标题和总数，整张卡片都能点，
+    // “点开看全部”这行字去掉，不再压在封面上。
+    overlayBottom.append(overlayCount);
     overlay.append(overlayTitle, overlayBottom);
     mosaic.appendChild(overlay);
     const collapseButton = document.createElement('button');
