@@ -249,12 +249,32 @@ function renderWall(body: HTMLElement, stats: FootprintStats): void {
     const wall = document.createElement('div');
     wall.className = 'footprint-wall';
     const tiles = new Map<string, HTMLElement>();
-    for (const item of stats.wall) {
+    // 0.1.117 收起版：默认只露 12 张，剩下的折起来，想看再展开。
+    const VISIBLE_COUNT = 12;
+    stats.wall.forEach((item, index) => {
         const tile = coverThumb(item.trackId, item.coverUrl, 'footprint-wall-item');
+        if (index >= VISIBLE_COUNT) {
+            tile.classList.add('is-extra');
+        }
         tiles.set(item.trackId, tile);
         wall.appendChild(tile);
-    }
+    });
     wrap.appendChild(wall);
+    if (stats.wall.length > VISIBLE_COUNT) {
+        const expandButton = document.createElement('button');
+        expandButton.type = 'button';
+        expandButton.className = 'footprint-wall-expand';
+        const refreshExpandButton = (): void => {
+            const open = wall.classList.contains('is-open');
+            expandButton.textContent = open ? '收起 ▴' : `展开全部 ${stats.songCount} 首 ▾`;
+        };
+        expandButton.addEventListener('click', () => {
+            wall.classList.toggle('is-open');
+            refreshExpandButton();
+        });
+        refreshExpandButton();
+        wrap.appendChild(expandButton);
+    }
     body.appendChild(wrap);
     const targets = stats.wall.filter((item) => {
         if (item.coverUrl !== undefined && item.coverUrl.startsWith('http')) {
