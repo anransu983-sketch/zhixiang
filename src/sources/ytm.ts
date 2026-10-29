@@ -902,6 +902,85 @@ function playlistVideoToTrack(raw: YtmPlaylistVideo): Track | null {
     };
 }
 
+// 0.1.110 WEB_REMIX 轮播卡片：WEB_REMIX 的 home/charts 响应里没有
+// musicListItemCarouselModel / playlistVideoRenderer，轮播架是
+// musicCarouselShelfRenderer，里面是 musicTwoRowItemRenderer 卡片
+// （标题 runs、副标题 runs、musicThumbnailRenderer 封面、
+// navigationEndpoint.browseEndpoint.browseId 是 VL… 歌单）。
+// 卡片本身不是单曲，展开卡片取曲与榜单专辑同路。
+interface YtmTwoRowCard {
+    title: string;
+    subtitle: string;
+    coverUrl?: string;
+    browseId: string;
+}
+
+function collectTwoRowCards(node: unknown, out: YtmTwoRowCard[]): void {
+    if (Array.isArray(node)) {
+        for (const child of node) {
+            collectTwoRowCards(child, out);
+        }
+        return;
+    }
+    if (node === null || typeof node !== 'object') {
+        return;
+    }
+    const record = node as Record<string, unknown>;
+    const item = record.musicTwoRowItemRenderer as Record<string, unknown> | null;
+    if (item !== null && typeof item === 'object') {
+        const nav = item.navigationEndpoint as Record<string, unknown> | null;
+        const browse = nav?.browseEndpoint as Record<string, unknown> | null;
+        const browseId = browse?.browseId;
+        if (typeof browseId === 'string' && browseId.startsWith('VL')) {
+            const thumb = item.thumbnailRenderer as Record<string, unknown> | null;
+            const musicThumb = thumb?.musicThumbnailRenderer as Record<string, unknown> | null;
+            const thumbnail = musicThumb?.thumbnail as Record<string, unknown> | null;
+            const title = item.title as Record<string, unknown> | null;
+            const subtitle = item.subtitle as Record<string, unknown> | null;
+            out.push({
+                title: Array.isArray(title?.runs)
+                    ? (title.runs as RawRun[]).map(runText).join('')
+                    : '',
+                subtitle: Array.isArray(subtitle?.runs)
+                    ? (subtitle.runs as RawRun[]).map(runText).join('')
+                    : '',
+                coverUrl: largestThumbnailSource(thumbnail?.thumbnails),
+                browseId
+            });
+        }
+    }
+    for (const child of Object.values(record)) {
+        collectTwoRowCards(child, out);
+    }
+}
+
+// 0.1.110 卡片展开：twoRow 卡片给的是歌单 browseId，展开后两种单曲
+// 形态都要（playlistVideoRenderer 与 musicResponsiveListItemRenderer，
+// VL 歌单在 ANDROID 与 WEB_REMIX 下各出一种）。
+async function expandCardTracks(browseId: string, limit: number): Promise<Track[]> {
+    const playlist = await browseYtm(browseId);
+    const tracks: Track[] = [];
+    const seen = new Set<string>();
+    const push = (track: Track | null): void => {
+        if (!track || seen.has(track.id) || tracks.length >= limit) {
+            return;
+        }
+        seen.add(track.id);
+        tracks.push(track);
+    };
+    const videos: YtmPlaylistVideo[] = [];
+    collectPlaylistVideos(playlist, videos);
+    for (const video of videos) {
+        push(playlistVideoToTrack(video));
+    }
+    const items: RawListItem[] = [];
+    collectListItems(playlist, items);
+    for (const item of items) {
+        push(toTrack(item));
+    }
+    return tracks;
+}
+
 async function browseYtm(browseId: string): Promise<unknown> {
     // 榜单页 browse 的铁律（见文件头沙箱实测）：
     // 1) context.client 里绝不带 visitorData 字段——带空串回 404，不带回 200。
@@ -1077,6 +1156,38 @@ export async function fetchYtmChartPosters(): Promise<Poster[]> {
             }
         }
     }
+    if (posters.length === 0) {
+        // 0.1.110 WEB_REMIX 榜单没有 musicListItemCarouselModel，轮播架是
+        // twoRow 卡片：展开前几张卡片取曲当海报，空卡片跳过。
+        const cards: YtmTwoRowCard[] = [];
+        collectTwoRowCards(charts, cards);
+        const seenCards = new Set<string>();
+        for (const card of cards) {
+            if (posters.length >= CHART_ALBUM_LIMIT) {
+                break;
+            }
+            if (seenCards.has(card.browseId)) {
+                continue;
+            }
+            seenCards.add(card.browseId);
+            try {
+                const tracks = await expandCardTracks(card.browseId, CHART_ALBUM_TRACK_LIMIT);
+                if (tracks.length === 0) {
+                    continue;
+                }
+                posters.push({
+                    id: `ytm-chart:${card.browseId}`,
+                    title: card.title || 'YTM 热门专辑',
+                    subtitle: card.subtitle || undefined,
+                    coverUrl: card.coverUrl ?? tracks.find((track) => track.coverUrl)?.coverUrl,
+                    source: 'ytm',
+                    tracks
+                });
+            } catch {
+                continue;
+            }
+        }
+    }
     return posters;
 }
 
@@ -1239,8 +1350,10 @@ export async function probeYtmHome(): Promise<void> {
                 body,
                 headers
             );
+            // 0.1.110：WEB_REMIX 首页只有 twoRow 卡片，也算有内容（可展开取曲）。
             const hasItems = response.body.includes('musicResponsiveListItemRenderer')
-                || response.body.includes('playlistVideoRenderer');
+                || response.body.includes('playlistVideoRenderer')
+                || response.body.includes('musicTwoRowItemRenderer');
             // 对照臂以 status 200 为通过，单曲项标志只作参考（榜单响应结构不同）。
             const extra = response.status !== 200 ? ` ${logProbeError(response.body)}` : '';
             console.log(`[Ytm] 首页探针 v3 ${arm.label}：status=${response.status} len=${response.body.length} 单曲项=${hasItems ? '有' : '无'}${extra}`);
@@ -1363,6 +1476,30 @@ export async function fetchYtmDailyTracks(): Promise<Track[]> {
         }
     };
     collectListItems(home);
+    if (tracks.length === 0) {
+        // 0.1.110 WEB_REMIX 首页没有单曲项，只有 twoRow 歌单卡片：
+        // 展开前几张卡片取曲，仍为空才算真的拿不到。
+        const cards: YtmTwoRowCard[] = [];
+        collectTwoRowCards(home, cards);
+        const seenCards = new Set<string>();
+        for (const card of cards) {
+            if (tracks.length >= 30) {
+                break;
+            }
+            if (seenCards.has(card.browseId)) {
+                continue;
+            }
+            seenCards.add(card.browseId);
+            try {
+                const expanded = await expandCardTracks(card.browseId, 30);
+                for (const track of expanded) {
+                    pushTrack(track);
+                }
+            } catch {
+                continue;
+            }
+        }
+    }
     if (tracks.length === 0) {
         console.log('[Ytm] 每日推荐首页无单曲，browse 回了空 feed');
         throw new Error('YTM 每日推荐暂时拿不到，请登录后再试');
