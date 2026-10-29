@@ -1004,6 +1004,9 @@ body {
 
 .tab-page {
     padding-top: 12px;
+    /* 0.1.112：页底再垫 48px——#app 已留迷你条＋底栏的位，但滑到底时
+       最后一行（搜索空态那句）仍会贴进半透明迷你条后面，多垫一段才干净。 */
+    padding-bottom: 48px;
 }
 
 .tab-page > * + * {
@@ -1779,10 +1782,14 @@ body {
 .daily-head {
     display: flex;
     align-items: baseline;
+    flex-wrap: wrap;
     gap: 10px;
 }
 .daily-head h2 {
     margin: 0;
+    /* 0.1.112：标题不许被副标题挤——副标题长时自己换到下一行，
+       标题独占一行，不再出现“我的歌／单”这种半截换行。 */
+    flex: none;
 }
 .daily-sub {
     color: var(--text-3);
@@ -3053,8 +3060,11 @@ html[data-fx="lite"] .home .login-area > h2 {
 .layout-mix-head-current {
     flex: 1;
     min-width: 0;
-    color: var(--text-3);
-    font-size: 12px;
+    /* 0.1.112：收起行副标题从最淡的 text-3 换成 text-2、字号 13、
+       行高放开——之前在壁纸上淡到像被截掉一半。 */
+    color: var(--text-2);
+    font-size: 13px;
+    line-height: 1.5;
 }
 
 .layout-mix-head-chev {
