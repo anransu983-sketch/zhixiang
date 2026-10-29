@@ -3611,3 +3611,126 @@ body.perf-mode * {
     animation: none !important;
     transition: none !important;
 }
+
+/* 0.1.109 自建歌单 */
+.pl-list {
+    display: grid;
+    gap: 10px;
+    margin-top: 12px;
+}
+.pl-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.07);
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+.pl-cover {
+    width: 44px;
+    height: 44px;
+    border-radius: 8px;
+    object-fit: cover;
+    flex: none;
+}
+.pl-glyph {
+    width: 44px;
+    height: 44px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.1);
+    font-size: 20px;
+    flex: none;
+}
+.pl-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.pl-name {
+    font-size: 15px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.pl-count {
+    font-size: 13px;
+    color: var(--text-3);
+}
+.pl-play-btn {
+    flex: none;
+    padding: 6px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 999px;
+    font-size: 13px;
+}
+.pl-create-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+    align-items: center;
+}
+.pl-create-row[hidden] {
+    display: none;
+}
+.pl-create-input {
+    flex: 1;
+    min-width: 0;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 10px;
+    color: inherit;
+    font: inherit;
+    font-size: 15px;
+    padding: 8px 10px;
+}
+.track-add-btn {
+    flex: none;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: transparent;
+    color: inherit;
+    font-size: 15px;
+    cursor: pointer;
+}
+.pl-footer {
+    display: flex;
+    gap: 8px;
+    margin-top: 16px;
+    flex-wrap: wrap;
+}
+.pl-sheet-list {
+    display: grid;
+    gap: 8px;
+    margin-top: 12px;
+}
+.pl-sheet-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--hairline);
+    border-radius: 12px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+.pl-sheet-row:disabled {
+    opacity: 0.55;
+    cursor: default;
+}

@@ -32,6 +32,7 @@ import { BILI_CHART_ZONES, fetchBilibiliChart } from './sources/bilibili';
 import type { BiliChartZone } from './sources/bilibili';
 import { checkAllFilesAccess, getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalNotice, getLocalSidecarCoverDataUrl, localSource, requestAllFilesAccess } from './sources/local';
 import { addMyImportIds, loadMyImportIds, removeMyImportId } from './my-imports';
+import { addTrackToPlaylist, createPlaylist, deletePlaylist, loadPlaylists, removeTrackFromPlaylist, renamePlaylist, trackKey } from './playlists';
 import { runBatchWriteback } from './batch-writeback';
 import {
     ROAM_SCENE_NAMES,
@@ -357,6 +358,7 @@ export function renderHome(): HTMLElement {
             page.appendChild(renderPerfModeSection());
             page.appendChild(renderLayoutMixSection());
             page.appendChild(renderRoamingSection());
+            page.appendChild(renderPlaylistsSection());
             page.appendChild(renderFootprintEntry());
             page.appendChild(renderDeveloperSection());
             const record: TabPage = { page };
@@ -2876,6 +2878,394 @@ function renderMyImportsSection(): HTMLElement {
 // 词图写回（0.1.106）：把联网匹配到的歌词和封面写到歌旁边（同目录
 // 同名 .lrc/.jpg），不动原文件；已有文件的歌跳过不覆盖。写之前须授予
 // 所有文件访问权限，没开时只提示、不写。
+// 0.1.109 自建歌单：我的页里的卡片（建歌单／播整单／点行进详情）。
+function renderPlaylistsSection(): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'daily-section';
+
+    const head = document.createElement('div');
+    head.className = 'daily-head';
+    const heading = document.createElement('h2');
+    heading.textContent = '我的歌单';
+    head.appendChild(heading);
+    const sub = document.createElement('span');
+    sub.className = 'daily-sub';
+    sub.textContent = '自己建的歌单 · 本地/网易云/YTM/B站都能放 · 删歌单不删歌';
+    head.appendChild(sub);
+    section.appendChild(head);
+
+    const createButton = document.createElement('button');
+    createButton.type = 'button';
+    createButton.className = 'login-btn';
+    createButton.textContent = '＋ 新建歌单';
+    section.appendChild(createButton);
+
+    const createRow = document.createElement('div');
+    createRow.className = 'pl-create-row';
+    createRow.hidden = true;
+    const createInput = document.createElement('input');
+    createInput.type = 'text';
+    createInput.className = 'pl-create-input';
+    createInput.placeholder = '歌单名字';
+    createInput.maxLength = 40;
+    const createOk = document.createElement('button');
+    createOk.type = 'button';
+    createOk.className = 'login-btn';
+    createOk.textContent = '✓';
+    const createCancel = document.createElement('button');
+    createCancel.type = 'button';
+    createCancel.className = 'login-btn';
+    createCancel.textContent = '✕';
+    createRow.append(createInput, createOk, createCancel);
+    section.appendChild(createRow);
+
+    const notice = document.createElement('p');
+    notice.className = 'source-notice';
+    section.appendChild(notice);
+
+    const list = document.createElement('div');
+    list.className = 'pl-list';
+    section.appendChild(list);
+
+    const refresh = (): void => {
+        const lists = loadPlaylists();
+        list.replaceChildren();
+        if (lists.length === 0) {
+            notice.textContent = '还没有歌单，建一个，再到各页歌曲行点 ＋ 加歌';
+            return;
+        }
+        notice.textContent = `共 ${lists.length} 个歌单`;
+        for (const playlist of lists) {
+            const row = document.createElement('button');
+            row.type = 'button';
+            row.className = 'pl-row';
+            const cover = playlist.tracks.find((item) => item.coverUrl)?.coverUrl;
+            if (cover) {
+                const img = document.createElement('img');
+                img.className = 'pl-cover';
+                img.referrerPolicy = 'no-referrer';
+                img.src = cover;
+                img.alt = '';
+                img.onerror = () => {
+                    img.remove();
+                };
+                row.appendChild(img);
+            } else {
+                const glyph = document.createElement('span');
+                glyph.className = 'pl-glyph';
+                glyph.textContent = '♪';
+                row.appendChild(glyph);
+            }
+            const info = document.createElement('span');
+            info.className = 'pl-info';
+            const name = document.createElement('span');
+            name.className = 'pl-name';
+            name.textContent = playlist.name;
+            const count = document.createElement('span');
+            count.className = 'pl-count';
+            count.textContent = `${playlist.tracks.length} 首`;
+            info.append(name, count);
+            row.appendChild(info);
+            const play = document.createElement('span');
+            play.className = 'pl-play-btn';
+            play.textContent = '▶';
+            play.addEventListener('click', (event) => {
+                event.stopPropagation();
+                if (playlist.tracks.length > 0) {
+                    void playQueue(playlist.tracks, 0);
+                }
+            });
+            row.appendChild(play);
+            row.addEventListener('click', () => {
+                openPlaylistPage(playlist.id, refresh);
+            });
+            list.appendChild(row);
+        }
+    };
+
+    createButton.addEventListener('click', () => {
+        createRow.hidden = false;
+        createInput.value = '';
+        createInput.focus();
+    });
+    createCancel.addEventListener('click', () => {
+        createRow.hidden = true;
+    });
+    const confirmCreate = (): void => {
+        const name = createInput.value.trim();
+        if (!name) {
+            return;
+        }
+        createPlaylist(name);
+        createRow.hidden = true;
+        refresh();
+    };
+    createOk.addEventListener('click', confirmCreate);
+    createInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            confirmCreate();
+        } else if (event.key === 'Escape') {
+            createRow.hidden = true;
+        }
+    });
+    refresh();
+    return section;
+}
+
+// 0.1.109 歌单详情页：点歌播本单，✕ 只从歌单里删，改名／删除在页脚。
+function openPlaylistPage(id: string, onChanged: () => void): void {
+    const playlist = loadPlaylists().find((item) => item.id === id);
+    if (!playlist) {
+        return;
+    }
+    const page = document.createElement('div');
+    page.className = 'daily-page';
+    const pageHead = document.createElement('div');
+    pageHead.className = 'daily-page-head';
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'daily-page-back';
+    back.textContent = '返回';
+    back.addEventListener('click', () => {
+        page.remove();
+        onChanged();
+    });
+    pageHead.appendChild(back);
+    const pageTitle = document.createElement('h2');
+    pageTitle.textContent = playlist.name;
+    pageHead.appendChild(pageTitle);
+    page.appendChild(pageHead);
+    const pageSub = document.createElement('p');
+    pageSub.className = 'daily-page-sub';
+    page.appendChild(pageSub);
+    const trackList = document.createElement('ul');
+    trackList.className = 'track-list';
+    page.appendChild(trackList);
+
+    const renderList = (): void => {
+        const current = loadPlaylists().find((item) => item.id === id);
+        if (!current) {
+            page.remove();
+            onChanged();
+            return;
+        }
+        pageTitle.textContent = current.name;
+        pageSub.textContent = `共 ${current.tracks.length} 首 · 点歌播本单，✕ 只从歌单里删`;
+        trackList.replaceChildren();
+        current.tracks.forEach((track, index) => {
+            const row = document.createElement('li');
+            row.className = 'track-row';
+            if (track.coverUrl) {
+                const cover = document.createElement('img');
+                cover.className = 'track-cover';
+                cover.referrerPolicy = 'no-referrer';
+                cover.src = track.coverUrl;
+                cover.alt = '';
+                cover.onerror = () => {
+                    cover.remove();
+                };
+                row.appendChild(cover);
+            } else {
+                const glyph = document.createElement('span');
+                glyph.className = 'track-glyph';
+                glyph.textContent = '♪';
+                row.appendChild(glyph);
+            }
+            const info = document.createElement('div');
+            info.className = 'track-info';
+            const name = document.createElement('div');
+            name.className = 'track-title';
+            name.textContent = track.title;
+            info.appendChild(name);
+            const meta = document.createElement('div');
+            meta.className = 'track-meta';
+            meta.textContent = track.artist;
+            info.appendChild(meta);
+            row.appendChild(info);
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'track-add-btn';
+            remove.textContent = '✕';
+            remove.setAttribute('aria-label', '从歌单里删除');
+            remove.addEventListener('click', (event) => {
+                event.stopPropagation();
+                removeTrackFromPlaylist(id, trackKey(track));
+                renderList();
+            });
+            row.appendChild(remove);
+            row.addEventListener('click', () => {
+                void playQueue(current.tracks, index);
+            });
+            trackList.appendChild(row);
+        });
+    };
+
+    const footer = document.createElement('div');
+    footer.className = 'pl-footer';
+    const renameButton = document.createElement('button');
+    renameButton.type = 'button';
+    renameButton.className = 'login-btn';
+    renameButton.textContent = '改名';
+    const deleteButton = document.createElement('button');
+    deleteButton.type = 'button';
+    deleteButton.className = 'login-btn';
+    deleteButton.textContent = '删除歌单';
+    footer.append(renameButton, deleteButton);
+    page.appendChild(footer);
+
+    const renameRow = document.createElement('div');
+    renameRow.className = 'pl-create-row';
+    renameRow.hidden = true;
+    const renameInput = document.createElement('input');
+    renameInput.type = 'text';
+    renameInput.className = 'pl-create-input';
+    renameInput.maxLength = 40;
+    const renameOk = document.createElement('button');
+    renameOk.type = 'button';
+    renameOk.className = 'login-btn';
+    renameOk.textContent = '✓';
+    const renameCancel = document.createElement('button');
+    renameCancel.type = 'button';
+    renameCancel.className = 'login-btn';
+    renameCancel.textContent = '✕';
+    renameRow.append(renameInput, renameOk, renameCancel);
+    page.appendChild(renameRow);
+
+    renameButton.addEventListener('click', () => {
+        const current = loadPlaylists().find((item) => item.id === id);
+        renameRow.hidden = false;
+        renameInput.value = current ? current.name : '';
+        renameInput.focus();
+    });
+    renameCancel.addEventListener('click', () => {
+        renameRow.hidden = true;
+    });
+    const confirmRename = (): void => {
+        const name = renameInput.value.trim();
+        if (!name) {
+            return;
+        }
+        renamePlaylist(id, name);
+        renameRow.hidden = true;
+        renderList();
+    };
+    renameOk.addEventListener('click', confirmRename);
+    renameInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            confirmRename();
+        } else if (event.key === 'Escape') {
+            renameRow.hidden = true;
+        }
+    });
+    deleteButton.addEventListener('click', () => {
+        const current = loadPlaylists().find((item) => item.id === id);
+        const name = current ? current.name : '';
+        if (window.confirm(`确定删除歌单“${name}”吗？歌只从歌单里删，文件和原曲不动。`)) {
+            deletePlaylist(id);
+            page.remove();
+            onChanged();
+        }
+    });
+
+    document.body.appendChild(page);
+    renderList();
+}
+
+// 0.1.109 加入歌单 sheet：歌曲行点 ＋ 弹出，已在里面的歌单置灰，底部可直接新建并加入。
+function openAddToPlaylistSheet(track: Track): void {
+    const backdrop = document.createElement('div');
+    backdrop.className = 'zx-color-sheet-backdrop';
+    const sheet = document.createElement('div');
+    sheet.className = 'zx-color-sheet';
+    const close = (): void => {
+        backdrop.remove();
+    };
+    backdrop.addEventListener('click', (event) => {
+        if (event.target === backdrop) {
+            close();
+        }
+    });
+
+    const top = document.createElement('div');
+    top.className = 'zx-color-sheet-top';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'zx-color-sheet-top-btn';
+    cancel.textContent = '✕';
+    cancel.addEventListener('click', close);
+    top.appendChild(cancel);
+    const title = document.createElement('span');
+    title.className = 'zx-color-sheet-title';
+    title.textContent = '加入歌单';
+    top.appendChild(title);
+    sheet.appendChild(top);
+
+    const list = document.createElement('div');
+    list.className = 'pl-sheet-list';
+    sheet.appendChild(list);
+    const renderSheetList = (): void => {
+        list.replaceChildren();
+        const lists = loadPlaylists();
+        if (lists.length === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'source-notice';
+            empty.textContent = '还没有歌单，先在下面建一个';
+            list.appendChild(empty);
+            return;
+        }
+        const key = trackKey(track);
+        for (const playlist of lists) {
+            const already = playlist.tracks.some((item) => trackKey(item) === key);
+            const row = document.createElement('button');
+            row.type = 'button';
+            row.className = 'pl-sheet-row';
+            row.disabled = already;
+            const name = document.createElement('span');
+            name.textContent = playlist.name;
+            const state = document.createElement('span');
+            state.textContent = already ? '已在里面' : `${playlist.tracks.length} 首`;
+            row.append(name, state);
+            row.addEventListener('click', () => {
+                addTrackToPlaylist(playlist.id, track);
+                close();
+            });
+            list.appendChild(row);
+        }
+    };
+
+    const createRow = document.createElement('div');
+    createRow.className = 'pl-create-row';
+    const createInput = document.createElement('input');
+    createInput.type = 'text';
+    createInput.className = 'pl-create-input';
+    createInput.placeholder = '新建歌单名字，建好直接加入';
+    createInput.maxLength = 40;
+    const createOk = document.createElement('button');
+    createOk.type = 'button';
+    createOk.className = 'login-btn';
+    createOk.textContent = '✓';
+    createRow.append(createInput, createOk);
+    sheet.appendChild(createRow);
+    createOk.addEventListener('click', () => {
+        const name = createInput.value.trim();
+        if (!name) {
+            return;
+        }
+        const playlist = createPlaylist(name);
+        addTrackToPlaylist(playlist.id, track);
+        close();
+    });
+    createInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            createOk.click();
+        }
+    });
+
+    backdrop.appendChild(sheet);
+    document.body.appendChild(backdrop);
+    renderSheetList();
+}
+
 function renderWritebackSection(): HTMLElement {
     const section = document.createElement('section');
     section.className = 'daily-section';
@@ -3359,6 +3749,18 @@ function renderTracks(list: HTMLElement, tracks: Track[], status: HTMLElement): 
             playFromRow();
         });
         item.appendChild(playButton);
+
+        // 0.1.109 自建歌单：行尾 ＋，点开底部 sheet 选歌单加入（阻止冒泡，免得触发整行播放）。
+        const addButton = document.createElement('button');
+        addButton.type = 'button';
+        addButton.className = 'track-add-btn';
+        addButton.textContent = '＋';
+        addButton.setAttribute('aria-label', '加入歌单');
+        addButton.addEventListener('click', (event) => {
+            event.stopPropagation();
+            openAddToPlaylistSheet(track);
+        });
+        item.appendChild(addButton);
 
         list.appendChild(item);
     }
