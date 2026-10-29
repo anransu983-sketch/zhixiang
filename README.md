@@ -163,6 +163,13 @@ no-referrer（B 站图床不再 403）＋加载失败退回占位。
 数），读起来是一张海报而不是 60 块砖；点卡片展开成 3 列大砖
 全量，再点收起回到卡片；补封面同时作用于卡片砖与展开砖。
 
+0.1.119 修 hidden 被 display 盖掉的 bug：0.1.118 用 hidden 藏墙
+和卡片，但作者 display:grid 优先级高于 UA 给 [hidden] 的
+display:none，导致砖根本没藏起来（代码库 0.1.50／0.1.53 吃过
+同款亏）；补 .footprint-wall[hidden]／.footprint-wall-mosaic
+[hidden]／.player-sheet[hidden] 强制规则，贴词面板同款毛病一
+并修掉。
+
 不做：Spotify、QQ、酷狗、睡眠定时器、预加载、AI 主题、/api 中继、登录体系、命令面板。
 
 ## 命令
