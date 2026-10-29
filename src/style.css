@@ -3903,3 +3903,166 @@ body.perf-mode * {
     border-radius: 12px;
     background: #ffffff;
 }
+
+/* 0.1.115 Mineradio 借鉴六件套（天气定位版已按用户要求改成时段版）。 */
+.player-preset-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+}
+.player-preset-label {
+    font-size: 13px;
+    color: var(--text-2);
+}
+.player-preset-btn {
+    padding: 6px 14px;
+    border-radius: 999px;
+    border: 1px solid var(--hairline);
+    background: var(--surface-2);
+    color: var(--text-1);
+    font-size: 13px;
+}
+.player-sheet {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.5);
+    padding: 16px;
+}
+.player-sheet-card {
+    width: 100%;
+    max-width: 520px;
+    padding: 16px;
+    border-radius: 20px;
+    background: var(--surface-1);
+}
+.player-sheet-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--text-1);
+}
+.player-sheet-song {
+    margin-top: 4px;
+    font-size: 13px;
+    color: var(--text-2);
+}
+.player-sheet-textarea {
+    width: 100%;
+    margin-top: 12px;
+    padding: 10px;
+    border-radius: 12px;
+    border: 1px solid var(--hairline);
+    background: var(--surface-2);
+    color: var(--text-1);
+    font-size: 14px;
+    line-height: 1.6;
+    resize: vertical;
+}
+.player-sheet-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+}
+.player-sheet-row .login-btn {
+    flex: 1;
+}
+.queue-shelf-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 25;
+    overflow-y: auto;
+    padding: 16px 16px calc(96px + env(safe-area-inset-bottom));
+    background: var(--bg);
+}
+.queue-shelf-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+.queue-shelf-head h2 {
+    margin: 0;
+    font-size: 18px;
+    color: var(--text-1);
+}
+.queue-shelf-close {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: 1px solid var(--hairline);
+    background: var(--surface-2);
+    color: var(--text-1);
+    font-size: 15px;
+}
+.queue-shelf-note {
+    margin: 24px 0 0;
+    text-align: center;
+    font-size: 13px;
+    color: var(--text-2);
+}
+.queue-shelf-scroll {
+    display: flex;
+    gap: 12px;
+    margin-top: 16px;
+    overflow-x: auto;
+    padding: 8px 4px 16px;
+    perspective: 800px;
+}
+.queue-shelf-record {
+    flex: none;
+    width: 124px;
+    padding: 0;
+    border: none;
+    background: none;
+    text-align: left;
+}
+.queue-shelf-record.is-current {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 14px;
+}
+.queue-shelf-cover {
+    width: 124px;
+    height: 124px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border-radius: 12px;
+    color: #fff;
+    font-size: 40px;
+    transform: rotateY(-8deg);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
+}
+.queue-shelf-cover img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+.queue-shelf-name {
+    margin-top: 8px;
+    font-size: 13px;
+    color: var(--text-1);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.queue-shelf-artist {
+    font-size: 12px;
+    color: var(--text-2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.resume-status,
+.daypart-status {
+    margin: 8px 0 0;
+    text-align: center;
+    font-size: 13px;
+    color: var(--text-2);
+}

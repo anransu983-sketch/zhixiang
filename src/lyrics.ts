@@ -22,6 +22,7 @@
 // 歌词行只展示、不做点击跳转：本模块不提供 seek 口子，播放页也不给
 // 歌词行绑任何点击处理。
 
+import { getManualLyrics } from './manual-lyrics';
 import { httpGet } from './native/http';
 import { withSessionCookie } from './sources/netease-session';
 import { neteaseSource } from './sources/netease';
@@ -744,6 +745,11 @@ async function fetchNeteaseLyricById(songId: string): Promise<LyricResult> {
 }
 
 export async function fetchLyrics(track: Track): Promise<LyricResult> {
+    // 0.1.115 手动贴词优先级最高，高于内嵌／联网补源各路。
+    const manual = getManualLyrics(track);
+    if (manual !== null) {
+        return { lines: parseLrc(manual), note: '手动贴词（播放页底排可改）' };
+    }
     if (track.source === 'local') {
         const local = await fetchLocalLyrics(track);
         if (local) {

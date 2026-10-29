@@ -1,7 +1,9 @@
 // 首页组装：按音源注册表渲染各音源的浏览区，尚未实现的块留在清单里。
 // 本文件只做组装与界面接线，不放音源与播放逻辑。
 
-import { getCurrentState, next, onTimeUpdate, onTrackChange, playQueue, previous, runNeteaseProbe, runYtmUpstreamExperiment, togglePlay } from './playback';
+import { getCurrentState, next, onTimeUpdate, onTrackChange, playQueue, previous, runNeteaseProbe, runYtmUpstreamExperiment, seekTo, togglePlay } from './playback';
+import { getPlaySessions } from './playback-history';
+import { initResumeTracking, loadResume } from './resume';
 import { openPlayerPage } from './player';
 import { openFootprintPage } from './footprint';
 import type { PlaybackState } from './playback';
@@ -131,6 +133,8 @@ interface TabPage {
 }
 
 export function renderHome(): HTMLElement {
+    // 0.1.115 断点续听：启动即开始记队列与位置，只订阅一次。
+    initResumeTracking();
     const section = document.createElement('section');
     section.className = 'home';
 
@@ -206,7 +210,42 @@ export function renderHome(): HTMLElement {
     const status = document.createElement('div');
     status.className = 'np-artist';
     info.append(infoTitle, status);
+    // 0.1.115 长按迷你条唤出队列唱片架（Mineradio 右键架子的手机版）：
+    // 按住 600ms 且不滑动即开架子，随后的 click 要吞掉，免得又打开播放页。
+    let longPressTimer: number | null = null;
+    let longPressFired = false;
+    info.addEventListener('pointerdown', (event) => {
+        longPressFired = false;
+        const startX = event.clientX;
+        const startY = event.clientY;
+        const cancel = (): void => {
+            if (longPressTimer !== null) {
+                window.clearTimeout(longPressTimer);
+                longPressTimer = null;
+            }
+            info.removeEventListener('pointerup', cancel);
+            info.removeEventListener('pointercancel', cancel);
+            info.removeEventListener('pointermove', move);
+        };
+        const move = (moveEvent: PointerEvent): void => {
+            if (Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) > 12) {
+                cancel();
+            }
+        };
+        longPressTimer = window.setTimeout(() => {
+            longPressFired = true;
+            cancel();
+            openQueueShelf();
+        }, 600);
+        info.addEventListener('pointerup', cancel);
+        info.addEventListener('pointercancel', cancel);
+        info.addEventListener('pointermove', move);
+    });
     info.addEventListener('click', () => {
+        if (longPressFired) {
+            longPressFired = false;
+            return;
+        }
         openPlayerPage();
     });
     bar.appendChild(info);
@@ -354,11 +393,13 @@ export function renderHome(): HTMLElement {
             heading.textContent = '我的';
             page.appendChild(heading);
             page.appendChild(renderLoginArea());
+            page.appendChild(renderResumeSection());
             page.appendChild(renderThemeWardrobe());
             page.appendChild(renderRainWindow());
             page.appendChild(renderPerfModeSection());
             page.appendChild(renderLayoutMixSection());
             page.appendChild(renderRoamingSection());
+            page.appendChild(renderDaypartSection());
             page.appendChild(renderPlaylistsSection());
             page.appendChild(renderFootprintEntry());
             page.appendChild(renderDeveloperSection());
@@ -1606,6 +1647,241 @@ function renderRainWindow(): HTMLElement {
 // 0.1.85 轻装模式：一行性能开关，body 加 perf-mode 类。
 // 私人漫游（0.1.101）：我的页卡片，熟悉/探索/拼图三场景；
 // 漫游中显示场景与已播数，结束漫游回到原队列（见 roaming.ts）。
+// 0.1.115 队列唱片架：长按迷你条唤出，当前队列排成 3D 架，点唱片切歌。
+function openQueueShelf(): void {
+    const state = getCurrentState();
+    const overlay = document.createElement('div');
+    overlay.className = 'queue-shelf-overlay';
+    const head = document.createElement('div');
+    head.className = 'queue-shelf-head';
+    const title = document.createElement('h2');
+    title.textContent = `队列唱片架（${state.queue.length} 首）`;
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'queue-shelf-close';
+    close.textContent = '✕';
+    close.addEventListener('click', () => {
+        overlay.remove();
+    });
+    head.append(title, close);
+    overlay.appendChild(head);
+    if (state.queue.length === 0) {
+        const notice = document.createElement('p');
+        notice.className = 'queue-shelf-note';
+        notice.textContent = '队列是空的，先播一首歌。';
+        overlay.appendChild(notice);
+    } else {
+        const scroll = document.createElement('div');
+        scroll.className = 'queue-shelf-scroll';
+        state.queue.forEach((track, index) => {
+            const record = document.createElement('button');
+            record.type = 'button';
+            record.className = 'queue-shelf-record';
+            if (index === state.index) {
+                record.classList.add('is-current');
+            }
+            const coverEl = document.createElement('div');
+            coverEl.className = 'queue-shelf-cover';
+            if (track.coverUrl && !track.coverUrl.startsWith('content://')) {
+                const img = document.createElement('img');
+                img.src = track.coverUrl;
+                img.referrerPolicy = 'no-referrer';
+                img.alt = track.title;
+                coverEl.appendChild(img);
+            } else {
+                coverEl.style.background = posterFallbackBackground(track.title);
+                coverEl.textContent = '♪';
+            }
+            const name = document.createElement('div');
+            name.className = 'queue-shelf-name';
+            name.textContent = track.title;
+            const singer = document.createElement('div');
+            singer.className = 'queue-shelf-artist';
+            singer.textContent = track.artist;
+            record.append(coverEl, name, singer);
+            record.addEventListener('click', () => {
+                void playQueue(state.queue, index);
+                overlay.remove();
+            });
+            scroll.appendChild(record);
+        });
+        overlay.appendChild(scroll);
+    }
+    document.body.appendChild(overlay);
+}
+
+// 0.1.115 断点续听：读 resume.ts 存的上次队列，点一下恢复队列＋位置。
+function renderResumeSection(): HTMLElement {
+    const data = loadResume();
+    if (!data) {
+        return document.createElement('div');
+    }
+    const section = document.createElement('section');
+    section.className = 'zx-appearance-card';
+    const row = document.createElement('div');
+    row.className = 'zx-appearance-row';
+    const icon = document.createElement('span');
+    icon.className = 'zx-rain-icon';
+    icon.textContent = '↩';
+    row.appendChild(icon);
+    const text = document.createElement('span');
+    text.className = 'zx-appearance-row-text';
+    const name = document.createElement('b');
+    name.textContent = '上次听到';
+    const track = data.queue[data.index];
+    const desc = document.createElement('p');
+    desc.textContent = track
+        ? `${track.title} · ${track.artist} · 播到 ${formatDuration(data.positionMs)}`
+        : '上次的队列';
+    text.append(name, desc);
+    row.appendChild(text);
+    section.appendChild(row);
+    const status = document.createElement('p');
+    status.className = 'resume-status';
+    status.hidden = true;
+    const playButton = document.createElement('button');
+    playButton.type = 'button';
+    playButton.className = 'login-btn';
+    playButton.textContent = '▶ 继续播放';
+    playButton.addEventListener('click', () => {
+        void playQueue(data.queue, data.index)
+            .then(() => {
+                if (data.positionMs > 0) {
+                    seekTo(data.positionMs / 1000);
+                }
+            })
+            .catch(() => {
+                status.textContent = '恢复失败，文件可能已删或已下线。';
+                status.hidden = false;
+            });
+    });
+    section.append(playButton, status);
+    return section;
+}
+
+// 0.1.115 时段歌单（用户改动：不要天气定位版，改按一天时间拼）：
+// 时段只看本地小时，不请求定位、不联网查天气；歌单从播放历史拼，
+// 历史不够时补网易云每日推荐＋YTM 今日星荐，不新增音源。
+function daypartForHour(hour: number): { label: string; title: string; desc: string } {
+    if (hour >= 5 && hour < 9) {
+        return { label: '清晨', title: '清晨漫游', desc: '天刚亮，听点清醒的' };
+    }
+    if (hour >= 9 && hour < 12) {
+        return { label: '上午', title: '上午漫游', desc: '手头有事，歌垫在底下' };
+    }
+    if (hour >= 12 && hour < 17) {
+        return { label: '午后', title: '午后漫游', desc: '阳光正好，慢慢听' };
+    }
+    if (hour >= 17 && hour < 20) {
+        return { label: '傍晚', title: '傍晚漫游', desc: '天色转暗，歌也缓下来' };
+    }
+    return { label: '夜晚', title: '夜晚漫游', desc: '夜深了，听点安静的' };
+}
+
+function renderDaypartSection(): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'zx-appearance-card';
+    const slot = daypartForHour(new Date().getHours());
+    const row = document.createElement('div');
+    row.className = 'zx-appearance-row';
+    const icon = document.createElement('span');
+    icon.className = 'zx-rain-icon';
+    icon.textContent = '◷';
+    row.appendChild(icon);
+    const text = document.createElement('span');
+    text.className = 'zx-appearance-row-text';
+    const name = document.createElement('b');
+    name.textContent = '时段漫游';
+    const desc = document.createElement('p');
+    desc.textContent = `${slot.desc} · 现在是${slot.label}`;
+    text.append(name, desc);
+    row.appendChild(text);
+    section.appendChild(row);
+    const status = document.createElement('p');
+    status.className = 'daypart-status';
+    status.hidden = true;
+    let builtQueue: Track[] | null = null;
+    const playButton = document.createElement('button');
+    playButton.type = 'button';
+    playButton.className = 'login-btn';
+    playButton.textContent = `▶ 播放${slot.title}`;
+    playButton.hidden = true;
+    playButton.addEventListener('click', () => {
+        if (!builtQueue) {
+            return;
+        }
+        void playQueue(builtQueue, 0);
+        status.textContent = `已开播：${slot.title}（${builtQueue.length} 首）`;
+        status.hidden = false;
+    });
+    const buildButton = document.createElement('button');
+    buildButton.type = 'button';
+    buildButton.className = 'login-btn';
+    buildButton.textContent = '拼一队';
+    buildButton.addEventListener('click', () => {
+        status.textContent = '正在拼…';
+        status.hidden = false;
+        playButton.hidden = true;
+        builtQueue = null;
+        void (async () => {
+            const seen = new Set<string>();
+            const pool: Track[] = [];
+            for (const session of getPlaySessions()) {
+                if (seen.has(session.trackId)) {
+                    continue;
+                }
+                seen.add(session.trackId);
+                pool.push({
+                    id: session.trackId,
+                    title: session.title,
+                    artist: session.artist,
+                    source: session.source,
+                    coverUrl: session.coverUrl
+                });
+            }
+            if (pool.length < 5) {
+                try {
+                    if (loadNeteaseSession() !== null) {
+                        for (const track of await fetchNeteaseDailySongs()) {
+                            if (!seen.has(track.id)) {
+                                seen.add(track.id);
+                                pool.push(track);
+                            }
+                        }
+                    }
+                } catch {
+                    // 每日推荐拿不到就只用历史拼。
+                }
+                try {
+                    for (const track of await fetchYtmDailyTracks()) {
+                        if (!seen.has(track.id)) {
+                            seen.add(track.id);
+                            pool.push(track);
+                        }
+                    }
+                } catch {
+                    // 同上。
+                }
+            }
+            for (let i = pool.length - 1; i > 0; i -= 1) {
+                const j = Math.floor(Math.random() * (i + 1));
+                const tmp = pool[i] as Track;
+                pool[i] = pool[j] as Track;
+                pool[j] = tmp;
+            }
+            builtQueue = pool.slice(0, 20);
+            if (builtQueue.length === 0) {
+                status.textContent = '历史还不够，先多听几首。';
+                return;
+            }
+            status.textContent = `已拼好：${slot.title}（${builtQueue.length} 首）`;
+            playButton.hidden = false;
+        })();
+    });
+    section.append(buildButton, playButton, status);
+    return section;
+}
+
 function renderRoamingSection(): HTMLElement {
     const section = document.createElement('section');
     section.className = 'zx-appearance-card';

@@ -30,9 +30,10 @@ import type { PlaybackState, RepeatMode } from './playback';
 import { approximateWords, fetchLyrics, findCurrentLineIndex } from './lyrics';
 import type { LyricLine } from './lyrics';
 import { openLiveWallpaperPicker, setWallpaperState } from './native/wallpaper-plugin';
-import { loadVisualToggles, saveVisualToggles, VisualStage } from './visuals';
+import { loadVisualToggles, saveVisualToggles, VISUAL_PRESETS, VisualStage } from './visuals';
 import type { VisualToggles } from './visuals';
-import { getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalSidecarCoverDataUrl } from './sources/local';
+import { deleteManualLyrics, getManualLyrics, saveManualLyrics } from './manual-lyrics';
+import { checkAllFilesAccess, getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalPath, getLocalSidecarCoverDataUrl, requestAllFilesAccess, writeSidecar } from './sources/local';
 import { posterFallbackBackground, posterHue } from './posters';
 import { getLastYtmStreamMeta } from './sources/ytm';
 import type { Track } from './types';
@@ -431,7 +432,210 @@ function buildPlayerPage(): HTMLElement {
     visualEntryLabel.className = 'player-bottom-label';
     visualEntryLabel.textContent = '视觉';
     visualEntry.append(visualEntryTile, visualEntryLabel);
-    bottomRow.append(repeatButton, heartButton, sleepButton, lyricsButton, qualityBadge, visualEntry);
+    // 0.1.115 手动贴词＋换封面（Mineradio 借鉴）：贴词存 localStorage
+    // 覆盖并优先于各路歌词；本地歌换封面写 sidecar 同名 .jpg。
+    const pasteButton = document.createElement('button');
+    pasteButton.type = 'button';
+    pasteButton.className = 'player-bottom-btn';
+    pasteButton.textContent = '贴词';
+    const coverButton = document.createElement('button');
+    coverButton.type = 'button';
+    coverButton.className = 'player-bottom-btn';
+    coverButton.textContent = '换封面';
+    const flashButton = (button: HTMLButtonElement, text: string): void => {
+        const original = button.textContent;
+        button.textContent = text;
+        window.setTimeout(() => {
+            button.textContent = original;
+        }, 2000);
+    };
+    const refreshLyricsNow = (): void => {
+        const track = getCurrentState().track;
+        if (!track) {
+            return;
+        }
+        const generation = ++lyricGeneration;
+        void fetchLyrics(track).then((result) => {
+            if (generation !== lyricGeneration) {
+                return;
+            }
+            lyricLines = result.lines;
+            renderLyrics(result.note);
+        });
+    };
+    const sheet = document.createElement('div');
+    sheet.className = 'player-sheet';
+    sheet.hidden = true;
+    const sheetCard = document.createElement('div');
+    sheetCard.className = 'player-sheet-card';
+    const sheetTitle = document.createElement('div');
+    sheetTitle.className = 'player-sheet-title';
+    sheetTitle.textContent = '手动贴词';
+    const sheetSong = document.createElement('div');
+    sheetSong.className = 'player-sheet-song';
+    const sheetArea = document.createElement('textarea');
+    sheetArea.className = 'player-sheet-textarea';
+    sheetArea.rows = 10;
+    sheetArea.placeholder = '粘贴 LRC 歌词，带 [mm:ss] 时间标签可逐行高亮，纯文本只做展示';
+    const sheetHint = document.createElement('p');
+    sheetHint.className = 'player-note';
+    sheetHint.textContent = '保存后立即生效，优先于各路歌词。本地歌还会写回同名 .lrc；删除只清手动贴词，已写回的 .lrc 仍会显示。';
+    const sheetStatus = document.createElement('p');
+    sheetStatus.className = 'player-note';
+    sheetStatus.hidden = true;
+    const sheetRow = document.createElement('div');
+    sheetRow.className = 'player-sheet-row';
+    const sheetSave = document.createElement('button');
+    sheetSave.type = 'button';
+    sheetSave.className = 'login-btn';
+    sheetSave.textContent = '保存';
+    const sheetDelete = document.createElement('button');
+    sheetDelete.type = 'button';
+    sheetDelete.className = 'login-btn';
+    sheetDelete.textContent = '删除贴词';
+    const sheetCancel = document.createElement('button');
+    sheetCancel.type = 'button';
+    sheetCancel.className = 'login-btn';
+    sheetCancel.textContent = '取消';
+    sheetRow.append(sheetSave, sheetDelete, sheetCancel);
+    sheetCard.append(sheetTitle, sheetSong, sheetArea, sheetHint, sheetStatus, sheetRow);
+    sheet.appendChild(sheetCard);
+    content.appendChild(sheet);
+    pasteButton.addEventListener('click', () => {
+        const track = getCurrentState().track;
+        if (!track) {
+            return;
+        }
+        sheetSong.textContent = `${track.title} · ${track.artist}`;
+        sheetArea.value = getManualLyrics(track) ?? '';
+        sheetStatus.hidden = true;
+        sheet.hidden = false;
+    });
+    sheetCancel.addEventListener('click', () => {
+        sheet.hidden = true;
+    });
+    sheetSave.addEventListener('click', () => {
+        const track = getCurrentState().track;
+        if (!track) {
+            return;
+        }
+        const text = sheetArea.value;
+        if (text.trim().length === 0) {
+            deleteManualLyrics(track);
+            sheetStatus.textContent = '已删除手动贴词';
+            sheetStatus.hidden = false;
+            refreshLyricsNow();
+            return;
+        }
+        saveManualLyrics(track, text);
+        refreshLyricsNow();
+        if (track.source === 'local') {
+            const path = getLocalPath(track);
+            if (!path) {
+                sheetStatus.textContent = '已保存，只在本机覆盖生效';
+                sheetStatus.hidden = false;
+                return;
+            }
+            void (async () => {
+                try {
+                    if (!(await checkAllFilesAccess())) {
+                        await requestAllFilesAccess();
+                    }
+                    if (await checkAllFilesAccess()) {
+                        await writeSidecar({ path, lyrics: text });
+                        sheetStatus.textContent = '已保存，并写回同名 .lrc';
+                    } else {
+                        sheetStatus.textContent = '已保存，未拿到所有文件访问权限，只在本机覆盖生效';
+                    }
+                } catch {
+                    sheetStatus.textContent = '已保存，写回 .lrc 失败，只在本机覆盖生效';
+                }
+                sheetStatus.hidden = false;
+            })();
+        } else {
+            sheetStatus.textContent = '已保存';
+            sheetStatus.hidden = false;
+        }
+    });
+    sheetDelete.addEventListener('click', () => {
+        const track = getCurrentState().track;
+        if (!track) {
+            return;
+        }
+        deleteManualLyrics(track);
+        sheetArea.value = '';
+        sheetStatus.textContent = '已删除手动贴词';
+        sheetStatus.hidden = false;
+        refreshLyricsNow();
+    });
+    const coverInput = document.createElement('input');
+    coverInput.type = 'file';
+    coverInput.accept = 'image/*';
+    coverInput.hidden = true;
+    content.appendChild(coverInput);
+    coverButton.addEventListener('click', () => {
+        const track = getCurrentState().track;
+        if (!track) {
+            return;
+        }
+        if (track.source !== 'local') {
+            flashButton(coverButton, '仅本地歌');
+            return;
+        }
+        coverInput.click();
+    });
+    coverInput.addEventListener('change', () => {
+        const file = coverInput.files?.[0];
+        coverInput.value = '';
+        const track = getCurrentState().track;
+        if (!file || !track || track.source !== 'local') {
+            return;
+        }
+        const path = getLocalPath(track);
+        if (!path) {
+            flashButton(coverButton, '找不到文件');
+            return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+            const img = new Image();
+            img.onload = () => {
+                const side = Math.min(img.width, img.height);
+                const canvas = document.createElement('canvas');
+                canvas.width = 640;
+                canvas.height = 640;
+                const ctx = canvas.getContext('2d');
+                if (!ctx) {
+                    return;
+                }
+                ctx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, 640, 640);
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+                void (async () => {
+                    try {
+                        if (!(await checkAllFilesAccess())) {
+                            await requestAllFilesAccess();
+                        }
+                        if (!(await checkAllFilesAccess())) {
+                            flashButton(coverButton, '需文件权限');
+                            return;
+                        }
+                        await writeSidecar({ path, coverDataUrl: dataUrl });
+                        cover.src = dataUrl;
+                        coverPlaceholder.hidden = true;
+                        flashButton(coverButton, '已换封面');
+                    } catch {
+                        flashButton(coverButton, '写回失败');
+                    }
+                })();
+            };
+            img.onerror = () => {
+                flashButton(coverButton, '图片读不出');
+            };
+            img.src = String(reader.result);
+        };
+        reader.readAsDataURL(file);
+    });
+    bottomRow.append(repeatButton, heartButton, sleepButton, lyricsButton, pasteButton, coverButton, qualityBadge, visualEntry);
     content.appendChild(bottomRow);
     content.appendChild(sleepPicker);
 
@@ -462,6 +666,42 @@ function buildPlayerPage(): HTMLElement {
         { mode: 1, label: '雨滴：静态水滴' },
         { mode: 2, label: '雨滴：动态滑落' }
     ];
+    // 0.1.115 视觉预设（Mineradio 借鉴）：五项开关打包成命名组合。
+    const rainRadios: HTMLInputElement[] = [];
+    const toggleBoxes: Array<{ key: 'particles' | 'pulse' | 'stars' | 'sword'; box: HTMLInputElement }> = [];
+    const applyPreset = (presetToggles: VisualToggles): void => {
+        toggles = { ...presetToggles };
+        saveVisualToggles(toggles);
+        rainModes.forEach((rainDef, index) => {
+            const radio = rainRadios[index];
+            if (radio) {
+                radio.checked = toggles.rainMode === rainDef.mode;
+            }
+        });
+        for (const entry of toggleBoxes) {
+            entry.box.checked = toggles[entry.key];
+        }
+        updateDegradedNote();
+        stage?.poke();
+        void pushWallpaperState();
+    };
+    const presetRow = document.createElement('div');
+    presetRow.className = 'player-preset-row';
+    const presetLabel = document.createElement('span');
+    presetLabel.className = 'player-preset-label';
+    presetLabel.textContent = '视觉预设';
+    presetRow.appendChild(presetLabel);
+    for (const preset of VISUAL_PRESETS) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'player-preset-btn';
+        button.textContent = preset.label;
+        button.addEventListener('click', () => {
+            applyPreset(preset.toggles);
+        });
+        presetRow.appendChild(button);
+    }
+    visualPad.appendChild(presetRow);
     for (const rainDef of rainModes) {
         const label = document.createElement('label');
         label.className = 'player-toggle';
@@ -469,6 +709,7 @@ function buildPlayerPage(): HTMLElement {
         box.type = 'radio';
         box.name = 'zx-player-rain-mode';
         box.checked = toggles.rainMode === rainDef.mode;
+        rainRadios.push(box);
         box.addEventListener('change', () => {
             if (!box.checked) {
                 return;
@@ -493,6 +734,7 @@ function buildPlayerPage(): HTMLElement {
         const box = document.createElement('input');
         box.type = 'checkbox';
         box.checked = toggles[def.key];
+        toggleBoxes.push({ key: def.key, box });
         box.addEventListener('change', () => {
             toggles = { ...toggles, [def.key]: box.checked };
             saveVisualToggles(toggles);

@@ -50,6 +50,15 @@ export const DEFAULT_TOGGLES: VisualToggles = {
     sword: false
 };
 
+// 0.1.115 视觉预设：把五项独立开关打包成命名组合，一键应用；
+// 应用后仍可单项微调，预设本身不另存状态。
+export const VISUAL_PRESETS: Array<{ id: string; label: string; toggles: VisualToggles }> = [
+    { id: 'live', label: '现场', toggles: { rainMode: 2, particles: true, pulse: true, stars: true, sword: true } },
+    { id: 'night', label: '深夜', toggles: { rainMode: 1, particles: false, pulse: false, stars: true, sword: false } },
+    { id: 'rainy', label: '雨夜', toggles: { rainMode: 2, particles: false, pulse: true, stars: true, sword: false } },
+    { id: 'clean', label: '干净', toggles: { rainMode: 0, particles: false, pulse: false, stars: false, sword: false } }
+];
+
 export function loadVisualToggles(): VisualToggles {
     try {
         const raw = localStorage.getItem(STORAGE_KEY);
