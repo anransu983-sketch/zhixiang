@@ -263,6 +263,8 @@ public class StreamProxyServer {
             }
             // 铸链 UA（Web 层从取链处带来）；没有时回落到元素 UA。
             String uaParam = queryParam(parts[1], "ua");
+            // 0.1.108：B 站音频 CDN 无 Referer 直接 403，Web 层按需带 referer 参数。
+            String refererParam = queryParam(parts[1], "referer");
             URL target;
             try {
                 target = new URL(rawTarget);
@@ -291,11 +293,14 @@ public class StreamProxyServer {
                 userAgent = "Mozilla/5.0";
                 uaSrc = "default";
             }
-            Request request = new Request.Builder()
+            Request.Builder requestBuilder = new Request.Builder()
                     .url(rawTarget)
                     .header("Range", sentRange)
-                    .header("User-Agent", userAgent)
-                    .build();
+                    .header("User-Agent", userAgent);
+            if (refererParam != null && !refererParam.isEmpty()) {
+                requestBuilder.header("Referer", refererParam);
+            }
+            Request request = requestBuilder.build();
             String lidParam = queryParam(parts[1], "lid");
             if (lidParam != null && !lidParam.isEmpty()) {
                 fetchLid = lidParam;

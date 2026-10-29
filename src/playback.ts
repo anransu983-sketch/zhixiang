@@ -452,6 +452,7 @@ async function resolvePlayUrl(track: Track): Promise<ResolvedPlay> {
         await probeProxy(port);
         let target: string;
         let proxyUserAgent: string | undefined;
+        let proxyReferer: string | undefined;
         if (track.source === 'ytm') {
             const stream = await resolveYtmStream(track);
             target = stream.url;
@@ -464,6 +465,12 @@ async function resolvePlayUrl(track: Track): Promise<ResolvedPlay> {
                 throw new Error('该音源尚未接上');
             }
             target = await source.resolveStream(track);
+            if (track.source === 'bilibili') {
+                // 0.1.108：B 站音频 CDN（upos）无 Referer 直接 403，带
+                // https://www.bilibili.com 则 206（同地址实测 3/3）；
+                // 代理上游只带 Range 与 UA，故把 Referer 当参数带给代理。
+                proxyReferer = 'https://www.bilibili.com';
+            }
             if (track.source === 'netease' && target.includes('authSecret')) {
                 // 0.1.75：带签名曲才记为探针目标。当前曲目会随自动跳歌/
                 // 循环回到可播曲（如我们的晴天），探针若只认当前曲目，
@@ -471,9 +478,15 @@ async function resolvePlayUrl(track: Track): Promise<ResolvedPlay> {
                 lastSignedNeteaseTrack = track;
             }
         }
-        const proxyUrl = `http://127.0.0.1:${port}/proxy?u=${encodeURIComponent(target)}`;
+        let proxyUrl = `http://127.0.0.1:${port}/proxy?u=${encodeURIComponent(target)}`;
+        if (proxyUserAgent) {
+            proxyUrl += `&ua=${encodeURIComponent(proxyUserAgent)}`;
+        }
+        if (proxyReferer) {
+            proxyUrl += `&referer=${encodeURIComponent(proxyReferer)}`;
+        }
         return {
-            url: proxyUserAgent ? `${proxyUrl}&ua=${encodeURIComponent(proxyUserAgent)}` : proxyUrl,
+            url: proxyUrl,
             needsGraph: true,
             viaProxy: true,
             proxyUserAgent,
