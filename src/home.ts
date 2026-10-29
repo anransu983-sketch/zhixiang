@@ -402,8 +402,9 @@ export function renderHome(): HTMLElement {
         }
 
         if (tabId === 'bilibili') {
-            page.appendChild(renderBilibiliAccountSection());
+            // 0.1.113：登录框搬去听歌钥匙，B站页只剩发现区＋收藏夹区。
             page.appendChild(renderBilibiliDiscoverySection(status));
+            page.appendChild(renderBiliFavSection());
         }
 
         const { block, search } = renderSourceSection(source, status, (query) => {
@@ -431,6 +432,11 @@ export function renderHome(): HTMLElement {
         }
         for (const [id, button] of tabButtons) {
             button.classList.toggle('is-active', id === tabId);
+        }
+        // 0.1.113：听歌钥匙里 B站登录／退出后，切回 B站页时刷一次收藏夹区。
+        if (tabId === 'bilibili' && biliSessionDirty && biliFavRefresh) {
+            biliSessionDirty = false;
+            biliFavRefresh();
         }
         // 滑动指示条：按激活按钮实测位置走，不用 25% 估算（padding/gap 会偏）。
         const activeButton = tabButtons.get(tabId);
@@ -1096,7 +1102,7 @@ function renderLoginArea(): HTMLElement {
     heading.textContent = '听歌钥匙';
     const loginSub = document.createElement('span');
     loginSub.className = 'login-area-sub';
-    loginSub.textContent = '双源登录 · 一处管理';
+    loginSub.textContent = '三源登录 · 一处管理';
     headText.append(heading, loginSub);
     const summary = document.createElement('span');
     summary.className = 'login-key-summary';
@@ -1111,9 +1117,10 @@ function renderLoginArea(): HTMLElement {
     body.hidden = true;
     area.appendChild(body);
 
-    // 收起态状态行：两块各自回调真实登录态，这里只聚合展示，不碰登录逻辑。
+    // 收起态状态行：三块各自回调真实登录态，这里只聚合展示，不碰登录逻辑。
     let neteaseLoggedIn = false;
     let ytmLoggedIn = false;
+    let biliLoggedIn = false;
     const refreshSummary = (): void => {
         summary.replaceChildren();
         const build = (loggedIn: boolean, label: string): HTMLElement => {
@@ -1130,7 +1137,9 @@ function renderLoginArea(): HTMLElement {
         summary.append(
             build(neteaseLoggedIn, '网易云'),
             document.createTextNode(' · '),
-            build(ytmLoggedIn, 'YouTube Music')
+            build(ytmLoggedIn, 'YouTube Music'),
+            document.createTextNode(' · '),
+            build(biliLoggedIn, 'B站')
         );
     };
     refreshSummary();
@@ -1140,6 +1149,10 @@ function renderLoginArea(): HTMLElement {
     }));
     body.appendChild(renderYtmLoginBlock((loggedIn) => {
         ytmLoggedIn = loggedIn;
+        refreshSummary();
+    }));
+    body.appendChild(renderBiliLoginBlock((loggedIn) => {
+        biliLoggedIn = loggedIn;
         refreshSummary();
     }));
 
@@ -3365,9 +3378,31 @@ function renderNeteaseDailySection(): HTMLElement {
 // 今日推荐取全站音乐榜头条（个性化推荐要登录，v1 用榜单头条代替）；
 // 排行榜四栏按栏懒加载、本页内缓存；点行即播整榜（复用 renderTracks）。
 // 0.1.111 B 站登录＋收藏夹：B 站页顶的账号区（扫码登录／收藏夹歌单）。
-function renderBilibiliAccountSection(): HTMLElement {
-    const section = document.createElement('section');
-    section.className = 'daily-section';
+// 0.1.113：B站登录从 B站页顶移到听歌钥匙——收藏夹区留在 B站页，
+// 登录态变化时由这里通知它重渲染（切回 B站页时触发）。
+let biliFavRefresh: (() => void) | null = null;
+let biliSessionDirty = false;
+
+// 0.1.113 听歌钥匙里的 B站登录块：与网易云／YTM 块同形（login-block），
+// 三态全在块内切换（未登录／扫码中／已登录），登录成功与退出时通知外层
+// 刷新收起态小结，并把脏标记交给切页钩子去刷 B站页收藏夹。
+function renderBiliLoginBlock(onState?: (loggedIn: boolean) => void): HTMLElement {
+    const box = document.createElement('div');
+    box.className = 'login-block';
+
+    const head = document.createElement('div');
+    head.className = 'login-head';
+    const tile = document.createElement('span');
+    tile.className = 'login-tile';
+    tile.textContent = 'B';
+    head.appendChild(tile);
+    const title = document.createElement('h3');
+    title.textContent = 'B站';
+    head.appendChild(title);
+    box.appendChild(head);
+
+    const body = document.createElement('div');
+    box.appendChild(body);
 
     let pollTimer: number | null = null;
     const stopPoll = (): void => {
@@ -3377,28 +3412,14 @@ function renderBilibiliAccountSection(): HTMLElement {
         }
     };
 
-    const makeHead = (title: string, sub: string): HTMLElement => {
-        const head = document.createElement('div');
-        head.className = 'daily-head';
-        const heading = document.createElement('h2');
-        heading.textContent = title;
-        head.appendChild(heading);
-        const subEl = document.createElement('span');
-        subEl.className = 'daily-sub';
-        subEl.textContent = sub;
-        head.appendChild(subEl);
-        return head;
-    };
-
     const renderLoggedOut = (noticeText: string): void => {
         stopPoll();
-        section.replaceChildren();
-        section.appendChild(makeHead('B站登录', '扫码登录后，我的收藏夹会同步成可播歌单'));
+        body.replaceChildren();
         if (noticeText) {
             const notice = document.createElement('p');
             notice.className = 'source-notice';
             notice.textContent = noticeText;
-            section.appendChild(notice);
+            body.appendChild(notice);
         }
         const loginButton = document.createElement('button');
         loginButton.type = 'button';
@@ -3407,20 +3428,23 @@ function renderBilibiliAccountSection(): HTMLElement {
         loginButton.addEventListener('click', () => {
             void startQr();
         });
-        section.appendChild(loginButton);
+        body.appendChild(loginButton);
     };
 
     const startQr = async (): Promise<void> => {
         stopPoll();
-        section.replaceChildren();
-        section.appendChild(makeHead('B站登录', '用 B站 App 扫码'));
+        body.replaceChildren();
+        const hint = document.createElement('p');
+        hint.className = 'source-notice';
+        hint.textContent = '用 B站 App 扫码';
+        body.appendChild(hint);
         const status = document.createElement('p');
         status.className = 'source-notice';
         status.textContent = '正在取二维码…';
-        section.appendChild(status);
+        body.appendChild(status);
         const qrWrap = document.createElement('div');
         qrWrap.className = 'pl-qr-wrap';
-        section.appendChild(qrWrap);
+        body.appendChild(qrWrap);
         const actions = document.createElement('div');
         actions.className = 'pl-footer';
         const refreshButton = document.createElement('button');
@@ -3432,7 +3456,7 @@ function renderBilibiliAccountSection(): HTMLElement {
         cancelButton.className = 'login-btn';
         cancelButton.textContent = '取消';
         actions.append(refreshButton, cancelButton);
-        section.appendChild(actions);
+        body.appendChild(actions);
 
         let qrcodeKey = '';
         let polls = 0;
@@ -3466,6 +3490,8 @@ function renderBilibiliAccountSection(): HTMLElement {
                             if (result.code === 0) {
                                 stopPoll();
                                 if (result.session) {
+                                    biliSessionDirty = true;
+                                    onState?.(true);
                                     renderLoggedIn();
                                 } else {
                                     status.textContent = result.message;
@@ -3499,27 +3525,91 @@ function renderBilibiliAccountSection(): HTMLElement {
     const renderLoggedIn = (): void => {
         stopPoll();
         const session = loadBiliSession();
-        section.replaceChildren();
-        section.appendChild(
-            makeHead(`B站 · ${session ? session.nickname : '已登录'}`, '收藏夹已同步，点夹子播整夹')
-        );
+        body.replaceChildren();
+        const name = document.createElement('p');
+        name.className = 'source-notice';
+        name.textContent = session ? `B站已登录 · ${session.nickname}` : 'B站已登录';
+        body.appendChild(name);
         const logoutButton = document.createElement('button');
         logoutButton.type = 'button';
         logoutButton.className = 'login-btn';
         logoutButton.textContent = '退出登录';
         logoutButton.addEventListener('click', () => {
             clearBiliSession();
+            biliSessionDirty = true;
+            onState?.(false);
             renderLoggedOut('已退出 B站登录');
         });
-        section.appendChild(logoutButton);
-        const notice = document.createElement('p');
-        notice.className = 'source-notice';
+        body.appendChild(logoutButton);
+    };
+
+    const initNotice = document.createElement('p');
+    initNotice.className = 'source-notice';
+    initNotice.textContent = '正在确认 B站登录…';
+    body.appendChild(initNotice);
+    void (async () => {
+        const validity = await validateBiliSession();
+        if (validity === 'valid') {
+            onState?.(true);
+            renderLoggedIn();
+        } else if (validity === 'expired') {
+            onState?.(false);
+            renderLoggedOut('B站登录已过期，请重新扫码');
+        } else if (validity === 'unknown') {
+            if (loadBiliSession()) {
+                onState?.(true);
+                renderLoggedIn();
+            } else {
+                onState?.(false);
+                renderLoggedOut('');
+            }
+        } else {
+            onState?.(false);
+            renderLoggedOut('');
+        }
+    })();
+    return box;
+}
+
+// 0.1.113 B站页收藏夹区：登录框已搬去听歌钥匙，这里只留夹子本身；
+// 未登录时只留一行指路，不再放登录按钮。重渲染函数挂到模块变量上，
+// 听歌钥匙里登录／退出后、切回 B站页时由 switchTab 触发。
+function renderBiliFavSection(): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'daily-section';
+
+    const head = document.createElement('div');
+    head.className = 'daily-head';
+    const heading = document.createElement('h2');
+    heading.textContent = '我的收藏夹';
+    head.appendChild(heading);
+    const sub = document.createElement('span');
+    sub.className = 'daily-sub';
+    sub.textContent = '点夹子播整夹，点行进详情';
+    head.appendChild(sub);
+    section.appendChild(head);
+
+    const notice = document.createElement('p');
+    notice.className = 'source-notice';
+    notice.textContent = '正在加载收藏夹…';
+    section.appendChild(notice);
+    const list = document.createElement('div');
+    list.className = 'pl-list';
+    section.appendChild(list);
+
+    const render = (): void => {
+        list.replaceChildren();
         notice.textContent = '正在加载收藏夹…';
-        section.appendChild(notice);
-        const list = document.createElement('div');
-        list.className = 'pl-list';
-        section.appendChild(list);
         void (async () => {
+            const validity = await validateBiliSession();
+            if (validity === 'expired' || (validity !== 'valid' && validity !== 'unknown')) {
+                notice.textContent = 'B站收藏夹需登录，去我的页听歌钥匙扫码';
+                return;
+            }
+            if (validity === 'unknown' && !loadBiliSession()) {
+                notice.textContent = 'B站收藏夹需登录，去我的页听歌钥匙扫码';
+                return;
+            }
             try {
                 const folders = await fetchBiliFavFolders();
                 if (folders.length === 0) {
@@ -3575,28 +3665,8 @@ function renderBilibiliAccountSection(): HTMLElement {
             }
         })();
     };
-
-    const initNotice = document.createElement('p');
-    initNotice.className = 'source-notice';
-    initNotice.textContent = '正在确认 B站登录…';
-    section.appendChild(initNotice);
-    void (async () => {
-        const validity = await validateBiliSession();
-        if (validity === 'valid') {
-            renderLoggedIn();
-        } else if (validity === 'expired') {
-            renderLoggedOut('B站登录已过期，请重新扫码');
-        } else if (validity === 'unknown') {
-            // 网络异常时不把登录态判死：有存档仍按登录渲染，收藏夹加载失败再提示。
-            if (loadBiliSession()) {
-                renderLoggedIn();
-            } else {
-                renderLoggedOut('');
-            }
-        } else {
-            renderLoggedOut('');
-        }
-    })();
+    biliFavRefresh = render;
+    render();
     return section;
 }
 
@@ -3734,18 +3804,54 @@ function renderBilibiliDiscoverySection(status: HTMLElement): HTMLElement {
     }
     section.appendChild(tabRow);
 
+    // 0.1.113：榜单不再铺开——卡片只留分区 pill＋播放／打开详情按钮＋条数，
+    // 行进详情页（与每日推荐同形），分区切换仍在卡片上。
+    const playAll = document.createElement('button');
+    playAll.type = 'button';
+    playAll.className = 'login-btn';
+    playAll.textContent = '▶ 播放本榜';
+    playAll.disabled = true;
+    section.appendChild(playAll);
+
+    const openPageButton = document.createElement('button');
+    openPageButton.type = 'button';
+    openPageButton.className = 'login-btn';
+    openPageButton.textContent = '打开完整榜单 ›';
+    openPageButton.disabled = true;
+    section.appendChild(openPageButton);
+
     const notice = document.createElement('p');
     notice.className = 'source-notice';
-    notice.hidden = true;
+    notice.textContent = '加载中…';
     section.appendChild(notice);
-
-    const list = document.createElement('ul');
-    list.className = 'track-list';
-    section.appendChild(list);
 
     const cache = new Map<string, Track[]>();
     let currentKey = BILI_CHART_ZONES[0]!.key;
+    let currentZone = BILI_CHART_ZONES[0]!;
+    let currentTracks: Track[] = [];
     let featuredTracks: Track[] = [];
+
+    const applyTracks = (zone: BiliChartZone, tracks: Track[]): void => {
+        currentZone = zone;
+        currentTracks = tracks;
+        notice.textContent = `共 ${tracks.length} 条`;
+        notice.classList.remove('is-error');
+        playAll.disabled = tracks.length === 0;
+        openPageButton.disabled = tracks.length === 0;
+        if (zone.key === BILI_CHART_ZONES[0]!.key && tracks.length > 0) {
+            featuredTracks = tracks;
+            const first = tracks[0]!;
+            featuredTitle.textContent = first.title;
+            featuredArtist.textContent = first.artist;
+            if (first.coverUrl) {
+                featuredCover.src = first.coverUrl;
+                featuredCover.hidden = false;
+            } else {
+                featuredCover.hidden = true;
+            }
+            featuredPlay.disabled = false;
+        }
+    };
 
     const renderZone = async (zone: BiliChartZone): Promise<void> => {
         for (const [key, button] of tabButtons) {
@@ -3753,44 +3859,44 @@ function renderBilibiliDiscoverySection(status: HTMLElement): HTMLElement {
         }
         const cached = cache.get(zone.key);
         if (cached) {
-            notice.hidden = true;
-            renderTracks(list, cached, status);
+            applyTracks(zone, cached);
             return;
         }
         notice.textContent = '加载中…';
         notice.classList.remove('is-error');
-        notice.hidden = false;
-        list.replaceChildren();
+        playAll.disabled = true;
+        openPageButton.disabled = true;
         try {
             const tracks = await fetchBilibiliChart(zone);
             cache.set(zone.key, tracks);
             if (currentKey !== zone.key) {
                 return;
             }
-            notice.hidden = true;
-            renderTracks(list, tracks, status);
-            if (zone.key === BILI_CHART_ZONES[0]!.key && tracks.length > 0) {
-                featuredTracks = tracks;
-                const first = tracks[0]!;
-                featuredTitle.textContent = first.title;
-                featuredArtist.textContent = first.artist;
-                if (first.coverUrl) {
-                    featuredCover.src = first.coverUrl;
-                    featuredCover.hidden = false;
-                } else {
-                    featuredCover.hidden = true;
-                }
-                featuredPlay.disabled = false;
-            }
+            applyTracks(zone, tracks);
         } catch (error) {
             if (currentKey !== zone.key) {
                 return;
             }
             notice.textContent = friendlySearchError(error);
             notice.classList.add('is-error');
-            notice.hidden = false;
         }
     };
+
+    playAll.addEventListener('click', () => {
+        if (currentTracks.length === 0) {
+            return;
+        }
+        void (async () => {
+            try {
+                await playQueue(currentTracks, 0);
+            } catch (error) {
+                status.textContent = friendlyPlayError(error);
+            }
+        })();
+    });
+    openPageButton.addEventListener('click', () => {
+        openBiliChartPage(currentZone, currentTracks);
+    });
 
     featuredPlay.addEventListener('click', () => {
         if (featuredTracks.length === 0) {
@@ -3807,6 +3913,50 @@ function renderBilibiliDiscoverySection(status: HTMLElement): HTMLElement {
 
     void renderZone(BILI_CHART_ZONES[0]!);
     return section;
+}
+
+// 0.1.113 榜单详情页：与每日推荐详情页同形，行带 ＋ 加歌。
+function openBiliChartPage(zone: BiliChartZone, tracks: Track[]): void {
+    if (tracks.length === 0) {
+        return;
+    }
+    const page = document.createElement('div');
+    page.className = 'daily-page';
+    const pageHead = document.createElement('div');
+    pageHead.className = 'daily-page-head';
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'daily-page-back';
+    back.textContent = '返回';
+    back.addEventListener('click', () => {
+        page.remove();
+    });
+    pageHead.appendChild(back);
+    const pageTitle = document.createElement('h2');
+    pageTitle.textContent = zone.label;
+    pageHead.appendChild(pageTitle);
+    page.appendChild(pageHead);
+    const pageSub = document.createElement('p');
+    pageSub.className = 'daily-page-sub';
+    pageSub.textContent = `共 ${tracks.length} 条 · 点歌播本榜`;
+    page.appendChild(pageSub);
+    const pagePlayAll = document.createElement('button');
+    pagePlayAll.type = 'button';
+    pagePlayAll.className = 'login-btn';
+    pagePlayAll.textContent = '▶ 播放全部';
+    pagePlayAll.addEventListener('click', () => {
+        void playQueue(tracks, 0);
+    });
+    page.appendChild(pagePlayAll);
+    const pageNotice = document.createElement('p');
+    pageNotice.className = 'source-notice';
+    pageNotice.textContent = `共 ${tracks.length} 条`;
+    page.appendChild(pageNotice);
+    const trackList = document.createElement('ul');
+    trackList.className = 'track-list';
+    page.appendChild(trackList);
+    renderTracks(trackList, tracks, pageNotice);
+    document.body.appendChild(page);
 }
 
 function renderYtmDailySection(): HTMLElement {
