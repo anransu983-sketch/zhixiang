@@ -177,29 +177,52 @@ function coverThumb(trackId: string, coverUrl: string | undefined, sizeClass: st
     return fallback;
 }
 
-function section(titleText: string): HTMLElement {
+function section(titleText: string, smallText?: string): HTMLElement {
     const wrap = document.createElement('div');
     wrap.className = 'footprint-section';
+    const head = document.createElement('div');
+    head.className = 'footprint-section-head';
     const heading = document.createElement('h3');
     heading.textContent = titleText;
-    wrap.appendChild(heading);
+    head.appendChild(heading);
+    if (smallText) {
+        const small = document.createElement('small');
+        small.textContent = smallText;
+        head.appendChild(small);
+    }
+    wrap.appendChild(head);
     return wrap;
 }
 
+// 0.1.114 新版式：月报渐变卡——眉标＋大时长＋三格小统计
+// （歌曲数／已听天数／最爱歌手），旧的两行散文本废弃。
 function renderHero(
     body: HTMLElement,
+    eyebrow: string,
     timeText: string,
-    subText: string,
+    stats: Array<{ value: string; label: string }>,
 ): void {
     const hero = document.createElement('div');
     hero.className = 'footprint-hero';
+    const heroEyebrow = document.createElement('div');
+    heroEyebrow.className = 'footprint-hero-eyebrow';
+    heroEyebrow.textContent = eyebrow;
     const heroTime = document.createElement('div');
     heroTime.className = 'footprint-hero-time';
     heroTime.textContent = timeText;
-    const heroSub = document.createElement('div');
-    heroSub.className = 'footprint-hero-sub';
-    heroSub.textContent = subText;
-    hero.append(heroTime, heroSub);
+    const heroStats = document.createElement('div');
+    heroStats.className = 'footprint-hero-stats';
+    for (const stat of stats) {
+        const cell = document.createElement('div');
+        cell.className = 'footprint-hero-stat';
+        const value = document.createElement('b');
+        value.textContent = stat.value;
+        const label = document.createElement('span');
+        label.textContent = stat.label;
+        cell.append(value, label);
+        heroStats.appendChild(cell);
+    }
+    hero.append(heroEyebrow, heroTime, heroStats);
     body.appendChild(hero);
 }
 
@@ -215,7 +238,7 @@ function renderWall(body: HTMLElement, stats: FootprintStats): void {
 }
 
 function renderTopSongs(body: HTMLElement, stats: FootprintStats): void {
-    const wrap = section('TOP 歌曲');
+    const wrap = section('TOP 歌曲', '播放 30 秒以上计一次');
     if (stats.topSongs.length === 0) {
         const note = document.createElement('p');
         note.className = 'footprint-note';
@@ -225,9 +248,10 @@ function renderTopSongs(body: HTMLElement, stats: FootprintStats): void {
         for (let index = 0; index < stats.topSongs.length; index += 1) {
             const song = stats.topSongs[index] as (typeof stats.topSongs)[number];
             const row = document.createElement('div');
-            row.className = 'footprint-row';
+            row.className = index === 0 ? 'footprint-row is-hot' : 'footprint-row';
             const rank = document.createElement('span');
-            rank.className = 'footprint-rank';
+            rank.className =
+                index < 3 ? `footprint-rank medal m${index + 1}` : 'footprint-rank';
             rank.textContent = String(index + 1);
             const main = document.createElement('div');
             main.className = 'footprint-row-main';
@@ -259,10 +283,16 @@ function renderTopArtists(body: HTMLElement, stats: FootprintStats): void {
         for (let index = 0; index < stats.topArtists.length; index += 1) {
             const artist = stats.topArtists[index] as (typeof stats.topArtists)[number];
             const row = document.createElement('div');
-            row.className = 'footprint-row';
+            row.className = index === 0 ? 'footprint-row is-hot' : 'footprint-row';
             const rank = document.createElement('span');
-            rank.className = 'footprint-rank';
+            rank.className =
+                index < 3 ? `footprint-rank medal m${index + 1}` : 'footprint-rank';
             rank.textContent = String(index + 1);
+            // 歌手数据没有封面字段：首字＋色相渐变圆，不编假图。
+            const avatar = document.createElement('span');
+            avatar.className = 'footprint-avatar';
+            avatar.style.background = posterFallbackBackground(artist.artist);
+            avatar.textContent = artist.artist.slice(0, 1);
             const main = document.createElement('div');
             main.className = 'footprint-row-main';
             const titleText = document.createElement('div');
@@ -272,7 +302,7 @@ function renderTopArtists(body: HTMLElement, stats: FootprintStats): void {
             const count = document.createElement('span');
             count.className = 'footprint-row-count';
             count.textContent = `${artist.plays} 次`;
-            row.append(rank, main, count);
+            row.append(rank, avatar, main, count);
             wrap.appendChild(row);
         }
     }
@@ -291,24 +321,27 @@ function renderSources(body: HTMLElement, stats: FootprintStats): void {
         }
         anySource = true;
         const row = document.createElement('div');
-        row.className = 'footprint-row';
-        const main = document.createElement('div');
-        main.className = 'footprint-row-main';
-        const titleText = document.createElement('div');
-        titleText.className = 'footprint-row-title';
+        row.className = 'footprint-source';
+        const headRow = document.createElement('div');
+        headRow.className = 'footprint-source-head';
+        const titleText = document.createElement('span');
+        titleText.className = 'footprint-source-name';
         titleText.textContent = SOURCE_NAMES[source];
+        const pct = stats.playCount > 0 ? Math.round((plays / stats.playCount) * 100) : 0;
+        const pctEl = document.createElement('span');
+        pctEl.className = 'footprint-source-pct';
+        pctEl.textContent = `${pct}%`;
+        headRow.append(titleText, pctEl);
         const bar = document.createElement('div');
         bar.className = 'footprint-source-bar';
         const fill = document.createElement('div');
-        fill.className = 'footprint-source-fill';
-        const pct = stats.playCount > 0 ? Math.round((plays / stats.playCount) * 100) : 0;
+        fill.className = `footprint-source-fill src-${source}`;
         fill.style.width = `${pct}%`;
         bar.appendChild(fill);
-        main.append(titleText, bar);
-        const count = document.createElement('span');
-        count.className = 'footprint-row-count';
-        count.textContent = `${plays} 次 · ${formatListenedMs(ms)}`;
-        row.append(main, count);
+        const meta = document.createElement('div');
+        meta.className = 'footprint-source-meta';
+        meta.textContent = `${plays} 次 · ${formatListenedMs(ms)}`;
+        row.append(headRow, bar, meta);
         wrap.appendChild(row);
     }
     if (anySource) {
@@ -338,11 +371,11 @@ function renderRange(
 ): void {
     if (range === 'all') {
         const stats = getFootprint(null, null);
-        renderHero(
-            body,
-            formatListenedMs(stats.totalMs),
-            `累计收听 · 已听 ${stats.activeDays} 天 · ${stats.songCount} 首`,
-        );
+        renderHero(body, '全部 · 累计', formatListenedMs(stats.totalMs), [
+            { value: `${stats.songCount} 首`, label: '累计歌曲' },
+            { value: `${stats.activeDays} 天`, label: '已听天数' },
+            { value: stats.topArtists[0]?.artist ?? '—', label: '累计最爱' },
+        ]);
         if (stats.totalMs === 0) {
             renderEmpty(body, '还没有收听记录，听首歌再回来看看。');
             return;
@@ -357,11 +390,11 @@ function renderRange(
 
     if (range === 'year') {
         const stats = getYearFootprint(year);
-        renderHero(
-            body,
-            formatListenedMs(stats.totalMs),
-            `${year}年收听 · 已听 ${stats.activeDays} 天 · ${stats.songCount} 首`,
-        );
+        renderHero(body, `${year}年 · 年报`, formatListenedMs(stats.totalMs), [
+            { value: `${stats.songCount} 首`, label: '当年歌曲' },
+            { value: `${stats.activeDays} 天`, label: '已听天数' },
+            { value: stats.topArtists[0]?.artist ?? '—', label: '当年最爱' },
+        ]);
         if (stats.totalMs === 0) {
             renderEmpty(body, '今年还没有收听记录，听首歌再回来看看。');
             return;
@@ -416,11 +449,11 @@ function renderRange(
 
     const stats = getFootprint(year, month);
     const daysInMonth = new Date(year, month, 0).getDate();
-    renderHero(
-        body,
-        formatListenedMs(stats.totalMs),
-        `本月收听 · 已听 ${stats.activeDays} / ${daysInMonth} 天`,
-    );
+    renderHero(body, `${year}年${month}月 · 月报`, formatListenedMs(stats.totalMs), [
+        { value: `${stats.songCount} 首`, label: '本月歌曲' },
+        { value: `${stats.activeDays} / ${daysInMonth} 天`, label: '已听天数' },
+        { value: stats.topArtists[0]?.artist ?? '—', label: '本月最爱' },
+    ]);
     if (stats.totalMs === 0) {
         renderEmpty(body, '本月还没有收听记录，听首歌再回来看看。');
         return;
