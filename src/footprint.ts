@@ -245,37 +245,72 @@ function renderHero(
 const attemptedWallCovers = new Set<string>();
 
 function renderWall(body: HTMLElement, stats: FootprintStats): void {
-    const wrap = section(`唱片墙 · ${stats.songCount} 首`, '封面缺失时自动联网补');
+    // 0.1.118 唱片墙改成网易云式马赛克卡片（用户给的本周唱片墙参考）：
+    // 收起态是一张无缝拼接的大圆角卡（前 16 张封面＋压字标题／总数），
+    // 读起来是一张海报而不是 60 块砖；点卡片展开成 3 列大砖全量。
+    if (stats.wall.length === 0) {
+        const wrap = section('唱片墙 · 0 首');
+        const empty = document.createElement('div');
+        empty.className = 'footprint-wall';
+        wrap.appendChild(empty);
+        body.appendChild(wrap);
+        return;
+    }
+    const block = document.createElement('div');
+    block.className = 'footprint-wall-block';
+    const tiles = new Map<string, HTMLElement[]>();
+    const trackTile = (trackId: string, el: HTMLElement): void => {
+        const list = tiles.get(trackId) ?? [];
+        list.push(el);
+        tiles.set(trackId, list);
+    };
     const wall = document.createElement('div');
     wall.className = 'footprint-wall';
-    const tiles = new Map<string, HTMLElement>();
-    // 0.1.117 收起版：默认只露 12 张，剩下的折起来，想看再展开。
-    const VISIBLE_COUNT = 12;
-    stats.wall.forEach((item, index) => {
+    wall.hidden = true;
+    stats.wall.forEach((item) => {
         const tile = coverThumb(item.trackId, item.coverUrl, 'footprint-wall-item');
-        if (index >= VISIBLE_COUNT) {
-            tile.classList.add('is-extra');
-        }
-        tiles.set(item.trackId, tile);
+        trackTile(item.trackId, tile);
         wall.appendChild(tile);
     });
-    wrap.appendChild(wall);
-    if (stats.wall.length > VISIBLE_COUNT) {
-        const expandButton = document.createElement('button');
-        expandButton.type = 'button';
-        expandButton.className = 'footprint-wall-expand';
-        const refreshExpandButton = (): void => {
-            const open = wall.classList.contains('is-open');
-            expandButton.textContent = open ? '收起 ▴' : `展开全部 ${stats.songCount} 首 ▾`;
-        };
-        expandButton.addEventListener('click', () => {
-            wall.classList.toggle('is-open');
-            refreshExpandButton();
-        });
-        refreshExpandButton();
-        wrap.appendChild(expandButton);
-    }
-    body.appendChild(wrap);
+    const MOSAIC_COUNT = 16;
+    const mosaic = document.createElement('div');
+    mosaic.className = 'footprint-wall-mosaic';
+    mosaic.addEventListener('click', () => {
+        mosaic.hidden = true;
+        wall.hidden = false;
+        collapseButton.hidden = false;
+    });
+    stats.wall.slice(0, MOSAIC_COUNT).forEach((item) => {
+        const tile = coverThumb(item.trackId, item.coverUrl, 'footprint-mosaic-item');
+        trackTile(item.trackId, tile);
+        mosaic.appendChild(tile);
+    });
+    const overlay = document.createElement('div');
+    overlay.className = 'footprint-mosaic-overlay';
+    const overlayTitle = document.createElement('div');
+    overlayTitle.className = 'footprint-mosaic-title';
+    overlayTitle.textContent = '唱片墙';
+    const overlayBottom = document.createElement('div');
+    overlayBottom.className = 'footprint-mosaic-bottom';
+    const overlayCount = document.createElement('span');
+    overlayCount.textContent = `${stats.songCount}首`;
+    const overlayHint = document.createElement('span');
+    overlayHint.textContent = '点开看全部 ▸';
+    overlayBottom.append(overlayCount, overlayHint);
+    overlay.append(overlayTitle, overlayBottom);
+    mosaic.appendChild(overlay);
+    const collapseButton = document.createElement('button');
+    collapseButton.type = 'button';
+    collapseButton.className = 'footprint-wall-expand';
+    collapseButton.textContent = '收起 ▴';
+    collapseButton.hidden = true;
+    collapseButton.addEventListener('click', () => {
+        mosaic.hidden = false;
+        wall.hidden = true;
+        collapseButton.hidden = true;
+    });
+    block.append(mosaic, wall, collapseButton);
+    body.appendChild(block);
     const targets = stats.wall.filter((item) => {
         if (item.coverUrl !== undefined && item.coverUrl.startsWith('http')) {
             return false;
@@ -289,8 +324,8 @@ function renderWall(body: HTMLElement, stats: FootprintStats): void {
     let chain = Promise.resolve();
     for (const item of targets) {
         chain = chain.then(async () => {
-            const tile = tiles.get(item.trackId);
-            if (!tile) {
+            const els = tiles.get(item.trackId);
+            if (!els || els.length === 0) {
                 return;
             }
             let coverUrl: string | null = null;
@@ -308,9 +343,16 @@ function renderWall(body: HTMLElement, stats: FootprintStats): void {
             if (!coverUrl) {
                 return;
             }
-            const fresh = coverThumb(item.trackId, coverUrl, 'footprint-wall-item');
-            tile.replaceWith(fresh);
-            tiles.set(item.trackId, fresh);
+            for (const el of els) {
+                const fresh = coverThumb(
+                    item.trackId,
+                    coverUrl,
+                    el.classList.contains('footprint-mosaic-item')
+                        ? 'footprint-mosaic-item'
+                        : 'footprint-wall-item'
+                );
+                el.replaceWith(fresh);
+            }
             updateSessionCover(item.trackId, coverUrl);
         });
     }
