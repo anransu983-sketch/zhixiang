@@ -243,6 +243,8 @@ function renderHero(
 // 的墙砖按最近播放顺序补网易云搜索（一次最多 24 张，串行），补到
 // 就地换图并写回历史记录，下次打开直接显示；补不到的不重复查。
 const attemptedWallCovers = new Set<string>();
+// 0.1.121：TOP 行的封面占位，供墙补封面链直接换图（与 tiles 同理）。
+const topTiles = new Map<string, HTMLElement[]>();
 
 function renderWall(body: HTMLElement, stats: FootprintStats): void {
     // 0.1.118 唱片墙改成网易云式马赛克卡片（用户给的本周唱片墙参考）：
@@ -311,23 +313,27 @@ function renderWall(body: HTMLElement, stats: FootprintStats): void {
     });
     block.append(mosaic, wall, collapseButton);
     body.appendChild(block);
-    const targets = stats.wall.filter((item) => {
+    // 0.1.121：补封面不再只补墙。墙只取最近 60 首，TOP 里的老歌
+    // 可能根本不在墙里，之前永远轮不到；24 张上限＋每会话失败
+    // 不重试＋重启重算，也让排在后面的歌一直饿死。改成：墙与
+    // TOP 取并集、无上限串行补，补到就写回播放记录，下次打开
+    // 墙和 TOP 都有；TOP 行在本页内直接换图，不用等下次打开。
+    const targetMap = new Map<string, { trackId: string; title: string; artist: string }>();
+    const consider = (item: { trackId: string; title: string; artist: string; coverUrl?: string }): void => {
         if (item.coverUrl !== undefined && item.coverUrl.startsWith('http')) {
-            return false;
+            return;
         }
         if (attemptedWallCovers.has(item.trackId)) {
-            return false;
+            return;
         }
         attemptedWallCovers.add(item.trackId);
-        return true;
-    }).slice(0, 24);
+        targetMap.set(item.trackId, { trackId: item.trackId, title: item.title, artist: item.artist });
+    };
+    stats.wall.forEach(consider);
+    stats.topSongs.forEach(consider);
     let chain = Promise.resolve();
-    for (const item of targets) {
+    for (const item of targetMap.values()) {
         chain = chain.then(async () => {
-            const els = tiles.get(item.trackId);
-            if (!els || els.length === 0) {
-                return;
-            }
             let coverUrl: string | null = null;
             try {
                 const probe: Track = {
@@ -343,6 +349,7 @@ function renderWall(body: HTMLElement, stats: FootprintStats): void {
             if (!coverUrl) {
                 return;
             }
+            const els = tiles.get(item.trackId) ?? [];
             for (const el of els) {
                 const fresh = coverThumb(
                     item.trackId,
@@ -353,6 +360,10 @@ function renderWall(body: HTMLElement, stats: FootprintStats): void {
                 );
                 el.replaceWith(fresh);
             }
+            const topEls = topTiles.get(item.trackId) ?? [];
+            for (const el of topEls) {
+                el.replaceWith(coverThumb(item.trackId, coverUrl, 'footprint-thumb'));
+            }
             updateSessionCover(item.trackId, coverUrl);
         });
     }
@@ -360,6 +371,9 @@ function renderWall(body: HTMLElement, stats: FootprintStats): void {
 }
 
 function renderTopSongs(body: HTMLElement, stats: FootprintStats): void {
+    // 0.1.121：每建一次页就重记 TOP 行封面占位，旧链换的是已离线
+    // 的节点，无害；新链只换当前页的。
+    topTiles.clear();
     const wrap = section('TOP 歌曲', '播放 30 秒以上计一次');
     if (stats.topSongs.length === 0) {
         const note = document.createElement('p');
@@ -387,7 +401,11 @@ function renderTopSongs(body: HTMLElement, stats: FootprintStats): void {
             const count = document.createElement('span');
             count.className = 'footprint-row-count';
             count.textContent = `${song.plays} 次`;
-            row.append(rank, coverThumb(song.trackId, song.coverUrl, 'footprint-thumb'), main, count);
+            const thumb = coverThumb(song.trackId, song.coverUrl, 'footprint-thumb');
+            const prev = topTiles.get(song.trackId) ?? [];
+            prev.push(thumb);
+            topTiles.set(song.trackId, prev);
+            row.append(rank, thumb, main, count);
             wrap.appendChild(row);
         }
     }
