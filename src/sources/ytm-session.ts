@@ -28,6 +28,7 @@ export type YtmSignInResult =
 interface YtmSignInPlugin {
     signIn(): Promise<{ ok?: unknown; cookie?: unknown; userAgent?: unknown }>;
     probeWatchPage(options: { videoId: string }): Promise<{ raw?: unknown }>;
+    extractViaPage(options: { videoId: string }): Promise<{ raw?: unknown; audioUrl?: unknown; audioMime?: unknown }>;
 }
 
 const YtmSignIn = registerPlugin<YtmSignInPlugin>('YtmSignIn');
@@ -44,6 +45,49 @@ export interface YtmWatchPageProbe {
     directCount: number;
     visitorData: string | null;
     err: string;
+}
+
+// 页面抽取结果（0.1.127）：探针摘要之外，多了页面播放器自己发出的音频
+// 请求地址（拦截所得、已解签）。audioUrl 含出口 IP 与签名，只在内存里
+// 流转，调用方日志只许记 host/itag/mime/长度，绝不打全文。
+export interface YtmPageExtract extends YtmWatchPageProbe {
+    audioUrl: string | null;
+    audioMime: string;
+}
+
+export async function extractYtmViaPage(videoId: string): Promise<YtmPageExtract | null> {
+    if (!Capacitor.isNativePlatform()) {
+        return null;
+    }
+    try {
+        const ret = await YtmSignIn.extractViaPage({ videoId });
+        if (!ret || typeof ret.raw !== 'string' || !ret.raw) {
+            return null;
+        }
+        let inner: unknown = JSON.parse(ret.raw);
+        if (typeof inner === 'string') {
+            inner = JSON.parse(inner);
+        }
+        const o = inner as Record<string, unknown> | null;
+        if (!o) {
+            return null;
+        }
+        return {
+            ok: o.ok === true,
+            status: typeof o.status === 'string' ? o.status : '',
+            reason: typeof o.reason === 'string' ? o.reason : '',
+            hasStreaming: o.hasStreaming === true,
+            audioCount: typeof o.audioCount === 'number' ? o.audioCount : 0,
+            directCount: typeof o.directCount === 'number' ? o.directCount : 0,
+            visitorData:
+                typeof o.visitorData === 'string' && o.visitorData ? o.visitorData : null,
+            err: typeof o.err === 'string' ? o.err : '',
+            audioUrl: typeof ret.audioUrl === 'string' && ret.audioUrl ? ret.audioUrl : null,
+            audioMime: typeof ret.audioMime === 'string' ? ret.audioMime : ''
+        };
+    } catch {
+        return null;
+    }
 }
 
 // 非原生环境或插件不可用时回 null（探针是诊断，缺了不许影响取链主流程）。

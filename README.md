@@ -205,6 +205,17 @@ Chrome／Firefox、iPhone UA＋Referer 均 206，第二窗
 铸链 UA 同路：B站起歌时把铸链桌面 UA（bilibili.ts 的
 BILIBILI_MINT_UA，接口与取流共用一串）一并交给代理。
 
+0.1.127 YTM 登录门页面抽取兜底（0.1.126 探针判定的落
+地）：真机探针实证撞门时真实 watch 页 playability=OK、
+streamingData 在，但格式全是 signatureCipher（直链 0
+条）、页面 responseContext 无 visitorData（0.1.126 判定
+文案误报「B 不通」，实为 B 未试）。本版撞门时让页面自
+己的播放器真起播（WebView 透明挂屏幕外、放行自动播
+放），拦截它发往 googlevideo 的音频请求地址——那是页
+面已解签的成品——去掉分段参数后直接拿来播放；同時带
+回 ytcfg 的 VISITOR_DATA 补试 B 路匿名重试。兜底失败
+60 秒节流，抽到的地址只记 host/itag/mime/长度不打全文。
+
 0.1.126 YTM 登录门探针版（Claude 简报回复的区分实验
 落地，先验再动）：撞 LOGIN_REQUIRED 后自动跑一次页面
 对照——原生插件新增 probeWatchPage：用 App 自己的
