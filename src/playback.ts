@@ -55,7 +55,7 @@ import { findBilibiliFallback } from './sources/fallback';
 import { NETEASE_MINT_UA } from './sources/netease';
 import { BILIBILI_MINT_UA } from './sources/bilibili';
 import { eapiRequest } from './sources/netease-eapi';
-import { isYtmGateError, resolveYtmStream } from './sources/ytm';
+import { clearYtmGateBackoff, isYtmGateError, resolveYtmStream } from './sources/ytm';
 import {
     ensureStreamProxy,
     startPlaybackService,
@@ -814,6 +814,9 @@ export async function playQueue(tracks: Track[], startIndex: number): Promise<vo
     try {
         // 意图加一必须在去重之后：被忽略的重 tap 不能杀掉在途那首。
         ++playIntent;
+        // 0.1.125：用户手动点播清 YTM 登录门退避（换节点回来点歌立即重试，
+        // 不必等 10 分钟或重启 App）；自动推进不走 playQueue，不受影响。
+        clearYtmGateBackoff();
         const crossfade = playing && activeSlot !== null && currentTrack !== null;
         queue = [...tracks];
         queueIndex = clamped;

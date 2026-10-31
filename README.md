@@ -205,6 +205,16 @@ Chrome／Firefox、iPhone UA＋Referer 均 206，第二窗
 铸链 UA 同路：B站起歌时把铸链桌面 UA（bilibili.ts 的
 BILIBILI_MINT_UA，接口与取流共用一串）一并交给代理。
 
+0.1.125 YTM 登录门恢复路径（与 0.1.124 一起修）：门本身
+经沙箱同字节复测确认不是请求形态坏了——同一套匿名链在
+沙箱出口 VISIONOS／ANDROID_VR／IOS 全 OK，候选新腿
+（TVHTML5 含 sts、WEB_EMBEDDED、ANDROID_MUSIC、
+IOS_MUSIC、MWEB）逐个实测全军覆没（UNPLAYABLE／嵌
+入禁用／要登录），门立时是出口侧的事、代码无新腿可加。
+本版只修恢复体验：手动点播（playQueue 入口）先清门退
+避，换节点回来点歌立即真发请求重试，不再被 10 分钟退
+避吞掉、也不用重启 App；自动跳歌路径照旧退避防连烧。
+
 不做：Spotify、QQ、酷狗、睡眠定时器、预加载、AI 主题、/api 中继、登录体系、命令面板。
 
 ## 命令

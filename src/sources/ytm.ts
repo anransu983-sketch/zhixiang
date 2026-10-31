@@ -702,6 +702,19 @@ let gateStrikes = 0;
 let gatedUntil = 0;
 const GATE_BACKOFF_MINUTES = [10, 20, 40, 60];
 
+// 0.1.125：手动点播清退避。退避原本防的是自动跳歌连烧整单，手动点播是
+// 用户明确意图（典型场景：撞门→去梦盒换节点→回来点歌），不该被 10 分钟
+// 退避吞掉——2026-10-31 真机日志里用户连点 5 次全是「限流保护中」未发
+// 请求。playback.ts 只在用户手势入口 playQueue 里调本函数；自动推进与
+// 跳歌循环不经过它，退避对自动路径照旧生效。撞门后退避会重新计起。
+export function clearYtmGateBackoff(): void {
+    if (gateStrikes > 0 || gatedUntil > Date.now()) {
+        gateStrikes = 0;
+        gatedUntil = 0;
+        console.log('[Ytm] 手动点播，已清登录门退避，重新取链');
+    }
+}
+
 export function resolveYtmStream(track: Track): Promise<YtmStream> {
     const run = resolveQueue.then(() => doResolveYtmStream(track));
     resolveQueue = run.catch(() => {});
