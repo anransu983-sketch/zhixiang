@@ -22,9 +22,15 @@ const PLAYURL_URL = 'https://api.bilibili.com/x/player/playurl';
 const PLAYER_V2_URL = 'https://api.bilibili.com/x/player/wbi/v2';
 
 // B 站接口要浏览器 UA＋Referer，否则容易被风控拦；无 cookie、无登录态。
+// 0.1.124：这串 UA 同时是播放铸链 UA（playback.ts 交给本机代理复用）——
+// B 站音频 CDN（upos）现在双查 Referer＋UA 平台：Referer 缺失或 UA 是
+// 安卓（WebView／Android Chrome 均同罪）都回 403＋548 字节错误页，桌面
+// Chrome UA＋Referer 才回 206（2026-10-31 沙箱两首歌多组合实测钉死）。
+export const BILIBILI_MINT_UA =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+
 const BILI_HEADERS: Record<string, string> = {
-    'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    'User-Agent': BILIBILI_MINT_UA,
     Referer: 'https://www.bilibili.com'
 };
 

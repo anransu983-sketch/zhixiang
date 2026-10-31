@@ -53,6 +53,7 @@ import { Capacitor } from '@capacitor/core';
 import { getSource } from './sources/index';
 import { findBilibiliFallback } from './sources/fallback';
 import { NETEASE_MINT_UA } from './sources/netease';
+import { BILIBILI_MINT_UA } from './sources/bilibili';
 import { eapiRequest } from './sources/netease-eapi';
 import { isYtmGateError, resolveYtmStream } from './sources/ytm';
 import {
@@ -470,6 +471,10 @@ async function resolvePlayUrl(track: Track): Promise<ResolvedPlay> {
                 // https://www.bilibili.com 则 206（同地址实测 3/3）；
                 // 代理上游只带 Range 与 UA，故把 Referer 当参数带给代理。
                 proxyReferer = 'https://www.bilibili.com';
+                // 0.1.124：CDN 现在还查 UA 平台——代理默认用元素（WebView）
+                // UA 是安卓串，照样 403（错误页 548 字节，与真机日志逐字
+                // 对上）；须与 YTM 同路，把铸链桌面 UA 一并交给代理复用。
+                proxyUserAgent = BILIBILI_MINT_UA;
             }
             if (track.source === 'netease' && target.includes('authSecret')) {
                 // 0.1.75：带签名曲才记为探针目标。当前曲目会随自动跳歌/

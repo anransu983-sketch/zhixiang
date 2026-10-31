@@ -15,7 +15,7 @@
 // - 退出只清本地会话，不调未经证实的服务端登出端点（网易云同口径）。
 
 import { httpGet } from '../native/http';
-import { BILI_CHART_ZONES, fetchBilibiliChart } from './bilibili';
+import { BILI_CHART_ZONES, BILIBILI_MINT_UA, fetchBilibiliChart } from './bilibili';
 import type { Track } from '../types';
 
 const QR_GENERATE_URL = 'https://passport.bilibili.com/x/passport-login/web/qrcode/generate';
@@ -26,10 +26,9 @@ const FAV_RESOURCES_URL = 'https://api.bilibili.com/x/v3/fav/resource/list';
 
 const STORAGE_KEY = 'zx_bilibili_session_v1';
 
-// B 站接口要浏览器 UA＋Referer，否则容易被风控拦（bilibili.ts 同款头）。
+// B 站接口要浏览器 UA＋Referer，否则容易被风控拦（UA 与 bilibili.ts 共用一串）。
 const BILI_HEADERS: Record<string, string> = {
-    'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    'User-Agent': BILIBILI_MINT_UA,
     Referer: 'https://www.bilibili.com'
 };
 

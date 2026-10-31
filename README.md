@@ -195,6 +195,16 @@ http 封面粘住升不到 https、补封面也跳过它；改按 https
 性化流 feed/rcmd 实测全是新闻／游戏／动漫、听视频每日
 播单只有 App gRPC 无 Web 路，两条均未采用。
 
+0.1.124 修 B站全量 403 播不了：0.1.108 只给代理带了
+Referer，但代理上游 UA 默认用元素（WebView）UA；B站
+音频 CDN（upos）现已双查 Referer＋UA 平台，安卓 UA
+（WebView／Android Chrome 同罪）＋Referer 照样回
+403、错误页正好 548 字节，与真机日志逐条对上（桌面
+Chrome／Firefox、iPhone UA＋Referer 均 206，第二窗
+口亦 206；无 Referer 时桌面 UA 也 403）。修法与 YTM
+铸链 UA 同路：B站起歌时把铸链桌面 UA（bilibili.ts 的
+BILIBILI_MINT_UA，接口与取流共用一串）一并交给代理。
+
 不做：Spotify、QQ、酷狗、睡眠定时器、预加载、AI 主题、/api 中继、登录体系、命令面板。
 
 ## 命令
