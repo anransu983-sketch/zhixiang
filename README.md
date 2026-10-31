@@ -205,15 +205,30 @@ Chrome／Firefox、iPhone UA＋Referer 均 206，第二窗
 铸链 UA 同路：B站起歌时把铸链桌面 UA（bilibili.ts 的
 BILIBILI_MINT_UA，接口与取流共用一串）一并交给代理。
 
+0.1.126 YTM 登录门探针版（Claude 简报回复的区分实验
+落地，先验再动）：撞 LOGIN_REQUIRED 后自动跑一次页面
+对照——原生插件新增 probeWatchPage：用 App 自己的
+WebView（与登录同一 Cookie 罐、挂屏幕外）打开该视频的
+真实 watch 页，轮询 ytInitialPlayerResponse，带回页面
+playability、streamingData 有无、音频直链条数与页面自
+己的 visitorData；Web 层随即用页面 visitorData 匿名重
+试 VISIONOS 一腿（路径 B），按判定口径打 [YtmProbe]
+日志：B 通→卡点在请求上下文且 B 的直链直接拿来播放；
+B 不通但页面通→原生请求被单独挡、下一步做页面抽取
+兜底；页面也不通→页面路径同样被挡。探针 5 分钟节流、
+异常不影响撞门主流程，visitorData 只在内存流转、日志
+只记有无与长度。本版不改任何取链请求形态。
+
 0.1.125 YTM 登录门恢复路径（与 0.1.124 一起修）：门本身
 经沙箱同字节复测确认不是请求形态坏了——同一套匿名链在
-沙箱出口 VISIONOS／ANDROID_VR／IOS 全 OK，候选新腿
+沙箱复测 VISIONOS／ANDROID_VR／IOS 全 OK，候选新腿
 （TVHTML5 含 sts、WEB_EMBEDDED、ANDROID_MUSIC、
 IOS_MUSIC、MWEB）逐个实测全军覆没（UNPLAYABLE／嵌
-入禁用／要登录），门立时是出口侧的事、代码无新腿可加。
-本版只修恢复体验：手动点播（playQueue 入口）先清门退
-避，换节点回来点歌立即真发请求重试，不再被 10 分钟退
-避吞掉、也不用重启 App；自动跳歌路径照旧退避防连烧。
+入禁用／要登录），代码无新腿可加；门的原因未有区分实
+验证实，本版不下结论。本版只修恢复体验：手动点播
+（playQueue 入口）先清门退避，回来点歌立即真发请求重
+试，不再被 10 分钟退避吞掉、也不用重启 App；自动跳歌
+路径照旧退避防连烧。
 
 不做：Spotify、QQ、酷狗、睡眠定时器、预加载、AI 主题、/api 中继、登录体系、命令面板。
 

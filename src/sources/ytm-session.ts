@@ -27,9 +27,58 @@ export type YtmSignInResult =
 
 interface YtmSignInPlugin {
     signIn(): Promise<{ ok?: unknown; cookie?: unknown; userAgent?: unknown }>;
+    probeWatchPage(options: { videoId: string }): Promise<{ raw?: unknown }>;
 }
 
 const YtmSignIn = registerPlugin<YtmSignInPlugin>('YtmSignIn');
+
+// 登录门探针的页面侧结果（0.1.126）：原生 WebView 打开真实 watch 页读到的
+// ytInitialPlayerResponse 摘要。visitorData 只回内存给探针重试用，绝不打日志
+// （日志只记有无与长度）。
+export interface YtmWatchPageProbe {
+    ok: boolean;
+    status: string;
+    reason: string;
+    hasStreaming: boolean;
+    audioCount: number;
+    directCount: number;
+    visitorData: string | null;
+    err: string;
+}
+
+// 非原生环境或插件不可用时回 null（探针是诊断，缺了不许影响取链主流程）。
+export async function probeYtmWatchPage(videoId: string): Promise<YtmWatchPageProbe | null> {
+    if (!Capacitor.isNativePlatform()) {
+        return null;
+    }
+    try {
+        const ret = await YtmSignIn.probeWatchPage({ videoId });
+        if (!ret || typeof ret.raw !== 'string' || !ret.raw) {
+            return null;
+        }
+        let inner: unknown = JSON.parse(ret.raw);
+        if (typeof inner === 'string') {
+            inner = JSON.parse(inner);
+        }
+        const o = inner as Record<string, unknown> | null;
+        if (!o) {
+            return null;
+        }
+        return {
+            ok: o.ok === true,
+            status: typeof o.status === 'string' ? o.status : '',
+            reason: typeof o.reason === 'string' ? o.reason : '',
+            hasStreaming: o.hasStreaming === true,
+            audioCount: typeof o.audioCount === 'number' ? o.audioCount : 0,
+            directCount: typeof o.directCount === 'number' ? o.directCount : 0,
+            visitorData:
+                typeof o.visitorData === 'string' && o.visitorData ? o.visitorData : null,
+            err: typeof o.err === 'string' ? o.err : ''
+        };
+    } catch {
+        return null;
+    }
+}
 
 export function loadYtmSession(): YtmSession | null {
     try {

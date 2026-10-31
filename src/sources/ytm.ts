@@ -43,7 +43,7 @@
 // 由第 5 块的播放引擎实现（MSE 分块加载或本地 Range 代理均可，第 5 块定）。
 
 import { httpPost } from '../native/http';
-import { loadYtmSession, sapisidHash, withYtmSession } from './ytm-session';
+import { loadYtmSession, probeYtmWatchPage, sapisidHash, withYtmSession } from './ytm-session';
 import type { AudioSource, Poster, SourceId, Track } from '../types';
 
 const SEARCH_URL = 'https://music.youtube.com/youtubei/v1/search';
@@ -715,6 +715,58 @@ export function clearYtmGateBackoff(): void {
     }
 }
 
+// 门探针节流：5 分钟内只跑一次，避免每次撞门都开一遍 WebView。
+let lastGateProbeAt = 0;
+
+// 撞门区分实验（0.1.126，Claude 简报回复方案）：页面路径 vs 原生请求，
+// 同机同刻对照，一次把「服务端门」与「请求上下文问题」分开。
+// - 页面：App 的 WebView 打开真实 watch 页，读 playability 与 streamingData。
+// - 路径 B：拿页面自己的 visitorData，匿名重试 VISIONOS 一腿。
+// 判定口径：B 通 → 卡点在请求上下文（visitorData 新鲜度/来源）；B 不通但
+// 页面通 → 原生 player 请求被单独挡，下一步做页面抽取兜底；页面也不通 →
+// 页面路径同样被挡。B 成功时返回它的流直接播放（同一铸链函数、只换
+// visitorData）；其余情况只打日志，回 null 走原撞门流程。
+async function runGateProbe(videoId: string): Promise<YtmStream | null> {
+    console.log('[YtmProbe] 撞门探针开始：页面路径对照（WebView 打开真实 watch 页）');
+    const page = await probeYtmWatchPage(videoId);
+    if (!page) {
+        console.log('[YtmProbe] 页面探针不可用（插件无回或非原生环境），本次无判定');
+        return null;
+    }
+    if (!page.ok) {
+        console.log(`[YtmProbe] 页面侧未读到播放器响应：${page.err || '未知'}`);
+        return null;
+    }
+    console.log(
+        `[YtmProbe] 页面路径：playability=${page.status}${page.reason ? ' reason=' + page.reason : ''} streamingData=${page.hasStreaming ? '有' : '无'} 音频格式=${page.audioCount} 直链=${page.directCount} 页面visitorData=${page.visitorData ? '有（长度 ' + page.visitorData.length + '）' : '无'}`
+    );
+    let bStream: YtmStream | null = null;
+    let bStatus = '未试（页面无 visitorData）';
+    if (page.visitorData) {
+        const visionos = PLAYER_CLIENTS[0]!;
+        const attempt = await tryPlayerClient(visionos, videoId, HEADERS, page.visitorData);
+        if (attempt.stream) {
+            bStream = attempt.stream;
+            bStatus = 'OK（已取到直链）';
+        } else if (attempt.loginRequired) {
+            bStatus = 'LOGIN_REQUIRED';
+        } else {
+            bStatus = '其他失败';
+        }
+        console.log(`[YtmProbe] 路径B（页面 visitorData 匿名重试 VISIONOS）：${bStatus}`);
+    }
+    if (bStream) {
+        console.log('[YtmProbe] 判定：B 通——卡点在请求上下文（visitorData 新鲜度/来源），已用 B 路直链直接播放');
+        return bStream;
+    }
+    if (page.status === 'OK') {
+        console.log('[YtmProbe] 判定：页面通、B 不通——原生 player 请求被单独挡，下一步可做页面抽取兜底');
+    } else {
+        console.log(`[YtmProbe] 判定：页面路径同样被挡（${page.status}），页面抽取也救不了本轮门`);
+    }
+    return null;
+}
+
 export function resolveYtmStream(track: Track): Promise<YtmStream> {
     const run = resolveQueue.then(() => doResolveYtmStream(track));
     resolveQueue = run.catch(() => {});
@@ -752,6 +804,24 @@ async function doResolveYtmStream(track: Track): Promise<YtmStream> {
         return anon.stream;
     }
     if (anon.sawLoginGate) {
+        // 0.1.126 门探针（Claude 简报回复的区分实验，先验再动）：撞门先跑
+        // 一次页面对照——WebView 真实 watch 页读 ytInitialPlayerResponse，
+        // 再用页面自己的 visitorData 重试 VISIONOS 一腿。探针 5 分钟内
+        // 只跑一次；B 路重试成功直接拿它的流播放（同铸链函数、只换
+        // visitorData）；探针全程只打日志、抛错不许影响撞门主流程。
+        if (Date.now() - lastGateProbeAt > 5 * 60 * 1000) {
+            lastGateProbeAt = Date.now();
+            try {
+                const probeStream = await runGateProbe(videoId);
+                if (probeStream) {
+                    gateStrikes = 0;
+                    gatedUntil = 0;
+                    return probeStream;
+                }
+            } catch {
+                console.log('[YtmProbe] 探针自身异常，忽略（不影响撞门处理）');
+            }
+        }
         gateStrikes += 1;
         const minutes = GATE_BACKOFF_MINUTES[Math.min(gateStrikes, GATE_BACKOFF_MINUTES.length) - 1]!;
         gatedUntil = Date.now() + minutes * 60 * 1000;
