@@ -726,6 +726,27 @@ let lastGateProbeAt = 0;
 // 重试（0.1.126 里 B 因页面没给 visitorData 根本没试成、判定文案误报
 // 「B 不通」，本版修正）。抽到的地址只记 host/itag/mime/长度，不打全文。
 async function runGateProbe(videoId: string): Promise<YtmStream | null> {
+    // B2（0.1.128 新增，快路先试）：会话 browse 的响应自带 visitorData
+    // （browseYtm 会顺手缓存）——那是登录会话上下文给的 VD，与匿名
+    // visitor_id 端点给的不是一路。拿它匿名重试 VISIONOS 一腿，通了
+    // 就不必开 WebView。browse 失败只记一行，不挡后面的页面抽取。
+    try {
+        await browseYtm('FEmusic_home');
+    } catch {
+        console.log('[YtmProbe] 路径B2：会话 browse 未通，跳过');
+    }
+    if (cachedVisitorData && cachedVisitorData !== anonymousVisitorData) {
+        const b2 = await tryPlayerClient(PLAYER_CLIENTS[0]!, videoId, HEADERS, cachedVisitorData);
+        if (b2.stream) {
+            console.log('[YtmProbe] 路径B2（会话 browse visitorData 匿名重试 VISIONOS）：OK——已用 B2 直链直接播放');
+            return b2.stream;
+        }
+        console.log(
+            `[YtmProbe] 路径B2（会话 browse visitorData 匿名重试 VISIONOS）：${b2.loginRequired ? 'LOGIN_REQUIRED' : '其他失败'}`
+        );
+    } else {
+        console.log('[YtmProbe] 路径B2：无新的会话 visitorData（未登录或与匿名同），跳过');
+    }
     console.log('[YtmProbe] 撞门兜底开始：页面抽取（WebView 打开真实 watch 页并起播）');
     const page = await extractYtmViaPage(videoId);
     if (!page) {
@@ -739,6 +760,21 @@ async function runGateProbe(videoId: string): Promise<YtmStream | null> {
     console.log(
         `[YtmProbe] 页面路径：playability=${page.status}${page.reason ? ' reason=' + page.reason : ''} streamingData=${page.hasStreaming ? '有' : '无'} 音频格式=${page.audioCount} 直链=${page.directCount} 页面visitorData=${page.visitorData ? '有（长度 ' + page.visitorData.length + '）' : '无'}`
     );
+    if (page.tally) {
+        console.log(`[YtmProbe] 页面请求总览：${page.tally}`);
+    }
+    if (page.stateRaw) {
+        let stateText = page.stateRaw;
+        try {
+            const once = JSON.parse(page.stateRaw) as unknown;
+            if (typeof once === 'string') {
+                stateText = once;
+            }
+        } catch {
+            // 原样打，不为一行日志冒抛错的险。
+        }
+        console.log(`[YtmProbe] 页面播放器状态：${stateText}`);
+    }
     if (page.audioUrl) {
         // 分段请求地址带 range/rn/sq，去掉才是整曲地址；其余参数（含
         // 签名与有效期）原样保留。
@@ -766,7 +802,7 @@ async function runGateProbe(videoId: string): Promise<YtmStream | null> {
         return null;
     }
     if (!page.visitorData) {
-        console.log('[YtmProbe] 判定：页面通但未起播出地址（无拦截所得），且页面无 visitorData，B 路无从试起');
+        console.log('[YtmProbe] 判定：页面通但未起播出地址（无拦截所得，细节看上方请求总览与播放器状态），且页面无 visitorData，B 路无从试起');
         return null;
     }
     const visionos = PLAYER_CLIENTS[0]!;

@@ -205,6 +205,19 @@ Chrome／Firefox、iPhone UA＋Referer 均 206，第二窗
 铸链 UA 同路：B站起歌时把铸链桌面 UA（bilibili.ts 的
 BILIBILI_MINT_UA，接口与取流共用一串）一并交给代理。
 
+0.1.128 YTM 门兜底加强：0.1.127 真机形态——页面照样
+OK，但 35 秒内没拦到任何媒体请求、页面 visitorData
+仍无。本版两路并进：先试快路 B2——会话 browse 响应自
+带的 visitorData（登录会话上下文那一路，与匿名
+visitor_id 端点不同）匿名重试 VISIONOS，通了直接播、
+不开 WebView；页面抽取加强四件：请求总览计数（普通
+请求＋Service Worker 请求都算，YouTube 的媒体请求可
+能走 SW）、音频捕获同时挂 SW 客户端、真实点按
+（dispatchTouchEvent 点中心，JS 合成点击可能不算手
+势）、每轮回传 video 元素状态（readyState/paused/
+currentTime/buffered）定位没起播卡在哪；WebView 改
+透明不移出屏幕（防渲染器按遮挡暂停媒体），时限 45 秒。
+
 0.1.127 YTM 登录门页面抽取兜底（0.1.126 探针判定的落
 地）：真机探针实证撞门时真实 watch 页 playability=OK、
 streamingData 在，但格式全是 signatureCipher（直链 0

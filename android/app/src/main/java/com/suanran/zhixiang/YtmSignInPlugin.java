@@ -23,6 +23,8 @@ import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 import java.util.concurrent.atomic.AtomicBoolean;
+import android.webkit.ServiceWorkerClient;
+import android.webkit.ServiceWorkerController;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -122,12 +124,21 @@ public class YtmSignInPlugin extends Plugin {
         });
     }
 
-    // 页面抽取兜底（0.1.127）：0.1.126 探针实证撞门时真实 watch 页
-    // playability=OK、streamingData 在，但格式全是 signatureCipher（直链
-    // 0 条）、responseContext 无 visitorData。本方法在同一 WebView 会话里
-    // 让页面自己的播放器真的起播，拦截它发往 googlevideo 的音频请求——
-    // 那条地址是页面播放器自己解签＋去 n 限速后的成品，App 直接拿来播，
-    // 不需要自己解签。同时带回 ytcfg 的 VISITOR_DATA 供 B 路重试。
+    // 页面抽取兜底（0.1.127 起，0.1.128 加强）：0.1.126 探针实证撞门时
+    // 真实 watch 页 playability=OK、streamingData 在，但格式全是
+    // signatureCipher（直链 0 条）。本方法让页面自己的播放器真起播，
+    // 拦截它发往 googlevideo 的音频请求——那是页面已解签的成品地址。
+    // 0.1.127 真机失败形态：35 秒内一条媒体请求都没拦到、页面
+    // visitorData 也没读到。0.1.128 加四件诊断/加强：
+    // 1) 请求总览：普通请求与 Service Worker 请求都计数（YouTube 有
+    //    SW，SW 发的请求不走普通 shouldInterceptRequest）；
+    // 2) 音频地址捕获同时挂在 SW 客户端上；
+    // 3) 真实点按：dispatchTouchEvent 点 WebView 中心（JS 合成点击
+    //    可能不算用户手势、移动端播放器 DOM 也不同）；
+    // 4) 每轮读 video 元素状态（readyState/paused/currentTime/buffered）
+    //    回传，定位「没起播」卡在哪一步。
+    // WebView 透明但保持 VISIBLE 且不移出屏幕（移出可能被渲染器当
+    // 遮挡而暂停媒体），并设不可点/不可聚焦，不挡用户操作。
     // 抽到的地址只回 Web 层内存，绝不打日志（地址含出口 IP 与签名）。
     private static final String EXTRACT_JS =
         "(function(){try{" +
@@ -153,6 +164,73 @@ public class YtmSignInPlugin extends Plugin {
         "var b=document.querySelector('.ytp-large-play-button,.html5-large-play-button');" +
         "if(b){b.click();}return 'nudged';}catch(e){return 'err';}})()";
 
+    private static final String STATE_JS =
+        "(function(){try{" +
+        "var v=document.querySelector('video');" +
+        "var mp=document.getElementById('movie_player');" +
+        "var out={v:!!v,mp:!!mp};" +
+        "if(v){out.rs=v.readyState;out.paused=v.paused;" +
+        "out.ct=Math.round((v.currentTime||0)*10)/10;" +
+        "out.buf=(v.buffered&&v.buffered.length)||0;" +
+        "out.src=(v.currentSrc||'').slice(0,5);}" +
+        "if(mp&&mp.getPlayerState){try{out.ps=mp.getPlayerState();}catch(e){}}" +
+        "return JSON.stringify(out);" +
+        "}catch(e){return JSON.stringify({err:String(e)});}})()";
+
+    private static void observeRequest(
+            java.util.concurrent.ConcurrentHashMap<String, Integer> tally,
+            AtomicReference<String> audioUrl,
+            AtomicReference<String> audioMime,
+            android.net.Uri uri) {
+        try {
+            String host = uri.getHost() == null ? "?" : uri.getHost();
+            String path = uri.getPath() == null ? "" : uri.getPath();
+            int slash = path.indexOf('/', 1);
+            String key = host + (slash > 0 ? path.substring(0, slash) : path);
+            tally.merge(key, 1, Integer::sum);
+            String url = uri.toString();
+            if (url.contains("googlevideo.com/videoplayback") && audioUrl.get().isEmpty()) {
+                String mime = uri.getQueryParameter("mime");
+                if (mime != null && mime.startsWith("audio")) {
+                    audioMime.set(mime);
+                    audioUrl.set(url);
+                }
+            }
+        } catch (Exception ignored) {
+            // 观察只许帮忙、不许把页面请求弄崩。
+        }
+    }
+
+    private static String tallySummary(java.util.concurrent.ConcurrentHashMap<String, Integer> tally) {
+        java.util.List<java.util.Map.Entry<String, Integer>> entries =
+            new java.util.ArrayList<>(tally.entrySet());
+        entries.sort((a, b) -> b.getValue() - a.getValue());
+        StringBuilder sb = new StringBuilder();
+        int n = Math.min(entries.size(), 12);
+        for (int i = 0; i < n; i++) {
+            if (i > 0) {
+                sb.append(' ');
+            }
+            sb.append(entries.get(i).getKey()).append('x').append(entries.get(i).getValue());
+        }
+        return sb.toString();
+    }
+
+    private static void tapCenter(WebView web) {
+        try {
+            long now = android.os.SystemClock.uptimeMillis();
+            android.view.MotionEvent down =
+                android.view.MotionEvent.obtain(now, now, android.view.MotionEvent.ACTION_DOWN, 360f, 320f, 0);
+            android.view.MotionEvent up =
+                android.view.MotionEvent.obtain(now, now + 90, android.view.MotionEvent.ACTION_UP, 360f, 320f, 0);
+            web.dispatchTouchEvent(down);
+            web.dispatchTouchEvent(up);
+            down.recycle();
+            up.recycle();
+        } catch (Exception ignored) {
+        }
+    }
+
     @PluginMethod
     public void extractViaPage(PluginCall call) {
         String videoId = call.getString("videoId", "");
@@ -169,6 +247,8 @@ public class YtmSignInPlugin extends Plugin {
         final AtomicBoolean done = new AtomicBoolean(false);
         final AtomicReference<String> audioUrl = new AtomicReference<>("");
         final AtomicReference<String> audioMime = new AtomicReference<>("");
+        final java.util.concurrent.ConcurrentHashMap<String, Integer> tally =
+            new java.util.concurrent.ConcurrentHashMap<>();
         activity.runOnUiThread(() -> {
             final WebView web = new WebView(activity);
             WebSettings settings = web.getSettings();
@@ -176,31 +256,50 @@ public class YtmSignInPlugin extends Plugin {
             settings.setDomStorageEnabled(true);
             settings.setMediaPlaybackRequiresUserGesture(false);
             settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
-            web.setLayoutParams(new FrameLayout.LayoutParams(720, 1280));
-            // VISIBLE＋透明＋移出屏幕：INVISIBLE 会让页面以为自己被隐藏，
-            // 播放器可能不起播；这里要的是它真起播、真发媒体请求。
+            web.setLayoutParams(new FrameLayout.LayoutParams(720, 400));
             web.setVisibility(View.VISIBLE);
             web.setAlpha(0f);
-            web.setTranslationX(-4000);
+            web.setClickable(false);
+            web.setFocusable(false);
             final ViewGroup parent = (ViewGroup) activity.findViewById(android.R.id.content);
             parent.addView(web);
+            web.onResume();
+            web.resumeTimers();
             final Runnable[] poll = new Runnable[1];
-            final long deadline = System.currentTimeMillis() + 35000;
+            final long deadline = System.currentTimeMillis() + 45000;
             final String[] lastRaw = {""};
+            final String[] lastState = {""};
             final int[] gatedPolls = {0};
+            final int[] taps = {0};
             final Runnable finish = () -> {
                 if (!done.compareAndSet(false, true)) {
                     return;
                 }
                 handler.removeCallbacks(poll[0]);
+                try {
+                    ServiceWorkerController.getInstance().setServiceWorkerClient(null);
+                } catch (Exception ignored) {
+                }
                 JSObject ret = new JSObject();
                 ret.put("raw", lastRaw[0]);
                 ret.put("audioUrl", audioUrl.get());
                 ret.put("audioMime", audioMime.get());
+                ret.put("tally", tallySummary(tally));
+                ret.put("stateRaw", lastState[0]);
                 parent.removeView(web);
                 web.destroy();
                 call.resolve(ret);
             };
+            try {
+                ServiceWorkerController.getInstance().setServiceWorkerClient(new ServiceWorkerClient() {
+                    @Override
+                    public WebResourceResponse shouldInterceptRequest(WebResourceRequest request) {
+                        observeRequest(tally, audioUrl, audioMime, request.getUrl());
+                        return null;
+                    }
+                });
+            } catch (Exception ignored) {
+            }
             poll[0] = () -> {
                 if (done.get()) {
                     return;
@@ -217,18 +316,25 @@ public class YtmSignInPlugin extends Plugin {
                         lastRaw[0] = value;
                         boolean pageOk = value.contains("\\\"status\\\":\\\"OK\\\"");
                         if (!pageOk) {
-                            // 页面也被挡：连数两次就收尾，别空等 35 秒。
                             gatedPolls[0]++;
                             if (gatedPolls[0] >= 2) {
                                 finish.run();
                                 return;
                             }
+                        } else if (taps[0] < 3) {
+                            taps[0]++;
+                            tapCenter(web);
                         }
                     }
                     if (!audioUrl.get().isEmpty()) {
                         finish.run();
                         return;
                     }
+                    web.evaluateJavascript(STATE_JS, state -> {
+                        if (state != null && !state.isEmpty()) {
+                            lastState[0] = state;
+                        }
+                    });
                     web.evaluateJavascript(NUDGE_JS, null);
                     handler.postDelayed(poll[0], 1200);
                 });
@@ -236,18 +342,7 @@ public class YtmSignInPlugin extends Plugin {
             web.setWebViewClient(new WebViewClient() {
                 @Override
                 public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-                    try {
-                        String url = request.getUrl().toString();
-                        if (url.contains("googlevideo.com/videoplayback") && audioUrl.get().isEmpty()) {
-                            String mime = request.getUrl().getQueryParameter("mime");
-                            if (mime != null && mime.startsWith("audio")) {
-                                audioMime.set(mime);
-                                audioUrl.set(url);
-                            }
-                        }
-                    } catch (Exception ignored) {
-                        // 拦截观察只许帮忙、不许把页面请求弄崩。
-                    }
+                    observeRequest(tally, audioUrl, audioMime, request.getUrl());
                     return null;
                 }
 
