@@ -15,6 +15,7 @@
 // - 退出只清本地会话，不调未经证实的服务端登出端点（网易云同口径）。
 
 import { httpGet } from '../native/http';
+import { BILI_CHART_ZONES, fetchBilibiliChart } from './bilibili';
 import type { Track } from '../types';
 
 const QR_GENERATE_URL = 'https://passport.bilibili.com/x/passport-login/web/qrcode/generate';
@@ -293,6 +294,153 @@ export async function fetchBiliFavTracks(mediaId: number): Promise<Track[]> {
         if (medias.length < 20) {
             break;
         }
+    }
+    return tracks;
+}
+
+// B 站每日推荐（0.1.123）：与网易云今日乐荐／YTM 今日星荐同形的整页歌单。
+// 数据源选型（2026-10-31 沙箱实测后定）：
+// - 首页 feed/rcmd 是全站个性化流，匿名实测全是新闻／游戏／动漫，不能当歌单用；
+// - 听视频「每日播单」只有 App gRPC（PickFeed），没有 Web JSON 路，Web 壳接不了；
+// - 相关推荐 archive/related 可用：拿音乐视频当种子回 40 条，其中 29 条是
+//   音乐分区（实测种子为全站音乐榜榜首时），按 tid／tname 过滤后是纯音乐。
+// 故：登录时拿收藏夹里的视频当种子（先第一个有内容的夹子），相关推荐过滤
+// 音乐分区凑单；不够 30 首时用全站音乐榜按日轮换补齐（同一天内起点一致、
+// 隔天换一批）；未登录或收藏夹为空时直接走榜单轮换。种子本身不进推荐单。
+const RELATED_URL = 'https://api.bilibili.com/x/web-interface/archive/related';
+
+// 音乐分区 tid（B 站分区表）＋分区名双保险：任一命中即认音乐。
+const MUSIC_TIDS = new Set([3, 28, 29, 30, 31, 59, 130, 193, 244]);
+const MUSIC_TNAMES = new Set([
+    '音乐',
+    '音乐综合',
+    '原创音乐',
+    '翻唱',
+    '演奏',
+    '音乐现场',
+    '音乐教学',
+    'MV',
+    'VOCALOID·UTAU',
+    '电台'
+]);
+
+async function fetchBiliRelatedTracks(seedBvid: string): Promise<Track[]> {
+    const res = await httpGet(
+        `${RELATED_URL}?bvid=${encodeURIComponent(seedBvid)}`,
+        BILI_HEADERS
+    );
+    if (res.status !== 200) {
+        return [];
+    }
+    const parsed = JSON.parse(res.body) as { code?: unknown; data?: unknown } | null;
+    if (parsed?.code !== 0 || !Array.isArray(parsed.data)) {
+        return [];
+    }
+    const tracks: Track[] = [];
+    for (const raw of parsed.data as Record<string, unknown>[]) {
+        if (typeof raw.bvid !== 'string' || !raw.bvid) {
+            continue;
+        }
+        const tid = typeof raw.tid === 'number' ? raw.tid : -1;
+        const tname = typeof raw.tname === 'string' ? raw.tname : '';
+        if (!MUSIC_TIDS.has(tid) && !MUSIC_TNAMES.has(tname)) {
+            continue;
+        }
+        const owner = raw.owner as { name?: unknown } | undefined;
+        tracks.push({
+            id: `bilibili:${raw.bvid}`,
+            title: typeof raw.title === 'string' && raw.title ? raw.title : '未知曲名',
+            artist:
+                owner && typeof owner.name === 'string' && owner.name
+                    ? owner.name
+                    : '未知歌手',
+            coverUrl: toHttps(raw.pic),
+            durationMs:
+                typeof raw.duration === 'number' && raw.duration > 0
+                    ? raw.duration * 1000
+                    : undefined,
+            source: 'bilibili'
+        });
+    }
+    return tracks;
+}
+
+export async function fetchBiliDailyTracks(): Promise<Track[]> {
+    const dayIndex = Math.floor(Date.now() / 86_400_000);
+    const tracks: Track[] = [];
+    const seen = new Set<string>();
+    const push = (track: Track): void => {
+        if (seen.has(track.id) || tracks.length >= 30) {
+            return;
+        }
+        seen.add(track.id);
+        tracks.push(track);
+    };
+
+    // 个性化一段：收藏夹种子 → 相关推荐（只认音乐分区）。
+    try {
+        if (loadBiliSession()) {
+            const folders = await fetchBiliFavFolders();
+            const folder = folders.find((item) => item.mediaCount > 0);
+            if (folder) {
+                const favTracks = await fetchBiliFavTracks(folder.id);
+                if (favTracks.length > 0) {
+                    for (const seed of favTracks) {
+                        seen.add(seed.id);
+                    }
+                    // 每天换一组种子：从日序起点开始等距取 3 个。
+                    const start = dayIndex % favTracks.length;
+                    const seeds: Track[] = [];
+                    for (let i = 0; i < favTracks.length && seeds.length < 3; i++) {
+                        const pick =
+                            favTracks[(start + Math.floor((i * favTracks.length) / 3)) % favTracks.length]!;
+                        if (!seeds.includes(pick)) {
+                            seeds.push(pick);
+                        }
+                    }
+                    for (const seed of seeds) {
+                        const bvid = seed.id.slice('bilibili:'.length);
+                        try {
+                            for (const track of await fetchBiliRelatedTracks(bvid)) {
+                                push(track);
+                            }
+                        } catch {
+                            // 单个种子失败不拖垮整单，继续下一个种子／榜单补齐。
+                        }
+                        if (tracks.length >= 30) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    } catch {
+        // 没登录／收藏夹拿不到：落到下面的榜单轮换，不报错。
+    }
+
+    // 榜单补齐一段：全站音乐榜按日轮换起点，不够再接音乐区总榜。
+    if (tracks.length < 30) {
+        for (const zone of BILI_CHART_ZONES.slice(0, 2)) {
+            if (tracks.length >= 30) {
+                break;
+            }
+            try {
+                const chart = await fetchBilibiliChart(zone);
+                if (chart.length === 0) {
+                    continue;
+                }
+                const start = dayIndex % chart.length;
+                for (let i = 0; i < chart.length && tracks.length < 30; i++) {
+                    push(chart[(start + i) % chart.length]!);
+                }
+            } catch {
+                // 单榜失败继续下一榜；全空时下面统一抛错。
+            }
+        }
+    }
+
+    if (tracks.length === 0) {
+        throw new Error('B站每日推荐暂时拿不到，请稍后再试');
     }
     return tracks;
 }

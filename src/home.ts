@@ -34,7 +34,7 @@ import { BILI_CHART_ZONES, fetchBilibiliChart } from './sources/bilibili';
 import type { BiliChartZone } from './sources/bilibili';
 import { checkAllFilesAccess, getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalNotice, getLocalSidecarCoverDataUrl, localSource, requestAllFilesAccess } from './sources/local';
 import { addMyImportIds, loadMyImportIds, removeMyImportId } from './my-imports';
-import { biliQrImageUrl, checkBiliQr, clearBiliSession, fetchBiliFavFolders, fetchBiliFavTracks, fetchBiliQrKey, loadBiliSession, validateBiliSession, type BiliFavFolder } from './sources/bilibili-session';
+import { biliQrImageUrl, checkBiliQr, clearBiliSession, fetchBiliDailyTracks, fetchBiliFavFolders, fetchBiliFavTracks, fetchBiliQrKey, loadBiliSession, validateBiliSession, type BiliFavFolder } from './sources/bilibili-session';
 import { addTrackToPlaylist, createPlaylist, deletePlaylist, loadPlaylists, removeTrackFromPlaylist, renamePlaylist, trackKey } from './playlists';
 import { runBatchWriteback } from './batch-writeback';
 import {
@@ -444,6 +444,9 @@ export function renderHome(): HTMLElement {
 
         if (tabId === 'bilibili') {
             // 0.1.113：登录框搬去听歌钥匙，B站页只剩发现区＋收藏夹区。
+            // 0.1.123：每日推荐卡片放发现区上方，与网易云／YTM 同形；
+            // B 站推荐不依赖登录（未登录走榜单轮换），故不设登录门。
+            page.appendChild(renderBiliDailySection());
             page.appendChild(renderBilibiliDiscoverySection(status));
             page.appendChild(renderBiliFavSection());
         }
@@ -4242,6 +4245,18 @@ function renderYtmDailySection(): HTMLElement {
         fetchYtmDailyTracks,
         () => loadYtmSession() !== null,
         '登录 YouTube Music 后可看今日星荐'
+    );
+}
+
+// 0.1.123 B 站每日推荐：与今日乐荐／今日星荐同形（卡片＋整页＋播放全部）。
+// 登录后按收藏夹口味推、未登录走音乐榜每日轮换，两路都不设登录门。
+function renderBiliDailySection(): HTMLElement {
+    return renderDailySection(
+        '每日推荐',
+        '根据你的收藏与音乐榜单，每日更新',
+        fetchBiliDailyTracks,
+        () => true,
+        ''
     );
 }
 
