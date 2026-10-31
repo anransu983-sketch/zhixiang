@@ -205,6 +205,17 @@ Chrome／Firefox、iPhone UA＋Referer 均 206，第二窗
 铸链 UA 同路：B站起歌时把铸链桌面 UA（bilibili.ts 的
 BILIBILI_MINT_UA，接口与取流共用一串）一并交给代理。
 
+0.1.129 YTM 页面抽取双级捕获：0.1.128 真机实证——页面
+这次真起播了（播放器状态 ct=7 秒、已缓冲），请求总览
+里 googlevideo videoplayback 明明有 5 条，却一条都没
+被捕获：它们不是独立音频轨，移动端页面默认走音视频
+合流格式（如 itag 18）。本版捕获改双级：音频轨优先；
+首个任意 videoplayback 作合流兜底（合流里的音轨
+audio 元素可播），itag 随捕获一并带回；合流兜底等
+8 秒看有没有音频轨后来居上，整体不再干等满 45 秒。
+同轮实证：B2（会话 visitorData）也是 LOGIN_REQUIRED，
+visitorData 来源差异至此排除。
+
 0.1.128 YTM 门兜底加强：0.1.127 真机形态——页面照样
 OK，但 35 秒内没拦到任何媒体请求、页面 visitorData
 仍无。本版两路并进：先试快路 B2——会话 browse 响应自

@@ -177,10 +177,21 @@ public class YtmSignInPlugin extends Plugin {
         "return JSON.stringify(out);" +
         "}catch(e){return JSON.stringify({err:String(e)});}})()";
 
+    // 双级捕获（0.1.129）：0.1.128 真机实证页面真起播（ct 推进、已缓冲）
+    // 且 videoplayback 请求确实发了 5 条，但一条都没被捕获——它们不是
+    // audio mime：移动端页面默认走音视频合流格式（如 itag 18 的
+    // video/mp4 合流）。故捕获分两级：音频轨（audio mime）优先；首个
+    // 任意 videoplayback 作兜底（合流里的音轨 audio 元素可播），itag
+    // 一并记下供日志判读。
     private static void observeRequest(
             java.util.concurrent.ConcurrentHashMap<String, Integer> tally,
             AtomicReference<String> audioUrl,
             AtomicReference<String> audioMime,
+            AtomicReference<String> audioItag,
+            AtomicReference<String> anyUrl,
+            AtomicReference<String> anyMime,
+            AtomicReference<String> anyItag,
+            java.util.concurrent.atomic.AtomicLong anyAt,
             android.net.Uri uri) {
         try {
             String host = uri.getHost() == null ? "?" : uri.getHost();
@@ -189,10 +200,18 @@ public class YtmSignInPlugin extends Plugin {
             String key = host + (slash > 0 ? path.substring(0, slash) : path);
             tally.merge(key, 1, Integer::sum);
             String url = uri.toString();
-            if (url.contains("googlevideo.com/videoplayback") && audioUrl.get().isEmpty()) {
+            if (url.contains("googlevideo.com/videoplayback")) {
                 String mime = uri.getQueryParameter("mime");
-                if (mime != null && mime.startsWith("audio")) {
+                String itag = uri.getQueryParameter("itag");
+                if (anyUrl.get().isEmpty()) {
+                    anyMime.set(mime == null ? "" : mime);
+                    anyItag.set(itag == null ? "" : itag);
+                    anyUrl.set(url);
+                    anyAt.set(System.currentTimeMillis());
+                }
+                if (mime != null && mime.startsWith("audio") && audioUrl.get().isEmpty()) {
                     audioMime.set(mime);
+                    audioItag.set(itag == null ? "" : itag);
                     audioUrl.set(url);
                 }
             }
@@ -247,6 +266,11 @@ public class YtmSignInPlugin extends Plugin {
         final AtomicBoolean done = new AtomicBoolean(false);
         final AtomicReference<String> audioUrl = new AtomicReference<>("");
         final AtomicReference<String> audioMime = new AtomicReference<>("");
+        final AtomicReference<String> audioItag = new AtomicReference<>("");
+        final AtomicReference<String> anyUrl = new AtomicReference<>("");
+        final AtomicReference<String> anyMime = new AtomicReference<>("");
+        final AtomicReference<String> anyItag = new AtomicReference<>("");
+        final java.util.concurrent.atomic.AtomicLong anyAt = new java.util.concurrent.atomic.AtomicLong(0);
         final java.util.concurrent.ConcurrentHashMap<String, Integer> tally =
             new java.util.concurrent.ConcurrentHashMap<>();
         activity.runOnUiThread(() -> {
@@ -284,6 +308,10 @@ public class YtmSignInPlugin extends Plugin {
                 ret.put("raw", lastRaw[0]);
                 ret.put("audioUrl", audioUrl.get());
                 ret.put("audioMime", audioMime.get());
+                ret.put("audioItag", audioItag.get());
+                ret.put("anyUrl", anyUrl.get());
+                ret.put("anyMime", anyMime.get());
+                ret.put("anyItag", anyItag.get());
                 ret.put("tally", tallySummary(tally));
                 ret.put("stateRaw", lastState[0]);
                 parent.removeView(web);
@@ -294,7 +322,7 @@ public class YtmSignInPlugin extends Plugin {
                 ServiceWorkerController.getInstance().setServiceWorkerClient(new ServiceWorkerClient() {
                     @Override
                     public WebResourceResponse shouldInterceptRequest(WebResourceRequest request) {
-                        observeRequest(tally, audioUrl, audioMime, request.getUrl());
+                        observeRequest(tally, audioUrl, audioMime, audioItag, anyUrl, anyMime, anyItag, anyAt, request.getUrl());
                         return null;
                     }
                 });
@@ -304,7 +332,10 @@ public class YtmSignInPlugin extends Plugin {
                 if (done.get()) {
                     return;
                 }
-                if (!audioUrl.get().isEmpty() || System.currentTimeMillis() > deadline) {
+                boolean haveAudio = !audioUrl.get().isEmpty();
+                boolean anyStale = !anyUrl.get().isEmpty()
+                    && System.currentTimeMillis() - anyAt.get() > 8000;
+                if (haveAudio || anyStale || System.currentTimeMillis() > deadline) {
                     finish.run();
                     return;
                 }
@@ -326,7 +357,9 @@ public class YtmSignInPlugin extends Plugin {
                             tapCenter(web);
                         }
                     }
-                    if (!audioUrl.get().isEmpty()) {
+                    if (!audioUrl.get().isEmpty()
+                        || (!anyUrl.get().isEmpty()
+                            && System.currentTimeMillis() - anyAt.get() > 8000)) {
                         finish.run();
                         return;
                     }
@@ -342,7 +375,7 @@ public class YtmSignInPlugin extends Plugin {
             web.setWebViewClient(new WebViewClient() {
                 @Override
                 public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-                    observeRequest(tally, audioUrl, audioMime, request.getUrl());
+                    observeRequest(tally, audioUrl, audioMime, audioItag, anyUrl, anyMime, anyItag, anyAt, request.getUrl());
                     return null;
                 }
 

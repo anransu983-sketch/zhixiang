@@ -28,7 +28,7 @@ export type YtmSignInResult =
 interface YtmSignInPlugin {
     signIn(): Promise<{ ok?: unknown; cookie?: unknown; userAgent?: unknown }>;
     probeWatchPage(options: { videoId: string }): Promise<{ raw?: unknown }>;
-    extractViaPage(options: { videoId: string }): Promise<{ raw?: unknown; audioUrl?: unknown; audioMime?: unknown; tally?: unknown; stateRaw?: unknown }>;
+    extractViaPage(options: { videoId: string }): Promise<{ raw?: unknown; audioUrl?: unknown; audioMime?: unknown; audioItag?: unknown; anyUrl?: unknown; anyMime?: unknown; anyItag?: unknown; tally?: unknown; stateRaw?: unknown }>;
 }
 
 const YtmSignIn = registerPlugin<YtmSignInPlugin>('YtmSignIn');
@@ -53,6 +53,12 @@ export interface YtmWatchPageProbe {
 export interface YtmPageExtract extends YtmWatchPageProbe {
     audioUrl: string | null;
     audioMime: string;
+    audioItag: string;
+    // 首个任意 videoplayback（音视频合流兜底，0.1.129）：页面默认走合流
+    // 格式时没有独立音频轨请求，合流地址里的音轨 audio 元素可播。
+    anyUrl: string | null;
+    anyMime: string;
+    anyItag: string;
     // 页面请求总览（host/路径首段×次数）与 video 元素末次状态：0.1.128 起
     // 回传，专为定位「页面没起播出地址」卡在哪一步。
     tally: string;
@@ -88,6 +94,10 @@ export async function extractYtmViaPage(videoId: string): Promise<YtmPageExtract
             err: typeof o.err === 'string' ? o.err : '',
             audioUrl: typeof ret.audioUrl === 'string' && ret.audioUrl ? ret.audioUrl : null,
             audioMime: typeof ret.audioMime === 'string' ? ret.audioMime : '',
+            audioItag: typeof ret.audioItag === 'string' ? ret.audioItag : '',
+            anyUrl: typeof ret.anyUrl === 'string' && ret.anyUrl ? ret.anyUrl : null,
+            anyMime: typeof ret.anyMime === 'string' ? ret.anyMime : '',
+            anyItag: typeof ret.anyItag === 'string' ? ret.anyItag : '',
             tally: typeof ret.tally === 'string' ? ret.tally : '',
             stateRaw: typeof ret.stateRaw === 'string' ? ret.stateRaw : ''
         };

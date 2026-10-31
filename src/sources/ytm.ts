@@ -775,16 +775,20 @@ async function runGateProbe(videoId: string): Promise<YtmStream | null> {
         }
         console.log(`[YtmProbe] 页面播放器状态：${stateText}`);
     }
-    if (page.audioUrl) {
+    // 双级选用（0.1.129）：音频轨优先；没有独立音频轨时用首个合流
+    // videoplayback（移动端页面默认合流，音轨在里面）。
+    const pickedUrl = page.audioUrl ?? page.anyUrl;
+    const pickedMime = page.audioUrl ? page.audioMime : page.anyMime;
+    const pickedItag = page.audioUrl ? page.audioItag : page.anyItag;
+    const pickedKind = page.audioUrl ? '音频轨' : '音视频合流';
+    if (pickedUrl) {
         // 分段请求地址带 range/rn/sq，去掉才是整曲地址；其余参数（含
         // 签名与有效期）原样保留。
-        let clean = page.audioUrl;
+        let clean = pickedUrl;
         let host = '';
-        let itag = '';
         try {
-            const u = new URL(page.audioUrl);
+            const u = new URL(pickedUrl);
             host = u.host;
-            itag = u.searchParams.get('itag') ?? '';
             u.searchParams.delete('range');
             u.searchParams.delete('rn');
             u.searchParams.delete('sq');
@@ -793,9 +797,9 @@ async function runGateProbe(videoId: string): Promise<YtmStream | null> {
             // 地址解析不了就原样用（拦截所得本就是页面成品地址）。
         }
         console.log(
-            `[YtmProbe] 页面抽取成功：host=${host} itag=${itag} mime=${page.audioMime || '未知'} 地址长度=${clean.length}，直接播放`
+            `[YtmProbe] 页面抽取成功（${pickedKind}）：host=${host} itag=${pickedItag || '未知'} mime=${pickedMime || '未知'} 地址长度=${clean.length}，直接播放`
         );
-        return { url: clean, mimeType: page.audioMime || 'audio/mp4' };
+        return { url: clean, mimeType: pickedMime || 'audio/mp4' };
     }
     if (page.status !== 'OK') {
         console.log(`[YtmProbe] 判定：页面路径同样被挡（${page.status}），本轮兜底无路`);
