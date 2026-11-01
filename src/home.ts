@@ -37,6 +37,9 @@ import { addMyImportIds, loadMyImportIds, removeMyImportId } from './my-imports'
 import { biliQrImageUrl, checkBiliQr, clearBiliSession, fetchBiliDailyTracks, fetchBiliFavFolders, fetchBiliFavTracks, fetchBiliQrKey, loadBiliSession, validateBiliSession, type BiliFavFolder } from './sources/bilibili-session';
 import { addTrackToPlaylist, createPlaylist, deletePlaylist, loadPlaylists, removeTrackFromPlaylist, renamePlaylist, trackKey } from './playlists';
 import { runBatchWriteback } from './batch-writeback';
+import { applyLyricsBackup, exportLyricsBackup, readLyricsBackupFile } from './lyrics-backup';
+import type { ManualLyricsEntry } from './lyrics-backup';
+import { hasManualLyricsKey } from './manual-lyrics';
 import {
     ROAM_SCENE_NAMES,
     endRoaming,
@@ -401,6 +404,7 @@ export function renderHome(): HTMLElement {
             page.appendChild(renderRoamingSection());
             page.appendChild(renderDaypartSection());
             page.appendChild(renderPlaylistsSection());
+            page.appendChild(renderLyricsBackupSection());
             page.appendChild(renderFootprintEntry());
             page.appendChild(renderDeveloperSection());
             const record: TabPage = { page };
@@ -3634,6 +3638,142 @@ function renderWritebackSection(): HTMLElement {
             } catch (error) {
                 notice.textContent =
                     error instanceof Error ? error.message : '写回失败，请稍后再试';
+            } finally {
+                setBusy(false);
+            }
+        })();
+    });
+
+    return section;
+}
+
+// 歌词备份（0.1.131）：手动贴词一键导出 ZIP 到下载目录／从 ZIP 恢复。
+// 放「我的」页这个全局位置——贴词是跨歌跨源的资产，不该埋在某一首歌的
+// 播放页里。导入先解析校验、报条数，再让用户在区内按钮行里选覆盖／
+// 保留（不用原生 confirm），选完才真正落盘。
+function renderLyricsBackupSection(): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'daily-section';
+
+    const head = document.createElement('div');
+    head.className = 'daily-head';
+    const heading = document.createElement('h2');
+    heading.textContent = '歌词备份';
+    head.appendChild(heading);
+    const sub = document.createElement('span');
+    sub.className = 'daily-sub';
+    sub.textContent = '把手动贴词打包成 ZIP 存到下载目录，换机或清数据后可从 ZIP 恢复';
+    head.appendChild(sub);
+    section.appendChild(head);
+
+    const exportButton = document.createElement('button');
+    exportButton.type = 'button';
+    exportButton.className = 'login-btn';
+    exportButton.textContent = '导出备份';
+    section.appendChild(exportButton);
+
+    const importButton = document.createElement('button');
+    importButton.type = 'button';
+    importButton.className = 'login-btn';
+    importButton.textContent = '导入恢复';
+    section.appendChild(importButton);
+
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = '.zip,application/zip';
+    fileInput.hidden = true;
+    section.appendChild(fileInput);
+
+    const notice = document.createElement('p');
+    notice.className = 'source-notice';
+    notice.textContent = '还没导出过';
+    section.appendChild(notice);
+
+    // 恢复方式选择行：解析出条目后才亮出来，选完即执行并收起。
+    const choiceRow = document.createElement('div');
+    choiceRow.hidden = true;
+    const overwriteButton = document.createElement('button');
+    overwriteButton.type = 'button';
+    overwriteButton.className = 'login-btn';
+    overwriteButton.textContent = '覆盖已有';
+    const keepButton = document.createElement('button');
+    keepButton.type = 'button';
+    keepButton.className = 'login-btn';
+    keepButton.textContent = '保留已有（跳过同歌）';
+    const cancelButton = document.createElement('button');
+    cancelButton.type = 'button';
+    cancelButton.className = 'login-btn login-btn-ghost';
+    cancelButton.textContent = '取消';
+    choiceRow.append(overwriteButton, keepButton, cancelButton);
+    section.appendChild(choiceRow);
+
+    let pendingEntries: ManualLyricsEntry[] | null = null;
+    const setBusy = (busy: boolean): void => {
+        exportButton.disabled = busy;
+        importButton.disabled = busy;
+    };
+    const closeChoice = (): void => {
+        pendingEntries = null;
+        choiceRow.hidden = true;
+    };
+    const runApply = (mode: 'overwrite' | 'keep'): void => {
+        if (!pendingEntries) {
+            return;
+        }
+        const result = applyLyricsBackup(pendingEntries, mode);
+        notice.textContent =
+            mode === 'overwrite'
+                ? `恢复完成：写入 ${result.written} 条手动歌词`
+                : `恢复完成：新写入 ${result.written} 条，跳过已有 ${result.skipped} 条`;
+        closeChoice();
+    };
+    overwriteButton.addEventListener('click', () => {
+        runApply('overwrite');
+    });
+    keepButton.addEventListener('click', () => {
+        runApply('keep');
+    });
+    cancelButton.addEventListener('click', () => {
+        closeChoice();
+        notice.textContent = '已取消恢复，什么都没改';
+    });
+
+    exportButton.addEventListener('click', () => {
+        void (async () => {
+            setBusy(true);
+            try {
+                const result = await exportLyricsBackup();
+                notice.textContent = `已导出 ${result.count} 条手动歌词到下载目录：${result.filename}`;
+            } catch (error) {
+                notice.textContent =
+                    error instanceof Error ? error.message : '导出失败，请稍后再试';
+            } finally {
+                setBusy(false);
+            }
+        })();
+    });
+    importButton.addEventListener('click', () => {
+        fileInput.click();
+    });
+    fileInput.addEventListener('change', () => {
+        const file = fileInput.files?.[0];
+        fileInput.value = '';
+        if (!file) {
+            return;
+        }
+        void (async () => {
+            setBusy(true);
+            try {
+                const entries = await readLyricsBackupFile(file);
+                pendingEntries = entries;
+                const conflicts = entries.filter((entry) => hasManualLyricsKey(entry.key)).length;
+                notice.textContent =
+                    `备份包里有 ${entries.length} 条歌词，其中 ${conflicts} 条本机已有同歌贴词，选恢复方式：`;
+                choiceRow.hidden = false;
+            } catch (error) {
+                closeChoice();
+                notice.textContent =
+                    error instanceof Error ? error.message : '备份包读不出来，换个文件再试';
             } finally {
                 setBusy(false);
             }

@@ -31,6 +31,10 @@ interface LocalMusicPlugin {
         coverDataUrl?: string;
     }): Promise<{ lyricWritten: boolean; coverWritten: boolean; skipped: boolean }>;
     downloadCover(options: { url: string }): Promise<{ dataUrl: string }>;
+    saveToDownloads(options: {
+        filename: string;
+        base64: string;
+    }): Promise<{ filename: string; uri: string }>;
 }
 
 const LocalMusic = registerPlugin<LocalMusicPlugin>('LocalMusic');
@@ -255,6 +259,17 @@ export async function getLocalEmbeddedLyrics(
     track: Track
 ): Promise<{ text: string; source: string } | null> {
     return localSource.embeddedLyrics(track);
+}
+
+// 0.1.131 歌词备份导出配套：把 base64 的文件字节经原生写进系统下载
+// 目录（WebView 的 a[download] 在 App 里不可靠）。原生走 MediaStore
+// （Android 10+，免额外权限）；低版本与写失败时原生 reject，错误信息
+// 是可直接展示的中文原因，调用方原样提示，不在这里吞掉。
+export async function saveFileToDownloads(
+    filename: string,
+    base64: string
+): Promise<{ filename: string; uri: string }> {
+    return LocalMusic.saveToDownloads({ filename, base64 });
 }
 
 export function getLocalNotice(): string | null {

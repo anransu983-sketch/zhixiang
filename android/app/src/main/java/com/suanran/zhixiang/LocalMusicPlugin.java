@@ -3,6 +3,7 @@ package com.suanran.zhixiang;
 import android.Manifest;
 import android.content.ContentResolver;
 import android.content.ContentUris;
+import android.content.ContentValues;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
@@ -478,6 +479,100 @@ public class LocalMusicPlugin extends Plugin {
         } catch (Exception e) {
             call.reject("读内嵌歌词失败", "READ_FAILED", e);
         }
+    }
+
+    // 存到下载目录（0.1.131 歌词备份导出）：TS 传 filename + base64。
+    // WebView 的 a[download] 在 App 里不可靠，落盘走原生：Android 10+
+    // 用 MediaStore Downloads 集合（DISPLAY_NAME / MIME_TYPE /
+    // RELATIVE_PATH=Download / IS_PENDING 先置 1、写完清 0），写公共
+    // 下载目录不需要任何额外权限；Android 9 及以下没有这条免权限路，
+    // 明确 reject 说明原因，不偷偷改走别的文件夹。文件名只取末段，
+    // 防调用方带路径分隔符写出 Download 以外。写失败时把已建的待定
+    // 条目删掉，不给下载目录留一个空文件。
+    @PluginMethod
+    public void saveToDownloads(PluginCall call) {
+        String filename = call.getString("filename");
+        String base64 = call.getString("base64");
+        if (filename == null || filename.isEmpty()) {
+            call.reject("缺少文件名", "NO_FILENAME");
+            return;
+        }
+        if (base64 == null || base64.isEmpty()) {
+            call.reject("没有可写的内容", "NO_DATA");
+            return;
+        }
+        int slash = Math.max(filename.lastIndexOf('/'), filename.lastIndexOf('\\'));
+        if (slash >= 0) {
+            filename = filename.substring(slash + 1);
+        }
+        if (filename.isEmpty()) {
+            call.reject("文件名不合法", "NO_FILENAME");
+            return;
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            call.reject("当前系统版本不支持直接存到下载目录（需 Android 10 以上）", "UNSUPPORTED_SDK");
+            return;
+        }
+        if (getContext() == null) {
+            call.reject("系统服务不可用", "NO_CONTEXT");
+            return;
+        }
+        ContentResolver resolver = getContext().getContentResolver();
+        if (resolver == null) {
+            call.reject("系统服务不可用", "NO_RESOLVER");
+            return;
+        }
+        byte[] bytes;
+        try {
+            bytes = Base64.decode(base64, Base64.DEFAULT);
+        } catch (Exception e) {
+            call.reject("文件内容不是有效的 base64", "BAD_BASE64", e);
+            return;
+        }
+        if (bytes.length == 0) {
+            call.reject("没有可写的内容", "NO_DATA");
+            return;
+        }
+        String mimeType = call.getString("mimeType");
+        if (mimeType == null || mimeType.isEmpty()) {
+            mimeType = "application/zip";
+        }
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.Downloads.DISPLAY_NAME, filename);
+        values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
+        values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+        values.put(MediaStore.Downloads.IS_PENDING, 1);
+        Uri uri = null;
+        try {
+            uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+            if (uri == null) {
+                call.reject("在下载目录建文件失败", "INSERT_FAILED");
+                return;
+            }
+            try (OutputStream out = resolver.openOutputStream(uri)) {
+                if (out == null) {
+                    throw new IllegalStateException("openOutputStream returned null");
+                }
+                out.write(bytes);
+            }
+            ContentValues done = new ContentValues();
+            done.put(MediaStore.Downloads.IS_PENDING, 0);
+            resolver.update(uri, done, null, null);
+        } catch (Exception e) {
+            if (uri != null) {
+                try {
+                    resolver.delete(uri, null, null);
+                } catch (Exception ignored) {
+                    // 清理失败不掩盖原始错误。
+                }
+            }
+            call.reject("写入下载目录失败", "WRITE_FAILED", e);
+            return;
+        }
+        JSObject result = new JSObject();
+        result.put("filename", filename);
+        result.put("uri", uri.toString());
+        call.resolve(result);
     }
 
     private boolean hasAudioPermission() {
