@@ -5,7 +5,9 @@
 //   回 200 JSON，lrc.lyric 就是标准 LRC 文本（含 [00:40.66] 这类时间标签），
 //   无歌词的曲返回空串或缺 lrc 字段。同一响应里 yrc.lyric 是逐字词
 //   （有才回），本模块读它做逐字高亮；没有逐字时播放页按行内均分
-//   做近似高亮（仅显示效果，不是真实时间轴）。
+//   做近似高亮（仅显示效果，不是真实时间轴）。tlyric.lyric 是译文
+//   （同为 LRC），按时间对齐挂到正文行的 translation 字段供播放页
+//   渲染副行；此前 tv=-1 一直带着请求却从没解析，等于白拿。
 // - YTM（2026-10-26 起接）：第一顺位是取链那步 player 返回里的
 //   captions.playerCaptionsTracklistRenderer.captionTracks，取链时已由
 //   ytm.ts 按 videoId 缓存，本模块不另发 player 请求。选轨偏好中文、
@@ -42,6 +44,9 @@ export interface LyricLine {
     text: string;
     // 真逐字（网易云 YRC）才有；没有时播放页用 approximateWords 近似。
     words?: LyricWord[];
+    // 译文（网易云 tlyric 对齐合并后才有）：其他来源没有就不挂，不编造。
+    // 与正文相同或为空时同样不挂，播放页有才渲染副行。
+    translation?: string;
 }
 
 export interface LyricResult {
@@ -95,6 +100,42 @@ export function parseLrc(text: string): LyricLine[] {
     }
     lines.sort((a, b) => a.timeMs - b.timeMs);
     return lines;
+}
+
+// 译文对齐合并（网易云 tlyric，也是标准 LRC）：译文行按时间标签挂到
+// 正文行上——优先精确同时间，否则取 ±120ms 内最近的一行；一行只挂
+// 一条译文（先到先得），译文为空或与正文完全相同则不挂（同文挂上去
+// 只是把同一句话显示两遍）。正文可以是 LRC 行也可以是 YRC 逐字行，
+// 只按 timeMs 匹配，逐字行同样能挂。返回实际挂上的条数（只记数不记文）。
+export function mergeTranslations(lines: LyricLine[], translations: LyricLine[]): number {
+    let attached = 0;
+    for (const trans of translations) {
+        const transText = trans.text.trim();
+        if (!transText) {
+            continue;
+        }
+        let target: LyricLine | null = null;
+        let bestDiff = Number.POSITIVE_INFINITY;
+        for (const line of lines) {
+            if (line.translation !== undefined) {
+                continue;
+            }
+            const diff = Math.abs(line.timeMs - trans.timeMs);
+            if (diff < bestDiff) {
+                bestDiff = diff;
+                target = line;
+            }
+        }
+        if (!target || bestDiff > 120) {
+            continue;
+        }
+        if (target.text.trim() === transText) {
+            continue;
+        }
+        target.translation = transText;
+        attached += 1;
+    }
+    return attached;
 }
 
 // 解析网易云 YRC 逐字词：行标签 [起始毫秒,持续毫秒]，后面跟
@@ -473,6 +514,9 @@ interface LocalLyricCacheEntry {
     kind: 'synced' | 'plain' | 'miss';
     texts?: string[];
     times?: number[];
+    // 译文与 texts/times 同序，没有译文的行存空串；整字段可缺（旧存档
+    // 与无译文来源都不带），恢复时空串不挂。
+    translations?: string[];
 }
 
 // 0.1.89：v1 键下的旧 miss 会挡住 0.1.85 后加的网易云补源（缓存查在补源之前，
@@ -563,8 +607,16 @@ export async function fetchLocalLyrics(track: Track): Promise<LyricResult | null
             };
         }
         const times = cached.times ?? [];
+        const translations = cached.translations ?? [];
         const lines = texts
-            .map((text, i) => ({ timeMs: times[i] ?? 0, text }))
+            .map((text, i) => {
+                const line: LyricLine = { timeMs: times[i] ?? 0, text };
+                const trans = translations[i];
+                if (typeof trans === 'string' && trans.trim()) {
+                    line.translation = trans;
+                }
+                return line;
+            })
             .filter((line) => line.text.length > 0);
         return lines.length > 0 ? { lines, note: null } : null;
     }
@@ -594,7 +646,9 @@ export async function fetchLocalLyrics(track: Track): Promise<LyricResult | null
                         at: Date.now(),
                         kind: 'synced',
                         texts: neteaseLyric.lines.map((line) => line.text),
-                        times: neteaseLyric.lines.map((line) => line.timeMs)
+                        times: neteaseLyric.lines.map((line) => line.timeMs),
+                        // 译文一并进缓存，否则本地补源第二遍播放就丢译文。
+                        translations: neteaseLyric.lines.map((line) => line.translation ?? '')
                     };
                     saveLocalLyricCache(cache);
                     return { lines: neteaseLyric.lines, note: null };
@@ -707,7 +761,13 @@ async function fetchNeteaseLyricById(songId: string): Promise<LyricResult> {
         const parsed = JSON.parse(response.body) as {
             lrc?: { lyric?: unknown } | null;
             yrc?: { lyric?: unknown } | null;
+            tlyric?: { lyric?: unknown } | null;
         };
+        // 译文（tlyric，此前请求带了 tv=-1 却从没被读）：也是 LRC，
+        // 解析后按时间对齐挂到正文行；没有或为空就不挂。
+        const tlyricText = parsed.tlyric?.lyric;
+        const translationLines =
+            typeof tlyricText === 'string' && tlyricText.trim() ? parseLrc(tlyricText) : [];
         const lyricText = parsed.lrc?.lyric;
         const lines =
             typeof lyricText === 'string' && lyricText.trim() ? parseLrc(lyricText) : [];
@@ -720,6 +780,13 @@ async function fetchNeteaseLyricById(songId: string): Promise<LyricResult> {
             return { lines: [], note: '这首歌暂无歌词。' };
         }
         if (lines.length === 0) {
+            // 只有逐字行时译文直接挂逐字行（按行首时间对齐）。
+            if (translationLines.length > 0) {
+                const attachedTrans = mergeTranslations(yrcLines, translationLines);
+                if (attachedTrans > 0) {
+                    console.log(`[Lyrics] 网易云译文 ${attachedTrans}/${yrcLines.length} 行`);
+                }
+            }
             return { lines: yrcLines, note: null };
         }
         let attached = 0;
@@ -737,6 +804,12 @@ async function fetchNeteaseLyricById(songId: string): Promise<LyricResult> {
         }
         if (attached > 0) {
             console.log(`[Lyrics] 网易云逐字词 ${attached}/${lines.length} 行`);
+        }
+        if (translationLines.length > 0) {
+            const attachedTrans = mergeTranslations(lines, translationLines);
+            if (attachedTrans > 0) {
+                console.log(`[Lyrics] 网易云译文 ${attachedTrans}/${lines.length} 行`);
+            }
         }
         return { lines, note: null };
     } catch {
