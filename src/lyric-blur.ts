@@ -63,6 +63,7 @@ export function computeBlurRadii(
 const BLUR_ENABLED_KEY = 'zx.player.lyricBlur';
 const BLUR_STRENGTH_KEY = 'zx.player.lyricBlurStrength';
 const TRANSLATION_KEY = 'zx.player.showTranslation';
+const GLOW_KEY = 'zx.player.lyricGlow';
 
 export function loadLyricBlurEnabled(): boolean {
     try {
@@ -112,6 +113,23 @@ export function loadShowTranslation(): boolean {
 export function saveShowTranslation(show: boolean): void {
     try {
         localStorage.setItem(TRANSLATION_KEY, show ? '1' : '0');
+    } catch {
+        // 同上。
+    }
+}
+
+// 歌词辉光（0.1.131）：CJK 逐字正在唱时的辉光开关，默认开。
+export function loadLyricGlow(): boolean {
+    try {
+        return localStorage.getItem(GLOW_KEY) !== '0';
+    } catch {
+        return true;
+    }
+}
+
+export function saveLyricGlow(enabled: boolean): void {
+    try {
+        localStorage.setItem(GLOW_KEY, enabled ? '1' : '0');
     } catch {
         // 同上。
     }

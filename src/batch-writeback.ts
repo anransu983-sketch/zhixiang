@@ -26,8 +26,11 @@ export interface BatchWritebackProgress {
 }
 
 // LyricLine[] 拼回 LRC：有时间轴的行写 [mm:ss.xx] 前缀，纯文本行
-// （timeMs 为无穷大）直接写文本。
-function linesToLrc(lines: LyricLine[]): string {
+// （timeMs 为无穷大）直接写文本。只拼正文行：逐字与译文都不进 LRC
+// （格式本身装不下，硬塞会污染其他播放器读这个 .lrc）。
+// 0.1.131 起导出：播放页贴词是 TTML 时也用它把解析结果转成 LRC
+// 再写回 sidecar，不能把 XML 原文塞进 .lrc。
+export function linesToLrc(lines: LyricLine[]): string {
     return lines
         .map((line) => {
             const ms = line.timeMs;

@@ -38,11 +38,15 @@ import {
     computeBlurRadii,
     loadLyricBlurEnabled,
     loadLyricBlurStrength,
+    loadLyricGlow,
     loadShowTranslation,
     saveLyricBlurEnabled,
     saveLyricBlurStrength,
+    saveLyricGlow,
     saveShowTranslation
 } from './lyric-blur';
+import { isTtmlText, parseTtml } from './ttml';
+import { linesToLrc } from './batch-writeback';
 import type { LyricBlurStrength } from './lyric-blur';
 import { clearLyricFont, getLyricFontName, importLyricFont, LYRIC_FONT_CSS, restoreLyricFont } from './lyric-font';
 import { checkAllFilesAccess, getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalPath, getLocalSidecarCoverDataUrl, requestAllFilesAccess, writeSidecar } from './sources/local';
@@ -488,10 +492,10 @@ function buildPlayerPage(): HTMLElement {
     const sheetArea = document.createElement('textarea');
     sheetArea.className = 'player-sheet-textarea';
     sheetArea.rows = 10;
-    sheetArea.placeholder = '粘贴 LRC 歌词，带 [mm:ss] 时间标签可逐行高亮，纯文本只做展示';
+    sheetArea.placeholder = '粘贴 LRC 歌词或 TTML，带时间标签可逐行高亮，纯文本只做展示';
     const sheetHint = document.createElement('p');
     sheetHint.className = 'player-note';
-    sheetHint.textContent = '保存后立即生效，优先于各路歌词。本地歌还会写回同名 .lrc；删除只清手动贴词，已写回的 .lrc 仍会显示。';
+    sheetHint.textContent = '保存后立即生效，优先于各路歌词。本地歌还会写回同名 .lrc（贴的是 TTML 时先转成 LRC 正文再写）；删除只清手动贴词，已写回的 .lrc 仍会显示。';
     const sheetStatus = document.createElement('p');
     sheetStatus.className = 'player-note';
     sheetStatus.hidden = true;
@@ -509,8 +513,39 @@ function buildPlayerPage(): HTMLElement {
     sheetCancel.type = 'button';
     sheetCancel.className = 'login-btn';
     sheetCancel.textContent = '取消';
-    sheetRow.append(sheetSave, sheetDelete, sheetCancel);
-    sheetCard.append(sheetTitle, sheetSong, sheetArea, sheetHint, sheetStatus, sheetRow);
+    // 从文件导入（0.1.131）：选 .lrc/.ttml/.txt 读进来填编辑框，
+    // 仍走原保存流程（存档保存原文，格式在 fetchLyrics 读取时判）。
+    const sheetImport = document.createElement('button');
+    sheetImport.type = 'button';
+    sheetImport.className = 'login-btn';
+    sheetImport.textContent = '从文件导入';
+    const sheetFileInput = document.createElement('input');
+    sheetFileInput.type = 'file';
+    sheetFileInput.accept = '.lrc,.ttml,.txt';
+    sheetFileInput.hidden = true;
+    sheetImport.addEventListener('click', () => {
+        sheetFileInput.click();
+    });
+    sheetFileInput.addEventListener('change', () => {
+        const file = sheetFileInput.files?.[0];
+        sheetFileInput.value = '';
+        if (!file) {
+            return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+            sheetArea.value = typeof reader.result === 'string' ? reader.result : '';
+            sheetStatus.textContent = `已导入 ${file.name}，点保存生效`;
+            sheetStatus.hidden = false;
+        };
+        reader.onerror = () => {
+            sheetStatus.textContent = '文件读不出来，换个文件再试';
+            sheetStatus.hidden = false;
+        };
+        reader.readAsText(file);
+    });
+    sheetRow.append(sheetSave, sheetImport, sheetDelete, sheetCancel);
+    sheetCard.append(sheetTitle, sheetSong, sheetArea, sheetHint, sheetStatus, sheetRow, sheetFileInput);
     sheet.appendChild(sheetCard);
     content.appendChild(sheet);
     pasteButton.addEventListener('click', () => {
@@ -541,6 +576,26 @@ function buildPlayerPage(): HTMLElement {
         }
         saveManualLyrics(track, text);
         refreshLyricsNow();
+        // 0.1.131：贴词是 TTML 时写回 .lrc 的内容要先转——经 TTML 解析
+        // 出行后用 linesToLrc 只拼正文行（逐字／译文不进 LRC），绝不把
+        // XML 原文塞进 .lrc；解析不出行就不写回，状态里如实说明。
+        // 非 TTML 保持原口径：原文即 LRC，直接写。
+        let sidecarText: string | null = text;
+        let sidecarSkipReason = '';
+        if (isTtmlText(text)) {
+            try {
+                const ttmlLines = parseTtml(text);
+                if (ttmlLines.length > 0) {
+                    sidecarText = linesToLrc(ttmlLines);
+                } else {
+                    sidecarText = null;
+                    sidecarSkipReason = 'TTML 没解析出歌词行';
+                }
+            } catch {
+                sidecarText = null;
+                sidecarSkipReason = 'TTML 解析失败';
+            }
+        }
         if (track.source === 'local') {
             const path = getLocalPath(track);
             if (!path) {
@@ -548,13 +603,19 @@ function buildPlayerPage(): HTMLElement {
                 sheetStatus.hidden = false;
                 return;
             }
+            if (sidecarText === null) {
+                sheetStatus.textContent = `已保存，${sidecarSkipReason}，未写回 .lrc，只在本机覆盖生效`;
+                sheetStatus.hidden = false;
+                return;
+            }
+            const lyricsToWrite = sidecarText;
             void (async () => {
                 try {
                     if (!(await checkAllFilesAccess())) {
                         await requestAllFilesAccess();
                     }
                     if (await checkAllFilesAccess()) {
-                        await writeSidecar({ path, lyrics: text });
+                        await writeSidecar({ path, lyrics: lyricsToWrite });
                         sheetStatus.textContent = '已保存，并写回同名 .lrc';
                     } else {
                         sheetStatus.textContent = '已保存，未拿到所有文件访问权限，只在本机覆盖生效';
@@ -702,6 +763,7 @@ function buildPlayerPage(): HTMLElement {
     let lyricBlurEnabled = loadLyricBlurEnabled();
     let lyricBlurStrength: LyricBlurStrength = loadLyricBlurStrength();
     let showTranslation = loadShowTranslation();
+    let lyricGlowEnabled = loadLyricGlow();
     let lastLyricNote: string | null = null;
     const presetRow = document.createElement('div');
     presetRow.className = 'player-preset-row';
@@ -830,6 +892,22 @@ function buildPlayerPage(): HTMLElement {
     });
     translationLabel.append(translationBox, document.createTextNode('显示译文'));
     visualPad.appendChild(translationLabel);
+
+    // 歌词辉光开关（0.1.131）：关掉立即清掉正在唱的词的辉光样式。
+    const glowLabel = document.createElement('label');
+    glowLabel.className = 'player-toggle';
+    const glowBox = document.createElement('input');
+    glowBox.type = 'checkbox';
+    glowBox.checked = lyricGlowEnabled;
+    glowBox.addEventListener('change', () => {
+        lyricGlowEnabled = glowBox.checked;
+        saveLyricGlow(lyricGlowEnabled);
+        if (!lyricGlowEnabled) {
+            clearLyricGlow();
+        }
+    });
+    glowLabel.append(glowBox, document.createTextNode('歌词辉光'));
+    visualPad.appendChild(glowLabel);
 
     // 歌词字体行：当前字体名 + 导入 + 恢复默认；导入失败只提示，
     // 旧字体保留可用（事务口径在 lyric-font.ts）。
@@ -1150,6 +1228,15 @@ function buildPlayerPage(): HTMLElement {
     let lyricTouching = false;
     let lyricSettleTimer: number | null = null;
     let lastAutoScrollAt = 0;
+    // 辉光（0.1.131）：当前正在发光的词 span，切词/切行/关开关时摘掉。
+    let currentGlowWord: HTMLElement | null = null;
+    const clearLyricGlow = (): void => {
+        lyricBox.querySelectorAll('.player-lyric-word.is-glowing').forEach((word) => {
+            word.classList.remove('is-glowing');
+            (word as HTMLElement).style.removeProperty('--glow');
+        });
+        currentGlowWord = null;
+    };
     const applyLyricBlur = (): void => {
         const children = lyricBox.querySelectorAll<HTMLElement>('.player-lyric-line');
         const plain = lyricBox.classList.contains('is-plain');
@@ -1242,12 +1329,29 @@ function buildPlayerPage(): HTMLElement {
                 ? approximateWords(line, nextStart)
                 : [];
             if (words.length > 0) {
+                // 和声（0.1.131）：bg 词挂 .is-bg（更淡更小），整行皆 bg
+                // 时行也挂类；CJK 词挂 .is-cjk 供辉光判定（与 lyrics.ts
+                // 的 CJK 口径同范围）。词起止写进 dataset，进度回调里
+                // 算逐词进度用，不另存一份状态。
+                let allBg = true;
                 for (const word of words) {
                     const wordEl = document.createElement('span');
                     wordEl.className = 'player-lyric-word';
                     wordEl.dataset.start = String(word.startMs);
+                    wordEl.dataset.duration = String(word.durationMs);
+                    if (word.bg) {
+                        wordEl.classList.add('is-bg');
+                    } else {
+                        allBg = false;
+                    }
+                    if (/[\u2e80-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(word.text)) {
+                        wordEl.classList.add('is-cjk');
+                    }
                     wordEl.textContent = word.text;
                     lineEl.appendChild(wordEl);
+                }
+                if (allBg) {
+                    lineEl.classList.add('is-bg-line');
                 }
             } else {
                 lineEl.textContent = line.text;
@@ -1295,6 +1399,8 @@ function buildPlayerPage(): HTMLElement {
             word.classList.remove('is-sung');
         });
         currentSungWord = -1;
+        // 辉光同理：上一行没唱完的词不许把光带到下一行。
+        clearLyricGlow();
         // 当前行变了，模糊分布跟着换（半径没变的行不会重复写 style）。
         applyLyricBlur();
         if (index < 0) {
@@ -1420,6 +1526,53 @@ function buildPlayerPage(): HTMLElement {
                     words.forEach((wordEl, wordIndex) => {
                         wordEl.classList.toggle('is-sung', wordIndex <= sung);
                     });
+                }
+                // 辉光（0.1.131，借鉴 AM++ 的 CJK 长尾辉光口径）：正在唱
+                // 的那个 CJK 词按自身时间进度发光——进度 = (当前位置 −
+                // 词始) / 词时长，钳 0..1，写进 --glow 喂 CSS 的
+                // text-shadow 强度；词时长经末词补偿后末词也能完整亮满
+                // 不被截断。非 CJK 词不发光（保持现有填充色）。同一时刻
+                // 只亮一个词（和声与主声时间重叠时取 DOM 里靠后的），
+                // 和声词照亮但 CSS 里强度减半。切词时旧词的光立即摘掉；
+                // 跨行扫光在逐词 span 的连续高亮下天然衔接，不另设机制。
+                // 译文副行不是 .player-lyric-word，不参与辉光。
+                let glowTarget: HTMLElement | null = null;
+                let glowProgress = 0;
+                if (lyricGlowEnabled) {
+                    for (const wordEl of words) {
+                        const el = wordEl as HTMLElement;
+                        if (!el.classList.contains('is-cjk')) {
+                            continue;
+                        }
+                        const start = Number(el.dataset.start);
+                        const duration = Number(el.dataset.duration ?? 0);
+                        if (!Number.isFinite(start)) {
+                            continue;
+                        }
+                        if (
+                            start <= positionMs &&
+                            (duration <= 0 || positionMs < start + duration)
+                        ) {
+                            glowTarget = el;
+                            glowProgress =
+                                duration > 0
+                                    ? Math.min(1, Math.max(0, (positionMs - start) / duration))
+                                    : 1;
+                        }
+                    }
+                }
+                if (glowTarget !== currentGlowWord) {
+                    if (currentGlowWord) {
+                        currentGlowWord.classList.remove('is-glowing');
+                        currentGlowWord.style.removeProperty('--glow');
+                    }
+                    currentGlowWord = glowTarget;
+                    if (currentGlowWord) {
+                        currentGlowWord.classList.add('is-glowing');
+                    }
+                }
+                if (currentGlowWord) {
+                    currentGlowWord.style.setProperty('--glow', glowProgress.toFixed(2));
                 }
             }
         }
