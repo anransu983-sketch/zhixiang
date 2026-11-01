@@ -1656,6 +1656,20 @@ body {
     text-align: left;
     font-size: 20px;
     line-height: 1.6;
+    /* 双向模糊（借鉴 AM++ 口径）：半径由 TS 按行距查表赋值，
+       300ms 线性过渡跟住切行；只挂在行这个小字块上，不做大面积模糊。 */
+    transition: filter 0.3s linear;
+}
+
+/* 译文副行：正文下方小字（约正文六成字号，随正文 em 缩放），
+   颜色更淡、不加粗，不参与逐字高亮。 */
+.player-lyric-translation {
+    display: block;
+    margin-top: 2px;
+    font-size: 0.62em;
+    font-weight: 400;
+    line-height: 1.45;
+    color: rgba(255, 255, 255, 0.42);
 }
 
 .player-lyric-line.is-active {
@@ -4008,6 +4022,14 @@ body.perf-mode * {
     background: var(--surface-2);
     color: var(--text-1);
     font-size: 13px;
+}
+/* 分段选中态（歌词模糊强度三档借用这套按钮）：主题色描边+字色。 */
+.player-preset-btn.is-active {
+    border-color: var(--theme-accent, #f9a8d4);
+    color: var(--theme-accent, #f9a8d4);
+}
+.player-preset-btn:disabled {
+    opacity: 0.45;
 }
 .player-sheet {
     position: fixed;

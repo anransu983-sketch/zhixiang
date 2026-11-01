@@ -33,6 +33,18 @@ import { openLiveWallpaperPicker, setWallpaperState } from './native/wallpaper-p
 import { loadVisualToggles, saveVisualToggles, VISUAL_PRESETS, VisualStage } from './visuals';
 import type { VisualToggles } from './visuals';
 import { deleteManualLyrics, getManualLyrics, saveManualLyrics } from './manual-lyrics';
+import {
+    BLUR_STRENGTH_OFFSETS,
+    computeBlurRadii,
+    loadLyricBlurEnabled,
+    loadLyricBlurStrength,
+    loadShowTranslation,
+    saveLyricBlurEnabled,
+    saveLyricBlurStrength,
+    saveShowTranslation
+} from './lyric-blur';
+import type { LyricBlurStrength } from './lyric-blur';
+import { clearLyricFont, getLyricFontName, importLyricFont, LYRIC_FONT_CSS, restoreLyricFont } from './lyric-font';
 import { checkAllFilesAccess, getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalPath, getLocalSidecarCoverDataUrl, requestAllFilesAccess, writeSidecar } from './sources/local';
 import { posterFallbackBackground, posterHue } from './posters';
 import { getLastYtmStreamMeta } from './sources/ytm';
@@ -685,6 +697,12 @@ function buildPlayerPage(): HTMLElement {
         stage?.poke();
         void pushWallpaperState();
     };
+    // 歌词设置状态（模糊/译文/字体，与视觉开关同面板）：声明在设置 UI
+    // 构建之前，后面的 applyLyricBlur 等函数只在构建完成后被调用。
+    let lyricBlurEnabled = loadLyricBlurEnabled();
+    let lyricBlurStrength: LyricBlurStrength = loadLyricBlurStrength();
+    let showTranslation = loadShowTranslation();
+    let lastLyricNote: string | null = null;
     const presetRow = document.createElement('div');
     presetRow.className = 'player-preset-row';
     const presetLabel = document.createElement('span');
@@ -745,6 +763,143 @@ function buildPlayerPage(): HTMLElement {
         label.append(box, document.createTextNode(def.label));
         visualPad.appendChild(label);
     }
+
+    // 歌词设置（跟视觉开关同面板、同 .player-toggle 样式）：模糊开关、
+    // 译文开关、模糊强度三档、歌词字体导入/恢复。
+    const blurLabel = document.createElement('label');
+    blurLabel.className = 'player-toggle';
+    const blurBox = document.createElement('input');
+    blurBox.type = 'checkbox';
+    blurBox.checked = lyricBlurEnabled;
+    blurBox.addEventListener('change', () => {
+        lyricBlurEnabled = blurBox.checked;
+        saveLyricBlurEnabled(lyricBlurEnabled);
+        applyLyricBlur();
+    });
+    blurLabel.append(blurBox, document.createTextNode('歌词模糊'));
+    visualPad.appendChild(blurLabel);
+
+    const blurStrengthRow = document.createElement('div');
+    blurStrengthRow.className = 'player-preset-row';
+    const blurStrengthLabel = document.createElement('span');
+    blurStrengthLabel.className = 'player-preset-label';
+    blurStrengthLabel.textContent = '模糊强度';
+    blurStrengthRow.appendChild(blurStrengthLabel);
+    const strengthDefs: Array<{ key: LyricBlurStrength; label: string }> = [
+        { key: 'weak', label: '弱' },
+        { key: 'standard', label: '标准' },
+        { key: 'strong', label: '强' }
+    ];
+    const strengthButtons = new Map<LyricBlurStrength, HTMLButtonElement>();
+    const updateStrengthButtons = (): void => {
+        for (const [key, button] of strengthButtons) {
+            button.classList.toggle('is-active', key === lyricBlurStrength);
+        }
+    };
+    for (const def of strengthDefs) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'player-preset-btn';
+        button.textContent = def.label;
+        strengthButtons.set(def.key, button);
+        button.addEventListener('click', () => {
+            lyricBlurStrength = def.key;
+            saveLyricBlurStrength(lyricBlurStrength);
+            updateStrengthButtons();
+            applyLyricBlur();
+        });
+        blurStrengthRow.appendChild(button);
+    }
+    updateStrengthButtons();
+    visualPad.appendChild(blurStrengthRow);
+
+    const translationLabel = document.createElement('label');
+    translationLabel.className = 'player-toggle';
+    const translationBox = document.createElement('input');
+    translationBox.type = 'checkbox';
+    translationBox.checked = showTranslation;
+    translationBox.addEventListener('change', () => {
+        showTranslation = translationBox.checked;
+        saveShowTranslation(showTranslation);
+        // 数据照常挂在行上，只重渲染显隐；重渲染会把当前行清零，
+        // 随即按当前进度一步复位，不平滑扫过去。
+        renderLyrics(lastLyricNote);
+        const index = findCurrentLineIndex(lyricLines, getCurrentState().currentTime * 1000);
+        currentLineIndex = index;
+        highlightLine(index, 'auto');
+    });
+    translationLabel.append(translationBox, document.createTextNode('显示译文'));
+    visualPad.appendChild(translationLabel);
+
+    // 歌词字体行：当前字体名 + 导入 + 恢复默认；导入失败只提示，
+    // 旧字体保留可用（事务口径在 lyric-font.ts）。
+    const fontRow = document.createElement('div');
+    fontRow.className = 'player-preset-row';
+    const fontLabel = document.createElement('span');
+    fontLabel.className = 'player-preset-label';
+    fontLabel.textContent = '歌词字体';
+    const fontName = document.createElement('span');
+    fontName.className = 'player-preset-label';
+    const fontImportButton = document.createElement('button');
+    fontImportButton.type = 'button';
+    fontImportButton.className = 'player-preset-btn';
+    fontImportButton.textContent = '导入';
+    const fontResetButton = document.createElement('button');
+    fontResetButton.type = 'button';
+    fontResetButton.className = 'player-preset-btn';
+    fontResetButton.textContent = '恢复默认';
+    const fontStatus = document.createElement('p');
+    fontStatus.className = 'player-note';
+    fontStatus.hidden = true;
+    const fontInput = document.createElement('input');
+    fontInput.type = 'file';
+    fontInput.accept = '.ttf,.otf,font/*';
+    fontInput.hidden = true;
+    const updateFontRow = (): void => {
+        const name = getLyricFontName();
+        fontName.textContent = name !== '' ? name : '默认字体';
+        fontResetButton.disabled = name === '';
+    };
+    const applyFontFamily = (enabled: boolean): void => {
+        lyricBox.style.fontFamily = enabled ? LYRIC_FONT_CSS : '';
+    };
+    fontImportButton.addEventListener('click', () => {
+        fontInput.click();
+    });
+    fontInput.addEventListener('change', () => {
+        const file = fontInput.files?.[0];
+        fontInput.value = '';
+        if (!file) {
+            return;
+        }
+        void importLyricFont(file).then((result) => {
+            if (result.ok) {
+                fontStatus.hidden = true;
+                applyFontFamily(true);
+                updateFontRow();
+            } else {
+                fontStatus.textContent = result.error;
+                fontStatus.hidden = false;
+            }
+        });
+    });
+    fontResetButton.addEventListener('click', () => {
+        void clearLyricFont().then(() => {
+            applyFontFamily(false);
+            fontStatus.hidden = true;
+            updateFontRow();
+        });
+    });
+    fontRow.append(fontLabel, fontName, fontImportButton, fontResetButton);
+    visualPad.append(fontRow, fontInput, fontStatus);
+    updateFontRow();
+    // 进播放页恢复已存字体：注册成功才挂 font-family，失败保持默认。
+    void restoreLyricFont().then((restored) => {
+        if (restored) {
+            applyFontFamily(true);
+            updateFontRow();
+        }
+    });
 
     const degradedNote = document.createElement('p');
     degradedNote.className = 'player-note visual-degraded';
@@ -988,7 +1143,86 @@ function buildPlayerPage(): HTMLElement {
     };
     refreshPage = refresh;
 
+    // 双向歌词模糊（策略在 lyric-blur.ts）：按当前行查表给每行赋
+    // filter: blur()，半径没变的行不重复写 style，免得每次进度回调
+    // 都重启动画。关开关／纯文本词／折叠态／用户手动浏览时一律归零。
+    let userBrowsingLyrics = false;
+    let lyricTouching = false;
+    let lyricSettleTimer: number | null = null;
+    let lastAutoScrollAt = 0;
+    const applyLyricBlur = (): void => {
+        const children = lyricBox.querySelectorAll<HTMLElement>('.player-lyric-line');
+        const plain = lyricBox.classList.contains('is-plain');
+        const active =
+            lyricBlurEnabled && !plain && !lyricsFolded && !userBrowsingLyrics && lyricLines.length > 0;
+        let radii: number[] = [];
+        if (active) {
+            // 前奏尚无当前行：以首行为焦点（首行清晰、其余走待唱曲线）；
+            // 播完末行后当前行就是末行，分布自然保留，不会全糊。
+            const highlighted = new Set<number>([currentLineIndex >= 0 ? currentLineIndex : 0]);
+            radii = computeBlurRadii(
+                lyricLines.length,
+                highlighted,
+                BLUR_STRENGTH_OFFSETS[lyricBlurStrength]
+            );
+        }
+        children.forEach((child, childIndex) => {
+            const radius = active ? (radii[childIndex] ?? 0) : 0;
+            // dataset 记上次赋的整数半径，相同就不碰 style。
+            if (child.dataset.blur === String(radius)) {
+                return;
+            }
+            child.dataset.blur = String(radius);
+            child.style.filter = radius > 0 ? `blur(${radius}px)` : '';
+        });
+    };
+    // 手动浏览暂停：手指/滚轮动歌词盒即暂停模糊（行色区分保留），
+    // 手离开且滚动静止满 1 秒才按当前行恢复。程序自动跟随的滚动
+    // 在 highlightLine 里打时间戳，scroll 事件按时间戳忽略，
+    // 不会误触发暂停（自动滚动事件与手势滚动在来源上分开）。
+    const scheduleBlurResume = (): void => {
+        if (lyricSettleTimer !== null) {
+            window.clearTimeout(lyricSettleTimer);
+        }
+        lyricSettleTimer = window.setTimeout(() => {
+            lyricSettleTimer = null;
+            if (!lyricTouching) {
+                userBrowsingLyrics = false;
+                applyLyricBlur();
+            }
+        }, 1000);
+    };
+    const beginBrowsing = (): void => {
+        if (!userBrowsingLyrics) {
+            userBrowsingLyrics = true;
+            applyLyricBlur();
+        }
+        scheduleBlurResume();
+    };
+    lyricBox.addEventListener('pointerdown', () => {
+        lyricTouching = true;
+        beginBrowsing();
+    });
+    window.addEventListener('pointerup', () => {
+        if (lyricTouching) {
+            lyricTouching = false;
+            scheduleBlurResume();
+        }
+    });
+    lyricBox.addEventListener('wheel', beginBrowsing, { passive: true });
+    lyricBox.addEventListener('scroll', () => {
+        if (!userBrowsingLyrics) {
+            return;
+        }
+        // 自动跟随滚动刚发生的那一下不算用户滚动，别把恢复计时一直顶回去。
+        if (Date.now() - lastAutoScrollAt < 800) {
+            return;
+        }
+        scheduleBlurResume();
+    });
+
     const renderLyrics = (note: string | null): void => {
+        lastLyricNote = note;
         lyricBox.textContent = '';
         if (note) {
             const noteEl = document.createElement('p');
@@ -1018,6 +1252,14 @@ function buildPlayerPage(): HTMLElement {
             } else {
                 lineEl.textContent = line.text;
             }
+            // 译文副行：正文下方小字，只展示、不参与逐字高亮；
+            // 关「显示译文」时不渲染（数据仍挂在行上，重开即回来）。
+            if (showTranslation && line.translation) {
+                const transEl = document.createElement('span');
+                transEl.className = 'player-lyric-translation';
+                transEl.textContent = line.translation;
+                lineEl.appendChild(transEl);
+            }
             lyricBox.appendChild(lineEl);
         });
         // 纯文本词没有可居中的当前行：去 spacer padding，从顶正常排，
@@ -1038,6 +1280,8 @@ function buildPlayerPage(): HTMLElement {
             foldButton.hidden = false;
             applyFoldState(lyricsFolded, false);
         }
+        // 新词渲染完按当前行（此时多半还是 -1，走前奏分布）刷一遍模糊。
+        applyLyricBlur();
     };
     renderLyricsPage = renderLyrics;
 
@@ -1051,6 +1295,8 @@ function buildPlayerPage(): HTMLElement {
             word.classList.remove('is-sung');
         });
         currentSungWord = -1;
+        // 当前行变了，模糊分布跟着换（半径没变的行不会重复写 style）。
+        applyLyricBlur();
         if (index < 0) {
             return;
         }
@@ -1064,6 +1310,8 @@ function buildPlayerPage(): HTMLElement {
             return;
         }
         // 手动居中：scrollIntoView 会连带滚外层播放页，只滚歌词盒本身。
+        // 打时间戳让歌词盒的 scroll 监听认出这是程序滚动，不触发模糊暂停。
+        lastAutoScrollAt = Date.now();
         lyricBox.scrollTo({
             top: active.offsetTop - lyricBox.clientHeight / 2 + active.offsetHeight / 2,
             behavior
@@ -1091,6 +1339,8 @@ function buildPlayerPage(): HTMLElement {
         if (!folded && currentLineIndex >= 0) {
             highlightLine(currentLineIndex, 'auto');
         }
+        // 折叠态不加模糊、展开恢复分布；highlightLine 已刷过时这里是空转。
+        applyLyricBlur();
     };
     foldButton.addEventListener('click', () => {
         applyFoldState(!lyricsFolded, true);
