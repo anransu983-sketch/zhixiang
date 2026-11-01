@@ -21,10 +21,16 @@
 //   命中才回词，没命中仍回原提示，不编词。命中与干净 miss 缓存 7 天，
 //   网络失败不缓存。歌词只记条数与来源，从不记正文。
 //
+// - 手动贴词（0.1.131 起）：存档原文若是 TTML 走 ttml.ts 解析（逐字／
+//   和声／译文轨），否则 LRC 定时行，再否则纯文本只展示；存档保真，
+//   格式只在读取时判。逐字行在解析后统一做末词补偿（见
+//   compensateLastWordDurations）。
+//
 // 歌词行只展示、不做点击跳转：本模块不提供 seek 口子，播放页也不给
 // 歌词行绑任何点击处理。
 
 import { getManualLyrics } from './manual-lyrics';
+import { isTtmlText, parseTtml } from './ttml';
 import { httpGet } from './native/http';
 import { withSessionCookie } from './sources/netease-session';
 import { neteaseSource } from './sources/netease';
@@ -37,6 +43,8 @@ export interface LyricWord {
     text: string;
     startMs: number;
     durationMs: number;
+    // 和声词（TTML 的 x-bg 声部才标）：播放页渲染更淡更小，见 ttml.ts。
+    bg?: boolean;
 }
 
 export interface LyricLine {
@@ -138,6 +146,34 @@ export function mergeTranslations(lines: LyricLine[], translations: LyricLine[])
     return attached;
 }
 
+// 末词补偿（0.1.131，借鉴 AM++ 的 CJK 末词补偿口径全新写）：带逐字的
+// 行里，最后一个词的原生时长常短于它到下一行开始的实际间隔，播放页
+// 按词时长算进度时末词会在行尾被“截断”——没唱满就切行了。这里把每行
+// 末词的 durationMs 只延长不缩短到「下一行 timeMs − 本词 startMs」，
+// 让末词在本行内完整唱满；最后一行没有下一行参照，保持原样。纯计算，
+// YRC／TTML／近似逐字三条来源共用。下一行时间不是有限数（纯文本行）
+// 时不补偿，免得把时长拉成无穷大。
+export function compensateLastWordDurations(lines: LyricLine[]): void {
+    for (let i = 0; i + 1 < lines.length; i++) {
+        const line = lines[i];
+        const next = lines[i + 1];
+        if (!line || !next || !line.words || line.words.length === 0) {
+            continue;
+        }
+        if (!Number.isFinite(next.timeMs)) {
+            continue;
+        }
+        const last = line.words[line.words.length - 1];
+        if (!last) {
+            continue;
+        }
+        const reach = next.timeMs - last.startMs;
+        if (reach > last.durationMs) {
+            last.durationMs = reach;
+        }
+    }
+}
+
 // 解析网易云 YRC 逐字词：行标签 [起始毫秒,持续毫秒]，后面跟
 // 词(相对行首偏移毫秒,持续毫秒) 串；偏移相对行首（YRC 口径）。
 // 行首标签不合规或一行无词时该行不进逐字（调用方按 LRC 行处理）。
@@ -180,6 +216,8 @@ export function parseYrc(text: string): LyricLine[] {
         lines.push({ timeMs: startMs, text: words.map((word) => word.text).join('').trim(), words });
     }
     lines.sort((a, b) => a.timeMs - b.timeMs);
+    // 排序后统一过一遍末词补偿（按相邻行关系算，必须排完序再做）。
+    compensateLastWordDurations(lines);
     return lines;
 }
 
@@ -188,6 +226,7 @@ export function parseYrc(text: string): LyricLine[] {
 // 空格并入前一词尾；末行无下一行时按 4 秒均分。
 export function approximateWords(line: LyricLine, nextStartMs: number | null): LyricWord[] {
     if (line.words && line.words.length > 0) {
+        // 真逐字在解析（parseYrc／parseTtml）时已做过末词补偿，原样回。
         return line.words;
     }
     const cjk = /[\u2e80-\u9fff\u3040-\u30ff\uac00-\ud7af]/;
@@ -222,11 +261,22 @@ export function approximateWords(line: LyricLine, nextStartMs: number | null): L
         end = start + 1000;
     }
     const per = (end - start) / units.length;
-    return units.map((text, i) => ({
+    const words = units.map((text, i) => ({
         text,
         startMs: start + per * i,
         durationMs: per
     }));
+    // 末词补偿（与 compensateLastWordDurations 同口径）：均分下末词本就
+    // 止于下一行起点，这里显式钉死这个不变量，免得日后改切分口径时
+    // 末词又被截断；末行没有下一行参照时保持均分原样。
+    const last = words[words.length - 1];
+    if (last && nextStartMs !== null) {
+        const reach = nextStartMs - last.startMs;
+        if (reach > last.durationMs) {
+            last.durationMs = reach;
+        }
+    }
+    return words;
 }
 
 // 按播放位置找当前行：最后一行 timeMs <= positionMs 的行；
@@ -821,7 +871,38 @@ export async function fetchLyrics(track: Track): Promise<LyricResult> {
     // 0.1.115 手动贴词优先级最高，高于内嵌／联网补源各路。
     const manual = getManualLyrics(track);
     if (manual !== null) {
-        return { lines: parseLrc(manual), note: '手动贴词（播放页底排可改）' };
+        // 0.1.131：贴进来的若是 TTML（借鉴 AM++ 的自定义歌词格式）走
+        // TTML 解析（逐字＋和声＋译文轨一步到位）；解析失败不丢词，
+        // 记一行日志回落下面的 LRC 路径。存档里始终是原文，格式只在
+        // 读取时判，不改存档（保真）。
+        if (isTtmlText(manual)) {
+            try {
+                const lines = parseTtml(manual);
+                if (lines.length > 0) {
+                    console.log(`[Lyrics] 手动 TTML ${lines.length} 行`);
+                    return { lines, note: '手动贴词（播放页底排可改）' };
+                }
+                console.log('[Lyrics] 手动 TTML 没解析出歌词行，回落 LRC 解析');
+            } catch (error) {
+                console.log(
+                    `[Lyrics] 手动 TTML 解析失败，回落 LRC：${error instanceof Error ? error.message : '未知原因'}`
+                );
+            }
+        }
+        const timed = parseLrc(manual);
+        if (timed.length > 0) {
+            return { lines: timed, note: '手动贴词（播放页底排可改）' };
+        }
+        // 无时间标签的纯文本：按贴词框自己的说明「纯文本只做展示」，
+        // 行时间记 Infinity 只展示不高亮（与内嵌纯文本同口径）。
+        const texts = manual
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter((line) => line.length > 0);
+        return {
+            lines: texts.map((text) => ({ timeMs: Number.POSITIVE_INFINITY, text })),
+            note: '手动贴词（播放页底排可改）'
+        };
     }
     if (track.source === 'local') {
         const local = await fetchLocalLyrics(track);
