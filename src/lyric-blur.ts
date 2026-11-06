@@ -64,6 +64,7 @@ const BLUR_ENABLED_KEY = 'zx.player.lyricBlur';
 const BLUR_STRENGTH_KEY = 'zx.player.lyricBlurStrength';
 const TRANSLATION_KEY = 'zx.player.showTranslation';
 const GLOW_KEY = 'zx.player.lyricGlow';
+const BOUNCE_KEY = 'zx.lyrics.bounce.v1';
 
 export function loadLyricBlurEnabled(): boolean {
     try {
@@ -130,6 +131,24 @@ export function loadLyricGlow(): boolean {
 export function saveLyricGlow(enabled: boolean): void {
     try {
         localStorage.setItem(GLOW_KEY, enabled ? '1' : '0');
+    } catch {
+        // 同上。
+    }
+}
+
+// 歌词跳动（0.1.134）：逐字弹跳＋整行弹动的开关，默认开（只有存 '0' 才关）。
+// 动画本体全在 CSS，播放页只按开关给歌词盒切 lyrics-bounce-off 类。
+export function loadLyricBounce(): boolean {
+    try {
+        return localStorage.getItem(BOUNCE_KEY) !== '0';
+    } catch {
+        return true;
+    }
+}
+
+export function saveLyricBounce(enabled: boolean): void {
+    try {
+        localStorage.setItem(BOUNCE_KEY, enabled ? '1' : '0');
     } catch {
         // 同上。
     }

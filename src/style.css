@@ -1706,19 +1706,57 @@ body {
     color: rgba(255, 255, 255, 0.42);
 }
 
+/* 整行弹动（0.1.134）：切到本行时先缩一下再轻轻放大回落，普通逐行歌
+   （无逐字词）靠它有跳动感。highlightLine 每次切行加 is-active 即播一次。 */
+@keyframes lyric-line-pop {
+    from {
+        transform: scale(0.96) translateY(6px);
+    }
+    60% {
+        transform: scale(1.02);
+    }
+    to {
+        transform: scale(1) translateY(0);
+    }
+}
+
 .player-lyric-line.is-active {
     color: #fff;
     font-weight: 700;
     font-size: 22px;
+    transform-origin: left center;
+    animation: lyric-line-pop 0.38s ease;
 }
 
-/* 逐字高亮：当前行内已唱过的字/词用主题色，未唱的保持行色。 */
+/* 逐字弹跳（0.1.134）：词被唱到的瞬间弹一下——上跳放大、轻微过冲再落回。
+   is-sung 是批量 toggle，类被加上时 CSS animation 自动播一次；回拉进度
+   时类先摘后加会重播，可接受。 */
+@keyframes lyric-word-bounce {
+    0% {
+        transform: translateY(0) scale(1);
+    }
+    35% {
+        transform: translateY(-0.30em) scale(1.12);
+    }
+    65% {
+        transform: translateY(0.04em) scale(0.98);
+    }
+    100% {
+        transform: translateY(0) scale(1);
+    }
+}
+
+/* 逐字高亮：当前行内已唱过的字/词用主题色，未唱的保持行色。
+   inline-block 是为了让 transform 在词 span 上生效；不影响行内排版，
+   is-bg 的小字号照常按 em 缩放。 */
 .player-lyric-word {
-    transition: color 0.15s ease;
+    display: inline-block;
+    transition: color 0.15s ease, transform 0.18s ease;
 }
 
 .player-lyric-word.is-sung {
     color: var(--theme-accent, #f9a8d4);
+    animation: lyric-word-bounce 0.45s cubic-bezier(0.28, 0.84, 0.42, 1);
 }
 
 /* 歌词辉光（0.1.131，借鉴 AM++ 的 CJK 长尾辉光）：正在唱的 CJK 词按
@@ -1729,6 +1767,10 @@ body {
     text-shadow:
         0 0 10px rgba(249, 168, 212, calc(var(--glow, 0) * 0.85)),
         0 0 26px rgba(249, 168, 212, calc(var(--glow, 0) * 0.4));
+    /* 正在唱的词轻抬（0.1.134）：与弹跳的叠加关系——animation 播放期间
+       transform 由关键帧说了算（animation 优先于 transition 的静态值），
+       弹完才落回这里的轻抬位，直到唱完摘类。 */
+    transform: translateY(-0.05em) scale(1.06);
 }
 
 /* 和声词（0.1.131，TTML x-bg 声部）：更淡更小，与主声拉开层次；
@@ -1742,6 +1784,29 @@ body {
     text-shadow:
         0 0 8px rgba(249, 168, 212, calc(var(--glow, 0) * 0.42)),
         0 0 20px rgba(249, 168, 212, calc(var(--glow, 0) * 0.2));
+}
+
+/* 歌词跳动关（0.1.134）：lyricBox 挂 lyrics-bounce-off 时两条 animation
+   全停，正在唱的词的轻抬也一并关掉；纯类切换，不用重渲染。 */
+.player-lyrics.lyrics-bounce-off .player-lyric-word.is-sung,
+.player-lyrics.lyrics-bounce-off .player-lyric-line.is-active {
+    animation: none;
+}
+
+.player-lyrics.lyrics-bounce-off .player-lyric-word.is-glowing {
+    transform: none;
+}
+
+/* 减动效（0.1.134）：系统要求减少动态时同样禁用歌词跳动。 */
+@media (prefers-reduced-motion: reduce) {
+    .player-lyric-word.is-sung,
+    .player-lyric-line.is-active {
+        animation: none;
+    }
+
+    .player-lyric-word.is-glowing {
+        transform: none;
+    }
 }
 
 /* 行投影（0.1.51）：浅色封面上的可读性兜底；若滚动发顿就先砍这条。 */

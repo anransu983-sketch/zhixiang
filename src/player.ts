@@ -45,10 +45,12 @@ import {
     computeBlurRadii,
     loadLyricBlurEnabled,
     loadLyricBlurStrength,
+    loadLyricBounce,
     loadLyricGlow,
     loadShowTranslation,
     saveLyricBlurEnabled,
     saveLyricBlurStrength,
+    saveLyricBounce,
     saveLyricGlow,
     saveShowTranslation
 } from './lyric-blur';
@@ -799,6 +801,10 @@ function buildPlayerPage(): HTMLElement {
     let lyricBlurStrength: LyricBlurStrength = loadLyricBlurStrength();
     let showTranslation = loadShowTranslation();
     let lyricGlowEnabled = loadLyricGlow();
+    // 歌词跳动（0.1.134）：动画全在 CSS，这里只按开关给歌词盒切类，
+    // 切换即时生效、不重渲染。初始类在本行就挂好。
+    let lyricBounceEnabled = loadLyricBounce();
+    lyricBox.classList.toggle('lyrics-bounce-off', !lyricBounceEnabled);
     let lastLyricNote: string | null = null;
     const presetRow = document.createElement('div');
     presetRow.className = 'player-preset-row';
@@ -943,6 +949,20 @@ function buildPlayerPage(): HTMLElement {
     });
     glowLabel.append(glowBox, document.createTextNode('歌词辉光'));
     visualPad.appendChild(glowLabel);
+
+    // 歌词跳动开关（0.1.134）：逐字弹跳＋整行弹动，纯 CSS 类切换。
+    const bounceLabel = document.createElement('label');
+    bounceLabel.className = 'player-toggle';
+    const bounceBox = document.createElement('input');
+    bounceBox.type = 'checkbox';
+    bounceBox.checked = lyricBounceEnabled;
+    bounceBox.addEventListener('change', () => {
+        lyricBounceEnabled = bounceBox.checked;
+        saveLyricBounce(lyricBounceEnabled);
+        lyricBox.classList.toggle('lyrics-bounce-off', !lyricBounceEnabled);
+    });
+    bounceLabel.append(bounceBox, document.createTextNode('歌词跳动'));
+    visualPad.appendChild(bounceLabel);
 
     // 过滤制作信息（0.1.132）：默认开。切开关只按原始行重算展示行
     // 并重渲染，不重新联网；重渲染后按当前进度复位当前行，与译文
