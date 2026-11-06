@@ -3514,6 +3514,60 @@ html[data-fx="lite"] .home .login-area > h2 {
     margin-bottom: 12px;
 }
 
+/* 「我的」页瓷砖网格（0.1.135）：两列玻璃瓷砖，颜色全走主题变量
+   （--glass/--glass-line/--text/--text-2/--accent），波奇酱、夜之城
+   等主题下都跟着变，不写死颜色。整块是按钮，字形＋标题＋副标题。 */
+.mine-tile-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 16px 0;
+}
+
+.mine-tile {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 72px;
+    padding: 14px;
+    border: 1px solid var(--glass-line);
+    border-radius: var(--r-card);
+    background: var(--glass);
+    color: var(--text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.mine-tile:active {
+    border-color: var(--accent-line);
+}
+
+.mine-tile-glyph {
+    flex: none;
+    font-size: 24px;
+    line-height: 1;
+    color: var(--accent);
+}
+
+.mine-tile-text {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.mine-tile-title {
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.mine-tile-sub {
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--text-2);
+}
+
 .footprint-hero-time {
     font-size: 36px;
     background: linear-gradient(135deg, #ff7eb6, #8b5cf6);
