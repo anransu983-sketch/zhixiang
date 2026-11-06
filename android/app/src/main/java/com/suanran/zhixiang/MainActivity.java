@@ -15,6 +15,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(LocalMusicPlugin.class);
         registerPlugin(HttpBridgePlugin.class);
         registerPlugin(ExternalOpenPlugin.class);
+        registerPlugin(UpdatePlugin.class);
         registerPlugin(PlaybackPlugin.class);
         registerPlugin(WallpaperPlugin.class);
         registerPlugin(YtmSignInPlugin.class);

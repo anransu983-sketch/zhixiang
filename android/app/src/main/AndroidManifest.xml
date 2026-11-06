@@ -83,4 +83,7 @@
     <!-- 词图写回（0.1.106）：sidecar 写到音频同目录须所有文件访问权限；
          仅声明，不主动索取，用户在卡片里点检查权限时才去设置页开。 -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <!-- 应用内更新（0.1.133）：下载新版 APK 后调起系统安装器须声明此权限；
+         仅声明，系统未允许时由更新卡片引导用户去设置页开启，不在清单层索取。 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 </manifest>
