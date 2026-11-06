@@ -1314,6 +1314,8 @@ body {
     /* 板宽实测约 80% 屏宽：两侧各 40px；卡在板里再缩 21px，
        得卡约 70%，与参考图量到的 73% 一致。 */
     width: calc(100% - 80px);
+    max-width: 100%;
+    overflow-x: clip;
     align-self: center;
     margin-top: auto;
     margin-bottom: auto;
@@ -1380,7 +1382,10 @@ body {
     margin: 4px 0 0;
     text-align: center;
     font-size: 24px;
-    text-shadow: 0 1px 6px rgba(0, 0, 0, 0.45);
+    /* 显式白字（0.1.134）：不设色会吃主题文字色，夜之城主题下是深红棕，
+       压在深色封面底上几乎看不见；阴影同步加重兜底。 */
+    color: #fff;
+    text-shadow: 0 1px 8px rgba(0, 0, 0, 0.6);
 }
 
 .player-artist {
@@ -1475,6 +1480,8 @@ body {
     align-items: flex-start;
     justify-content: space-around;
     gap: 4px;
+    /* 兜底（0.1.134）：任何宽度下宁可换行也不许横向溢出。 */
+    flex-wrap: wrap;
 }
 
 .player-bottom-btn {
@@ -1518,6 +1525,31 @@ body {
     white-space: nowrap;
 }
 
+/* 底排第二行（0.1.134）：贴词/换封面文字片＋音质角标，居中成行。 */
+.player-bottom-row2 {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+/* 文字片（0.1.134）：给「贴词」「换封面」这类纯文字按钮的横排小片，
+   不再借图标钮的 22px 字号＋44px 宽（22px 三字中文塞进去会逐字竖排）。 */
+.player-text-chip {
+    white-space: nowrap;
+    font-size: 13px;
+    line-height: 1.2;
+    padding: 8px 14px;
+    min-height: 36px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+    text-shadow: 0 1px 6px rgba(0, 0, 0, 0.45);
+}
+
 .player-sleep-picker {
     width: 100%;
     display: flex;
@@ -1528,10 +1560,12 @@ body {
 
 .player-sleep-option {
     padding: 8px 12px;
-    border: 1px solid var(--border);
+    /* 播放页专用配色（0.1.134）：不再吃主题的 --card/--text——播放页恒深底，
+       主题浅色卡＋深字在截图里黑片深字看不清；改深底白字＋亮描边。 */
+    border: 1px solid rgba(255, 255, 255, 0.28);
     border-radius: 999px;
-    background: var(--card);
-    color: var(--text);
+    background: rgba(20, 16, 28, 0.72);
+    color: #fff;
 }
 
 

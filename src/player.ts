@@ -291,7 +291,9 @@ function buildPlayerPage(): HTMLElement {
     controls.append(prevButton, playPauseButton, nextButton);
     content.appendChild(controls);
 
-    // 底排：循环 / 收藏 / 睡眠定时 / 词 / 音质角标。
+    // 底排两行制（0.1.134）：板内可用宽约 280px，单行塞 7 颗图标钮＋
+    // 角标必然溢出。第一行只放 5 颗图标钮（循环 / 收藏 / 睡眠定时 /
+    // 词 / 视觉），第二行放贴词、换封面两颗文字片＋音质角标。
     const bottomRow = document.createElement('div');
     bottomRow.className = 'player-bottom-row';
 
@@ -480,11 +482,11 @@ function buildPlayerPage(): HTMLElement {
     // 覆盖并优先于各路歌词；本地歌换封面写 sidecar 同名 .jpg。
     const pasteButton = document.createElement('button');
     pasteButton.type = 'button';
-    pasteButton.className = 'player-bottom-btn';
+    pasteButton.className = 'player-text-chip';
     pasteButton.textContent = '贴词';
     const coverButton = document.createElement('button');
     coverButton.type = 'button';
-    coverButton.className = 'player-bottom-btn';
+    coverButton.className = 'player-text-chip';
     coverButton.textContent = '换封面';
     const flashButton = (button: HTMLButtonElement, text: string): void => {
         const original = button.textContent;
@@ -736,8 +738,13 @@ function buildPlayerPage(): HTMLElement {
         };
         reader.readAsDataURL(file);
     });
-    bottomRow.append(repeatButton, heartButton, sleepButton, lyricsButton, pasteButton, coverButton, qualityBadge, visualEntry);
+    bottomRow.append(repeatButton, heartButton, sleepButton, lyricsButton, visualEntry);
+    // 第二行：文字片与角标单独成行居中排，窄板里也横得下，不再挤第一行。
+    const bottomRow2 = document.createElement('div');
+    bottomRow2.className = 'player-bottom-row2';
+    bottomRow2.append(pasteButton, coverButton, qualityBadge);
     content.appendChild(bottomRow);
+    content.appendChild(bottomRow2);
     content.appendChild(sleepPicker);
 
     // 「视觉」收进底排（0.1.57）：独立磁吸卡撤掉，底排末尾 ✦ 入口，
