@@ -400,18 +400,14 @@ export function renderHome(): HTMLElement {
             page.appendChild(heading);
             page.appendChild(renderLoginArea());
             page.appendChild(renderResumeSection());
-            page.appendChild(renderThemeWardrobe());
-            page.appendChild(renderRainWindow());
-            page.appendChild(renderPerfModeSection());
-            page.appendChild(renderLayoutMixSection());
-            page.appendChild(renderRoamingSection());
-            page.appendChild(renderDaypartSection());
-            page.appendChild(renderPlaylistsSection());
-            page.appendChild(renderStashSection());
-            page.appendChild(renderUpdateSection());
-            page.appendChild(renderLyricsBackupSection());
-            page.appendChild(renderFootprintEntry());
-            page.appendChild(renderDeveloperSection());
+            // 0.1.135 布局改版：原来 14 个模块在主页一条长滚到底，用户说
+            // 滑得累。主页只留听歌钥匙＋继续播放＋六块瓷砖，其余模块按组
+            // 搬进子页（openMineSubPage，内容按组缓存复用），主页一屏看完。
+            page.appendChild(renderMineTileGrid());
+            // 应用更新静默自查（0.1.133 起的行为不变）：进我的页本会话
+            // 只查一次，结果走模块级共享状态——瓷砖副标题与更新子页
+            // 读同一份，点进子页直接是查好的状态。
+            triggerUpdateAutoCheck();
             const record: TabPage = { page };
             pages.set(tabId, record);
             pagesWrap.appendChild(page);
@@ -3950,6 +3946,48 @@ function openStashPage(onChanged: () => void): void {
     renderList();
 }
 
+// 我的页子页（0.1.135）：仿速记簿详情页的全屏覆盖页写法（.daily-page
+// 同一套类），给「我的」页瓷砖组当容器。内容按 key 缓存：第一次打开
+// 才 build，之后打开直接把同一份 DOM 重新挂上——漫游／时段／主题这类
+// 带状态或监听的模块不重复建、不重复注册监听；关闭只摘覆盖页，
+// 内容留着下次再用。缓存的组：外观与主题、漫游电台、我的歌单、
+// 应用更新、工具与数据（速记簿不走这里，它有自己的 openStashPage）。
+const mineSubPageCache = new Map<string, HTMLElement>();
+
+function openMineSubPage(
+    key: string,
+    title: string,
+    build: (container: HTMLElement) => void,
+    onClose?: () => void,
+): void {
+    const page = document.createElement('div');
+    page.className = 'daily-page';
+    const pageHead = document.createElement('div');
+    pageHead.className = 'daily-page-head';
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'daily-page-back';
+    back.textContent = '返回';
+    back.addEventListener('click', () => {
+        page.remove();
+        onClose?.();
+    });
+    pageHead.appendChild(back);
+    const pageTitle = document.createElement('h2');
+    pageTitle.textContent = title;
+    pageHead.appendChild(pageTitle);
+    page.appendChild(pageHead);
+    let content = mineSubPageCache.get(key);
+    if (!content) {
+        content = document.createElement('div');
+        content.className = 'mine-sub-body';
+        build(content);
+        mineSubPageCache.set(key, content);
+    }
+    page.appendChild(content);
+    document.body.appendChild(page);
+}
+
 function renderWritebackSection(): HTMLElement {
     const section = document.createElement('section');
     section.className = 'daily-section';
@@ -4033,11 +4071,203 @@ function renderWritebackSection(): HTMLElement {
     return section;
 }
 
-// 应用内更新（0.1.133）：我的页卡片，检查 GitHub 最新 Release、
-// 下载 APK 并调起系统安装器，全程不出 App。进我的页时本会话只静默
-// 自动查一次：发现新版就把卡片刷成新版状态，不弹窗、不打断正在做的事；
+// 「我的」页瓷砖网格（0.1.135）：六块瓷砖把原来一条长滚的模块按组
+// 收进子页，主页一屏看完。每块＝字形＋标题＋一行副标题，整块可点；
+// 副标题里歌单数与更新状态是动态的，进子页改了数据回来会刷。
+function renderMineTileGrid(): HTMLElement {
+    const grid = document.createElement('div');
+    grid.className = 'mine-tile-grid';
+
+    const playlistSubText = (): string => {
+        const count = loadPlaylists().length;
+        return count > 0 ? `${count} 个歌单` : '自建与收藏';
+    };
+    const updateSubText = (): string => {
+        if (sharedUpdateChecking) {
+            return '正在检查…';
+        }
+        if (!sharedUpdateResult) {
+            return '检查更新';
+        }
+        if (sharedUpdateResult.hasUpdate || sharedUpdateResult.reason === 'no-apk') {
+            return `发现新版 v${sharedUpdateResult.latestVersion}`;
+        }
+        return `已是最新 v${APP_VERSION}`;
+    };
+
+    let playlistSub: HTMLElement | null = null;
+    // 子页关掉／速记簿关掉时回来刷一遍动态副标题（歌单数会变）。
+    const refreshDynamicSubs = (): void => {
+        if (playlistSub) {
+            playlistSub.textContent = playlistSubText();
+        }
+    };
+
+    const makeTile = (
+        glyph: string,
+        title: string,
+        subText: string,
+        onClick: () => void,
+    ): { tile: HTMLButtonElement; sub: HTMLElement } => {
+        const tile = document.createElement('button');
+        tile.type = 'button';
+        tile.className = 'mine-tile';
+        const glyphEl = document.createElement('span');
+        glyphEl.className = 'mine-tile-glyph';
+        glyphEl.textContent = glyph;
+        tile.appendChild(glyphEl);
+        const textBox = document.createElement('span');
+        textBox.className = 'mine-tile-text';
+        const titleEl = document.createElement('span');
+        titleEl.className = 'mine-tile-title';
+        titleEl.textContent = title;
+        const sub = document.createElement('span');
+        sub.className = 'mine-tile-sub';
+        sub.textContent = subText;
+        textBox.append(titleEl, sub);
+        tile.appendChild(textBox);
+        tile.addEventListener('click', onClick);
+        return { tile, sub };
+    };
+
+    const appearance = makeTile('✦', '外观与主题', '主题衣橱 · 雨窗 · 轻装 · 版式', () => {
+        openMineSubPage(
+            'appearance',
+            '外观与主题',
+            (box) => {
+                box.appendChild(renderThemeWardrobe());
+                box.appendChild(renderRainWindow());
+                box.appendChild(renderPerfModeSection());
+                box.appendChild(renderLayoutMixSection());
+            },
+            refreshDynamicSubs,
+        );
+    });
+    grid.appendChild(appearance.tile);
+
+    const radio = makeTile('◎', '漫游电台', '私人漫游 · 时段漫游', () => {
+        openMineSubPage(
+            'radio',
+            '漫游电台',
+            (box) => {
+                box.appendChild(renderRoamingSection());
+                box.appendChild(renderDaypartSection());
+            },
+            refreshDynamicSubs,
+        );
+    });
+    grid.appendChild(radio.tile);
+
+    const playlists = makeTile('♪', '我的歌单', playlistSubText(), () => {
+        openMineSubPage(
+            'playlists',
+            '我的歌单',
+            (box) => {
+                box.appendChild(renderPlaylistsSection());
+            },
+            refreshDynamicSubs,
+        );
+    });
+    playlistSub = playlists.sub;
+    grid.appendChild(playlists.tile);
+
+    const stash = makeTile('✎', '速记簿', '随手收的歌', () => {
+        // 速记簿有自己的独立页（openStashPage，每次打开重渲染列表），
+        // 不再包子页；refresh 沿 renderStashSection 的老调用方式传，
+        // 关页回来刷一遍瓷砖副标题。
+        openStashPage(refreshDynamicSubs);
+    });
+    grid.appendChild(stash.tile);
+
+    const update = makeTile('↑', '应用更新', updateSubText(), () => {
+        openMineSubPage(
+            'update',
+            '应用更新',
+            (box) => {
+                box.appendChild(renderUpdateSection());
+            },
+            refreshDynamicSubs,
+        );
+    });
+    grid.appendChild(update.tile);
+    // 检查状态一变（自查完成等）就刷副标题，与子页卡片读同一份共享结果。
+    onUpdateStateChange(() => {
+        update.sub.textContent = updateSubText();
+    });
+
+    const tools = makeTile('☰', '工具与数据', '歌词备份 · 旋律手记 · 调查台', () => {
+        openMineSubPage(
+            'tools',
+            '工具与数据',
+            (box) => {
+                box.appendChild(renderLyricsBackupSection());
+                box.appendChild(renderFootprintEntry());
+                box.appendChild(renderDeveloperSection());
+            },
+            refreshDynamicSubs,
+        );
+    });
+    grid.appendChild(tools.tile);
+
+    return grid;
+}
+
+// 应用内更新（0.1.133）：检查 GitHub 最新 Release、下载 APK 并调起
+// 系统安装器，全程不出 App。进我的页时本会话只静默自动查一次：
+// 发现新版就把卡片刷成新版状态，不弹窗、不打断正在做的事；
 // 自动查失败不报红，留在可手动检查的状态。
+// 0.1.135：检查结果提成模块级共享状态——「我的」页主页的应用更新
+// 瓷砖副标题与子页里的更新卡片读同一份结果：自查仍在进我的页时
+// 触发（mountPage 的 'me' 分支调 triggerUpdateAutoCheck），卡片搬进
+// 子页后第一次点开就是已查好的状态，不回到「还没查」的初始态。
+// update.ts 的检查逻辑本身不动，这里只管结果的存放与分发。
 let updateAutoChecked = false;
+let sharedUpdateResult: UpdateCheckResult | null = null;
+let sharedUpdateError = '';
+let sharedUpdateChecking = false;
+const updateStateListeners = new Set<() => void>();
+
+function notifyUpdateState(): void {
+    for (const listener of [...updateStateListeners]) {
+        listener();
+    }
+}
+
+function onUpdateStateChange(listener: () => void): void {
+    updateStateListeners.add(listener);
+}
+
+// 跑一次共享检查。已有检查在跑时回 'busy'（完成时监听会把结果送到）；
+// 失败回 'failed'，原因留在 sharedUpdateError，共享结果保持旧值。
+async function runSharedUpdateCheck(): Promise<'done' | 'failed' | 'busy'> {
+    if (sharedUpdateChecking) {
+        return 'busy';
+    }
+    sharedUpdateChecking = true;
+    sharedUpdateError = '';
+    notifyUpdateState();
+    try {
+        sharedUpdateResult = await checkForUpdate();
+        sharedUpdateChecking = false;
+        notifyUpdateState();
+        return 'done';
+    } catch (error) {
+        sharedUpdateChecking = false;
+        sharedUpdateError = error instanceof Error ? error.message : '检查更新失败，请稍后重试';
+        notifyUpdateState();
+        return 'failed';
+    }
+}
+
+// 进我的页时的静默自查：本会话只跑一次，失败不留痕（瓷砖与卡片
+// 都回到未检查态，不把红字糊用户脸上）。
+function triggerUpdateAutoCheck(): void {
+    if (updateAutoChecked) {
+        return;
+    }
+    updateAutoChecked = true;
+    void runSharedUpdateCheck();
+}
 
 function renderUpdateSection(): HTMLElement {
     const section = document.createElement('section');
@@ -4174,20 +4404,52 @@ function renderUpdateSection(): HTMLElement {
         }
         uiState = 'checking';
         render();
-        try {
-            result = await checkForUpdate();
+        const outcome = await runSharedUpdateCheck();
+        if (outcome === 'done' && sharedUpdateResult) {
+            result = sharedUpdateResult;
             uiState = result.hasUpdate ? 'available' : result.reason === 'no-apk' ? 'no-apk' : 'latest';
-        } catch (error) {
+        } else if (outcome === 'failed') {
             if (auto) {
                 // 自动查是静默的：失败只回到初始态，不把红字糊用户脸上。
                 uiState = 'idle';
             } else {
                 failedStep = 'check';
-                errorText = error instanceof Error ? error.message : '检查更新失败，请稍后重试';
+                errorText = sharedUpdateError || '检查更新失败，请稍后重试';
                 uiState = 'error';
             }
         }
+        // 'busy'：已有检查在跑（多半是进我的页时的静默自查），保持
+        // 检查中，完成时 syncFromShared 会把结果同步进来。
         render();
+    };
+
+    // 共享检查状态变了（自查完成等）时把卡片同步过去；下载／待授权／
+    // 已调安装器／报错这几态是卡片自己的事，不让同步盖掉。
+    const syncFromShared = (): void => {
+        if (
+            uiState === 'downloading' ||
+            uiState === 'need-permission' ||
+            uiState === 'install-launched' ||
+            uiState === 'error'
+        ) {
+            return;
+        }
+        if (sharedUpdateChecking) {
+            if (uiState !== 'checking') {
+                uiState = 'checking';
+                render();
+            }
+            return;
+        }
+        if (sharedUpdateResult) {
+            result = sharedUpdateResult;
+            uiState = result.hasUpdate ? 'available' : result.reason === 'no-apk' ? 'no-apk' : 'latest';
+            render();
+        } else if (uiState === 'checking') {
+            // 静默自查失败：不留红字，回到未检查态。
+            uiState = 'idle';
+            render();
+        }
     };
 
     const runDownload = async (): Promise<void> => {
@@ -4242,11 +4504,17 @@ function renderUpdateSection(): HTMLElement {
         render();
     };
 
-    render();
-    if (!updateAutoChecked) {
-        updateAutoChecked = true;
-        void runCheck(true);
+    // 卡片在子页里第一次点开才建：先接上共享检查结果——进我的页时
+    // 已查过就直接呈查好的状态，还在查就先挂「检查中」等同步。
+    result = sharedUpdateResult;
+    if (sharedUpdateChecking) {
+        uiState = 'checking';
+    } else if (result) {
+        uiState = result.hasUpdate ? 'available' : result.reason === 'no-apk' ? 'no-apk' : 'latest';
     }
+    // 卡片随子页内容一起缓存，整个会话只建一次，这个监听不会堆积。
+    onUpdateStateChange(syncFromShared);
+    render();
     return section;
 }
 
