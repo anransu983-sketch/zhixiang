@@ -63,6 +63,111 @@ export interface LyricResult {
     note: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// 歌词过滤：纯制作信息行（0.1.132，参考范围外同类播放器的歌词过滤
+// 规则口径做的最小版，全新写）。
+//
+// 只删「纯制作信息行」，宁可漏删不可误删正文：
+// - 规则一：行首是制作信息关键词、后面带冒号（：或 :），如
+//   「作词：某某」「作曲/编曲：某某」「OP：某某某」。
+// - 规则二：整行就是这类 credits 且无冒号——行首关键词 + 空格 +
+//   一串人名（以空格／斜杠／顿号／逗号分隔），整行短（<=32 字）
+//   且人名部分不含句子标点与叙述词。只是句中含「作词」二字的正常
+//   歌词行不命中任何一条，不删。
+// 过滤发生在哪一层：本函数是纯函数，只在播放页应用层调用——
+// fetchLyrics 各路一律回原始行，播放页持有原始 lines，按开关用
+// 本函数算出展示行；逐字行（words 非空，YRC／TTML 逐字）一律不
+// 过滤、原样保留。译文在 mergeTranslations 阶段已挂到正文行上，
+// 正文行被删时译文随行一起去掉，过滤本身不再单独处理译文。
+
+const CREDIT_PREFIXES = [
+    '制作人',
+    '作词',
+    '作曲',
+    '编曲',
+    '制作',
+    '监制',
+    '混音',
+    '母带',
+    '录音',
+    '吉他',
+    '贝斯',
+    '鼓',
+    '键盘',
+    '和声',
+    '出品',
+    '发行',
+    'OP',
+    'SP'
+] as const;
+
+const CREDIT_PREFIX_ALT = CREDIT_PREFIXES.join('|');
+// 规则一：关键词（可多个以 /、& 连接）后紧跟冒号。
+const CREDIT_COLON_PATTERN = new RegExp(
+    `^(?:${CREDIT_PREFIX_ALT})(?:\\s*[/、&]\\s*(?:${CREDIT_PREFIX_ALT}))*\\s*[:：]`
+);
+// 规则二：关键词（可多个连接）+ 空格 + 人名串；人名串另行校验。
+const CREDIT_BARE_PATTERN = new RegExp(
+    `^(?:${CREDIT_PREFIX_ALT})(?:\\s*[/、&]\\s*(?:${CREDIT_PREFIX_ALT}))*\\s+(.+)$`
+);
+
+function isCreditText(text: string): boolean {
+    const trimmed = text.trim();
+    if (!trimmed) {
+        return false;
+    }
+    if (CREDIT_COLON_PATTERN.test(trimmed)) {
+        return true;
+    }
+    if (trimmed.length <= 32) {
+        const bare = CREDIT_BARE_PATTERN.exec(trimmed);
+        const names = bare?.[1]?.trim() ?? '';
+        // 人名串：短、无句子标点、无叙述虚词，才当作纯 credits。
+        if (
+            names.length > 0 &&
+            names.length <= 24 &&
+            !/[。！？；:：…]/.test(names) &&
+            !/(的|了|是|在|和你|我们|我|你|他|她|说|唱|给)/.test(names)
+        ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+export function filterCreditLines(lines: LyricLine[]): LyricLine[] {
+    const kept = lines.filter((line) => {
+        if (line.words && line.words.length > 0) {
+            return true;
+        }
+        return !isCreditText(line.text);
+    });
+    const removed = lines.length - kept.length;
+    if (removed > 0) {
+        console.log(`[Lyrics] 已过滤制作信息 ${removed} 行`);
+    }
+    return kept;
+}
+
+const FILTER_CREDITS_KEY = 'zx.lyrics.filterCredits.v1';
+
+export function loadFilterCreditsEnabled(): boolean {
+    try {
+        // 默认开：只有存过明确的 '0' 才关。
+        return localStorage.getItem(FILTER_CREDITS_KEY) !== '0';
+    } catch {
+        return true;
+    }
+}
+
+export function saveFilterCreditsEnabled(enabled: boolean): void {
+    try {
+        localStorage.setItem(FILTER_CREDITS_KEY, enabled ? '1' : '0');
+    } catch {
+        // 存不进只影响下次打开的默认值。
+    }
+}
+
 const LYRIC_URL = 'https://music.163.com/api/song/lyric';
 
 const HEADERS: Record<string, string> = {

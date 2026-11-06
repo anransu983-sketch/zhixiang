@@ -27,7 +27,14 @@ import {
     togglePlay
 } from './playback';
 import type { PlaybackState, RepeatMode } from './playback';
-import { approximateWords, fetchLyrics, findCurrentLineIndex } from './lyrics';
+import {
+    approximateWords,
+    fetchLyrics,
+    filterCreditLines,
+    findCurrentLineIndex,
+    loadFilterCreditsEnabled,
+    saveFilterCreditsEnabled
+} from './lyrics';
 import type { LyricLine } from './lyrics';
 import { openLiveWallpaperPicker, setWallpaperState } from './native/wallpaper-plugin';
 import { loadVisualToggles, saveVisualToggles, VISUAL_PRESETS, VisualStage } from './visuals';
@@ -62,6 +69,27 @@ let highlightLinePage: ((index: number, behavior?: ScrollBehavior) => void) | nu
 let updateDegradedNotePage: (() => void) | null = null;
 let toggles: VisualToggles = loadVisualToggles();
 let lyricLines: LyricLine[] = [];
+// 歌词过滤（0.1.132）：rawLyricLines 是 fetchLyrics 回的原始行，
+// lyricLines 是按「过滤制作信息」开关算出的展示行。切开关只重算
+// 展示行并重渲染，不重新联网。开关状态在模块层持有一份，播放页
+// 设置区的复选框与它同步。
+let rawLyricLines: LyricLine[] = [];
+let filterCreditsEnabled = loadFilterCreditsEnabled();
+
+function setLyricLinesFromSource(lines: LyricLine[]): void {
+    rawLyricLines = lines;
+    lyricLines = filterCreditsEnabled ? filterCreditLines(rawLyricLines) : [...rawLyricLines];
+}
+
+function clearLyricLines(): void {
+    rawLyricLines = [];
+    lyricLines = [];
+}
+
+function reapplyLyricFilter(): void {
+    lyricLines = filterCreditsEnabled ? filterCreditLines(rawLyricLines) : [...rawLyricLines];
+}
+
 let currentLineIndex = -1;
 let currentSungWord = -1;
 let lyricGeneration = 0;
@@ -475,7 +503,7 @@ function buildPlayerPage(): HTMLElement {
             if (generation !== lyricGeneration) {
                 return;
             }
-            lyricLines = result.lines;
+            setLyricLinesFromSource(result.lines);
             renderLyrics(result.note);
         });
     };
@@ -908,6 +936,27 @@ function buildPlayerPage(): HTMLElement {
     });
     glowLabel.append(glowBox, document.createTextNode('歌词辉光'));
     visualPad.appendChild(glowLabel);
+
+    // 过滤制作信息（0.1.132）：默认开。切开关只按原始行重算展示行
+    // 并重渲染，不重新联网；重渲染后按当前进度复位当前行，与译文
+    // 开关同口径。模块层的 filterCreditsEnabled 是真值来源，这里
+    // 的复选框只是它的视图。
+    const filterCreditsLabel = document.createElement('label');
+    filterCreditsLabel.className = 'player-toggle';
+    const filterCreditsBox = document.createElement('input');
+    filterCreditsBox.type = 'checkbox';
+    filterCreditsBox.checked = filterCreditsEnabled;
+    filterCreditsBox.addEventListener('change', () => {
+        filterCreditsEnabled = filterCreditsBox.checked;
+        saveFilterCreditsEnabled(filterCreditsEnabled);
+        reapplyLyricFilter();
+        renderLyrics(lastLyricNote);
+        const index = findCurrentLineIndex(lyricLines, getCurrentState().currentTime * 1000);
+        currentLineIndex = index;
+        highlightLine(index, 'auto');
+    });
+    filterCreditsLabel.append(filterCreditsBox, document.createTextNode('过滤制作信息'));
+    visualPad.appendChild(filterCreditsLabel);
 
     // 歌词字体行：当前字体名 + 导入 + 恢复默认；导入失败只提示，
     // 旧字体保留可用（事务口径在 lyric-font.ts）。
@@ -1476,7 +1525,7 @@ function buildPlayerPage(): HTMLElement {
         const generation = ++lyricGeneration;
         const track = state.track;
         if (!track) {
-            lyricLines = [];
+            clearLyricLines();
             if (visible) {
                 renderLyrics('还没播放任何歌曲，点一首歌开始播放。');
             }
@@ -1487,7 +1536,7 @@ function buildPlayerPage(): HTMLElement {
             if (generation !== lyricGeneration) {
                 return;
             }
-            lyricLines = result.lines;
+            setLyricLinesFromSource(result.lines);
             if (overlay !== null && !overlay.hidden) {
                 renderLyrics(result.note);
             }
@@ -1591,7 +1640,7 @@ function refreshFromState(state: PlaybackState): void {
     const generation = ++lyricGeneration;
     const track = state.track;
     if (!track || !renderLyrics) {
-        lyricLines = [];
+        clearLyricLines();
         renderLyrics?.('还没播放任何歌曲，点一首歌开始播放。');
         return;
     }
@@ -1599,7 +1648,7 @@ function refreshFromState(state: PlaybackState): void {
         if (generation !== lyricGeneration || !overlay || overlay.hidden) {
             return;
         }
-        lyricLines = result.lines;
+        setLyricLinesFromSource(result.lines);
         renderLyrics(result.note);
         const index = findCurrentLineIndex(lyricLines, getCurrentState().currentTime * 1000);
         currentLineIndex = index;
