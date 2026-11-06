@@ -4189,6 +4189,45 @@ body.perf-mode * {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+.queue-shelf-source {
+    font-size: 11px;
+    color: var(--accent, #e8a0bf);
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 0.1.132 速记簿 */
+.stash-sheet-status {
+    margin-top: 10px;
+}
+.stash-quick-actions {
+    margin-top: 12px;
+}
+.stash-group {
+    margin-top: 20px;
+}
+.stash-group-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+.stash-group-title {
+    margin: 0;
+    font-size: 15px;
+    color: var(--text-1);
+}
+.stash-group-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+}
+.stash-footer {
+    margin-top: 20px;
+}
 .resume-status,
 .daypart-status {
     margin: 8px 0 0;

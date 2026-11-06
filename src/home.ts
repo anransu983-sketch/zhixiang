@@ -1,7 +1,7 @@
 // 首页组装：按音源注册表渲染各音源的浏览区，尚未实现的块留在清单里。
 // 本文件只做组装与界面接线，不放音源与播放逻辑。
 
-import { getCurrentState, next, onTimeUpdate, onTrackChange, playQueue, previous, runNeteaseProbe, runYtmUpstreamExperiment, seekTo, togglePlay } from './playback';
+import { addToQueueEnd, getCurrentState, next, onTimeUpdate, onTrackChange, playNext, playQueue, previous, runNeteaseProbe, runYtmUpstreamExperiment, seekTo, togglePlay } from './playback';
 import { getPlaySessions } from './playback-history';
 import { initResumeTracking, loadResume } from './resume';
 import { openPlayerPage } from './player';
@@ -36,6 +36,7 @@ import { checkAllFilesAccess, getLocalCoverDataUrl, getLocalCoverFromNetease, ge
 import { addMyImportIds, loadMyImportIds, removeMyImportId } from './my-imports';
 import { biliQrImageUrl, checkBiliQr, clearBiliSession, fetchBiliDailyTracks, fetchBiliFavFolders, fetchBiliFavTracks, fetchBiliQrKey, loadBiliSession, validateBiliSession, type BiliFavFolder } from './sources/bilibili-session';
 import { addTrackToPlaylist, createPlaylist, deletePlaylist, loadPlaylists, removeTrackFromPlaylist, renamePlaylist, trackKey } from './playlists';
+import { addToStash, clearStash, groupStashBySource, isInStash, loadStash, removeFromStash, sourceLabel } from './stash';
 import { runBatchWriteback } from './batch-writeback';
 import { applyLyricsBackup, exportLyricsBackup, readLyricsBackupFile } from './lyrics-backup';
 import type { ManualLyricsEntry } from './lyrics-backup';
@@ -404,6 +405,7 @@ export function renderHome(): HTMLElement {
             page.appendChild(renderRoamingSection());
             page.appendChild(renderDaypartSection());
             page.appendChild(renderPlaylistsSection());
+            page.appendChild(renderStashSection());
             page.appendChild(renderLyricsBackupSection());
             page.appendChild(renderFootprintEntry());
             page.appendChild(renderDeveloperSection());
@@ -1705,7 +1707,10 @@ function openQueueShelf(): void {
             const singer = document.createElement('div');
             singer.className = 'queue-shelf-artist';
             singer.textContent = track.artist;
-            record.append(coverEl, name, singer);
+            const source = document.createElement('div');
+            source.className = 'queue-shelf-source';
+            source.textContent = sourceLabel(track.source);
+            record.append(coverEl, name, singer, source);
             record.addEventListener('click', () => {
                 void playQueue(state.queue, index);
                 overlay.remove();
@@ -3498,6 +3503,67 @@ function openAddToPlaylistSheet(track: Track): void {
     top.appendChild(title);
     sheet.appendChild(top);
 
+    // 0.1.132 快捷动作区：速记簿／下一首播放／加入队列都在 sheet 顶部，
+    // 所有走这个 sheet 的歌曲行（包括搜索结果行）自动受益，不在行上
+    // 再加按钮挤版面。点了不关 sheet，反馈写在下方 status 里看得见。
+    const sheetStatus = document.createElement('p');
+    sheetStatus.className = 'source-notice stash-sheet-status';
+    sheetStatus.hidden = true;
+    const showSheetStatus = (text: string): void => {
+        sheetStatus.textContent = text;
+        sheetStatus.hidden = false;
+    };
+    const quick = document.createElement('div');
+    quick.className = 'pl-sheet-list stash-quick-actions';
+    const stashButton = document.createElement('button');
+    stashButton.type = 'button';
+    stashButton.className = 'pl-sheet-row stash-sheet-btn';
+    const stashName = document.createElement('span');
+    const stashState = document.createElement('span');
+    stashButton.append(stashName, stashState);
+    const refreshStashButton = (): void => {
+        const already = isInStash(track);
+        stashName.textContent = '📌 加入速记簿';
+        stashState.textContent = already ? '已速记' : '';
+        stashButton.disabled = already;
+    };
+    refreshStashButton();
+    stashButton.addEventListener('click', () => {
+        const result = addToStash(track);
+        refreshStashButton();
+        showSheetStatus(result === 'added' ? '已加入速记簿，在「我的」页打开' : '已在速记簿里了');
+    });
+    quick.appendChild(stashButton);
+    const nextButton = document.createElement('button');
+    nextButton.type = 'button';
+    nextButton.className = 'pl-sheet-row';
+    const nextName = document.createElement('span');
+    nextName.textContent = '下一首播放';
+    const nextState = document.createElement('span');
+    nextState.textContent = '插到当前歌后面';
+    nextButton.append(nextName, nextState);
+    nextButton.addEventListener('click', () => {
+        const wasEmpty = getCurrentState().queue.length === 0;
+        playNext([track]);
+        showSheetStatus(wasEmpty ? '已加入队列（队列此前为空，未自动播放，点播时从它开始）' : '已设为下一首播放');
+    });
+    quick.appendChild(nextButton);
+    const queueButton = document.createElement('button');
+    queueButton.type = 'button';
+    queueButton.className = 'pl-sheet-row';
+    const queueName = document.createElement('span');
+    queueName.textContent = '加入队列';
+    const queueState = document.createElement('span');
+    queueState.textContent = '排到队尾';
+    queueButton.append(queueName, queueState);
+    queueButton.addEventListener('click', () => {
+        addToQueueEnd([track]);
+        showSheetStatus('已加入队列末尾');
+    });
+    quick.appendChild(queueButton);
+    sheet.appendChild(quick);
+    sheet.appendChild(sheetStatus);
+
     const list = document.createElement('div');
     list.className = 'pl-sheet-list';
     sheet.appendChild(list);
@@ -3562,6 +3628,323 @@ function openAddToPlaylistSheet(track: Track): void {
     backdrop.appendChild(sheet);
     document.body.appendChild(backdrop);
     renderSheetList();
+}
+
+// 0.1.132 整组加入歌单 sheet：速记簿某一组（或全部）整组加进选定歌单。
+// 已在歌单里的逐个跳过（addTrackToPlaylist 回 exists），结果写在
+// sheet 内 status 里，不关 sheet 也看得见；底部可新建歌单并整组加入。
+function openPickPlaylistForTracks(tracks: Track[]): void {
+    if (tracks.length === 0) {
+        return;
+    }
+    const backdrop = document.createElement('div');
+    backdrop.className = 'zx-color-sheet-backdrop';
+    const sheet = document.createElement('div');
+    sheet.className = 'zx-color-sheet';
+    const close = (): void => {
+        backdrop.remove();
+    };
+    backdrop.addEventListener('click', (event) => {
+        if (event.target === backdrop) {
+            close();
+        }
+    });
+    const top = document.createElement('div');
+    top.className = 'zx-color-sheet-top';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'zx-color-sheet-top-btn';
+    cancel.textContent = '✕';
+    cancel.addEventListener('click', close);
+    top.appendChild(cancel);
+    const title = document.createElement('span');
+    title.className = 'zx-color-sheet-title';
+    title.textContent = `整组加入歌单（${tracks.length} 首）`;
+    top.appendChild(title);
+    sheet.appendChild(top);
+    const status = document.createElement('p');
+    status.className = 'source-notice stash-sheet-status';
+    status.hidden = true;
+    sheet.appendChild(status);
+    const addAllTo = (playlistId: string, playlistName: string): void => {
+        let added = 0;
+        let exists = 0;
+        for (const track of tracks) {
+            const result = addTrackToPlaylist(playlistId, track);
+            if (result === 'added') {
+                added += 1;
+            } else if (result === 'exists') {
+                exists += 1;
+            }
+        }
+        status.textContent =
+            `已加入「${playlistName}」：新加 ${added} 首` + (exists > 0 ? `，${exists} 首已在里面` : '');
+        status.hidden = false;
+        renderList();
+    };
+    const list = document.createElement('div');
+    list.className = 'pl-sheet-list';
+    sheet.appendChild(list);
+    const renderList = (): void => {
+        list.replaceChildren();
+        const lists = loadPlaylists();
+        if (lists.length === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'source-notice';
+            empty.textContent = '还没有歌单，先在下面建一个';
+            list.appendChild(empty);
+            return;
+        }
+        for (const playlist of lists) {
+            const row = document.createElement('button');
+            row.type = 'button';
+            row.className = 'pl-sheet-row';
+            const name = document.createElement('span');
+            name.textContent = playlist.name;
+            const state = document.createElement('span');
+            state.textContent = `${playlist.tracks.length} 首`;
+            row.append(name, state);
+            row.addEventListener('click', () => {
+                addAllTo(playlist.id, playlist.name);
+            });
+            list.appendChild(row);
+        }
+    };
+    const createRow = document.createElement('div');
+    createRow.className = 'pl-create-row';
+    const createInput = document.createElement('input');
+    createInput.type = 'text';
+    createInput.className = 'pl-create-input';
+    createInput.placeholder = '新建歌单名字，建好整组加入';
+    createInput.maxLength = 40;
+    const createOk = document.createElement('button');
+    createOk.type = 'button';
+    createOk.className = 'login-btn';
+    createOk.textContent = '✓';
+    createRow.append(createInput, createOk);
+    sheet.appendChild(createRow);
+    createOk.addEventListener('click', () => {
+        const name = createInput.value.trim();
+        if (!name) {
+            return;
+        }
+        const playlist = createPlaylist(name);
+        createInput.value = '';
+        addAllTo(playlist.id, playlist.name);
+    });
+    createInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            createOk.click();
+        }
+    });
+    backdrop.appendChild(sheet);
+    document.body.appendChild(backdrop);
+    renderList();
+}
+
+// 0.1.132 速记簿：我的页收起模块（卡片头只给总数＋分组计数），
+// 点开进详情页按来源分组管理。
+function renderStashSection(): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'daily-section stash-section';
+    const head = document.createElement('div');
+    head.className = 'daily-head';
+    const heading = document.createElement('h2');
+    heading.textContent = '速记簿';
+    head.appendChild(heading);
+    const sub = document.createElement('span');
+    sub.className = 'daily-sub';
+    sub.textContent = '随手收的歌 · 按来源分组 · 整组播/加歌单/加队列';
+    head.appendChild(sub);
+    section.appendChild(head);
+    const notice = document.createElement('p');
+    notice.className = 'source-notice stash-summary';
+    section.appendChild(notice);
+    const openButton = document.createElement('button');
+    openButton.type = 'button';
+    openButton.className = 'login-btn';
+    openButton.textContent = '打开速记簿 ›';
+    section.appendChild(openButton);
+    const refresh = (): void => {
+        const tracks = loadStash();
+        if (tracks.length === 0) {
+            notice.textContent = '速记簿是空的，在各页歌曲行点 ＋，选「加入速记簿」先收几首';
+            openButton.disabled = true;
+            return;
+        }
+        const groups = groupStashBySource(tracks);
+        const counts = groups.map((group) => `${sourceLabel(group.source)} ${group.tracks.length}`).join(' · ');
+        notice.textContent = `共 ${tracks.length} 首 · ${counts}`;
+        openButton.disabled = false;
+    };
+    openButton.addEventListener('click', () => {
+        openStashPage(refresh);
+    });
+    refresh();
+    return section;
+}
+
+// 0.1.132 速记簿详情页：按来源分组列歌，每组可整组播／整组加歌单／
+// 整组加队列；点行以速记簿全量为队列点播，✕ 只删速记记录。
+function openStashPage(onChanged: () => void): void {
+    const page = document.createElement('div');
+    page.className = 'daily-page';
+    const pageHead = document.createElement('div');
+    pageHead.className = 'daily-page-head';
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'daily-page-back';
+    back.textContent = '返回';
+    back.addEventListener('click', () => {
+        page.remove();
+        onChanged();
+    });
+    pageHead.appendChild(back);
+    const pageTitle = document.createElement('h2');
+    pageTitle.textContent = '速记簿';
+    pageHead.appendChild(pageTitle);
+    page.appendChild(pageHead);
+    const pageSub = document.createElement('p');
+    pageSub.className = 'daily-page-sub';
+    page.appendChild(pageSub);
+    const body = document.createElement('div');
+    page.appendChild(body);
+    const footer = document.createElement('div');
+    footer.className = 'pl-footer stash-footer';
+    const playAllButton = document.createElement('button');
+    playAllButton.type = 'button';
+    playAllButton.className = 'login-btn';
+    playAllButton.textContent = '▶ 播放全部';
+    const clearButton = document.createElement('button');
+    clearButton.type = 'button';
+    clearButton.className = 'login-btn';
+    clearButton.textContent = '清空速记簿';
+    footer.append(playAllButton, clearButton);
+    page.appendChild(footer);
+    playAllButton.addEventListener('click', () => {
+        const tracks = loadStash();
+        if (tracks.length > 0) {
+            void playQueue(tracks, 0);
+        }
+    });
+    clearButton.addEventListener('click', () => {
+        if (window.confirm('确定清空速记簿吗？只清速记记录，歌本身不动。')) {
+            clearStash();
+            renderList();
+            onChanged();
+        }
+    });
+    const renderList = (): void => {
+        const tracks = loadStash();
+        body.replaceChildren();
+        pageSub.textContent =
+            tracks.length === 0
+                ? '速记簿是空的'
+                : `共 ${tracks.length} 首 · 点歌以速记簿全量为队列播，✕ 只删速记记录`;
+        playAllButton.disabled = tracks.length === 0;
+        clearButton.disabled = tracks.length === 0;
+        if (tracks.length === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'source-notice';
+            empty.textContent = '速记簿是空的，去各页歌曲行点 ＋，选「加入速记簿」收进来。';
+            body.appendChild(empty);
+            return;
+        }
+        for (const group of groupStashBySource(tracks)) {
+            const groupBox = document.createElement('section');
+            groupBox.className = 'stash-group';
+            const groupHead = document.createElement('div');
+            groupHead.className = 'stash-group-head';
+            const groupTitle = document.createElement('h3');
+            groupTitle.className = 'stash-group-title';
+            groupTitle.textContent = `${sourceLabel(group.source)} · ${group.tracks.length} 首`;
+            groupHead.appendChild(groupTitle);
+            groupBox.appendChild(groupHead);
+            const actions = document.createElement('div');
+            actions.className = 'stash-group-actions';
+            const groupPlay = document.createElement('button');
+            groupPlay.type = 'button';
+            groupPlay.className = 'login-btn';
+            groupPlay.textContent = '播放本组';
+            groupPlay.addEventListener('click', () => {
+                void playQueue(group.tracks, 0);
+            });
+            const groupToPlaylist = document.createElement('button');
+            groupToPlaylist.type = 'button';
+            groupToPlaylist.className = 'login-btn';
+            groupToPlaylist.textContent = '整组加入歌单';
+            groupToPlaylist.addEventListener('click', () => {
+                openPickPlaylistForTracks(group.tracks);
+            });
+            const groupToQueue = document.createElement('button');
+            groupToQueue.type = 'button';
+            groupToQueue.className = 'login-btn';
+            groupToQueue.textContent = '整组加入队列';
+            groupToQueue.addEventListener('click', () => {
+                addToQueueEnd(group.tracks);
+                groupToQueue.textContent = '已加入队列 ✓';
+                window.setTimeout(() => {
+                    groupToQueue.textContent = '整组加入队列';
+                }, 2000);
+            });
+            actions.append(groupPlay, groupToPlaylist, groupToQueue);
+            groupBox.appendChild(actions);
+            const trackList = document.createElement('ul');
+            trackList.className = 'track-list';
+            for (const track of group.tracks) {
+                const row = document.createElement('li');
+                row.className = 'track-row';
+                if (track.coverUrl) {
+                    const cover = document.createElement('img');
+                    cover.className = 'track-cover';
+                    cover.referrerPolicy = 'no-referrer';
+                    cover.src = track.coverUrl;
+                    cover.alt = '';
+                    cover.onerror = () => {
+                        cover.remove();
+                    };
+                    row.appendChild(cover);
+                } else {
+                    const glyph = document.createElement('span');
+                    glyph.className = 'track-glyph';
+                    glyph.textContent = '♪';
+                    row.appendChild(glyph);
+                }
+                const info = document.createElement('div');
+                info.className = 'track-info';
+                const name = document.createElement('div');
+                name.className = 'track-title';
+                name.textContent = track.title;
+                const meta = document.createElement('div');
+                meta.className = 'track-meta';
+                meta.textContent = `${track.artist} · ${sourceLabel(track.source)}`;
+                info.append(name, meta);
+                row.appendChild(info);
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.className = 'track-add-btn';
+                remove.textContent = '✕';
+                remove.setAttribute('aria-label', '从速记簿删除');
+                remove.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    removeFromStash(trackKey(track));
+                    renderList();
+                    onChanged();
+                });
+                row.appendChild(remove);
+                row.addEventListener('click', () => {
+                    const all = loadStash();
+                    const index = all.findIndex((item) => trackKey(item) === trackKey(track));
+                    void playQueue(all, index >= 0 ? index : 0);
+                });
+                trackList.appendChild(row);
+            }
+            groupBox.appendChild(trackList);
+            body.appendChild(groupBox);
+        }
+    };
+    document.body.appendChild(page);
+    renderList();
 }
 
 function renderWritebackSection(): HTMLElement {

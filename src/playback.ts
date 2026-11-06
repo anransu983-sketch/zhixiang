@@ -1049,12 +1049,39 @@ export function seekTo(seconds: number): void {
 }
 
 // 队尾续推（0.1.101 私人漫游用）：把一批曲目追加到当前队列尾，
-// 不动当前播放位置与当前曲；调用方负责去重。队列为空时不追加。
+// 不动当前播放位置与当前曲；调用方负责去重。
+// 0.1.132：去掉「队列为空时不追加」的限制——跨源队列补强后，队列
+// 为空时也要能先入队（例如速记簿整组加入队列、歌曲行「加入队列」），
+// 入队只攒队列、不自动起播。漫游的队尾续推语义不变：漫游只在已有
+// 队列时才续推（调用方自己的队头校验仍在），空队列入队不会让漫游
+// 在无队列时误续。
 export function appendToQueue(tracks: Track[]): void {
-    if (tracks.length === 0 || queue.length === 0) {
+    if (tracks.length === 0) {
         return;
     }
     queue.push(...tracks);
+}
+
+// 加入队列末尾（0.1.132）：appendToQueue 的语义别名，供歌曲行／
+// 速记簿等「加入队列」入口直接用；队列为空时同样能入队，不起播。
+export function addToQueueEnd(tracks: Track[]): void {
+    appendToQueue(tracks);
+}
+
+// 下一首播放（0.1.132）：把歌插到当前播放位置的下一首，不打断
+// 当前播放，也不改 queueIndex 指向（当前曲下标不变，插完它仍指向
+// 同一首）。队列为空时没有「下一首」的位置，等同加入队列末尾
+// （只入队、不自动起播，等用户点播或点播放键）。
+export function playNext(tracks: Track[]): void {
+    if (tracks.length === 0) {
+        return;
+    }
+    if (queue.length === 0) {
+        queue.push(...tracks);
+        return;
+    }
+    const insertAt = Math.min(queueIndex + 1, queue.length);
+    queue.splice(insertAt, 0, ...tracks);
 }
 
 export async function resume(): Promise<void> {
