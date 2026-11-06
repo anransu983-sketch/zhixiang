@@ -102,6 +102,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
+          retention-days: 3
           name: zhixiang-${{ steps.version.outputs.version_name }}-release
           path: android/app/build/outputs/apk/release/app-release.apk
 
