@@ -37,6 +37,8 @@ import { addMyImportIds, loadMyImportIds, removeMyImportId } from './my-imports'
 import { biliQrImageUrl, checkBiliQr, clearBiliSession, fetchBiliDailyTracks, fetchBiliFavFolders, fetchBiliFavTracks, fetchBiliQrKey, loadBiliSession, validateBiliSession, type BiliFavFolder } from './sources/bilibili-session';
 import { addTrackToPlaylist, createPlaylist, deletePlaylist, loadPlaylists, removeTrackFromPlaylist, renamePlaylist, trackKey } from './playlists';
 import { addToStash, clearStash, groupStashBySource, isInStash, loadStash, removeFromStash, sourceLabel } from './stash';
+import { checkForUpdate, type UpdateCheckResult } from './update';
+import { downloadUpdateApk, installUpdateApk, openInstallPermissionSettings } from './native/update-plugin';
 import { runBatchWriteback } from './batch-writeback';
 import { applyLyricsBackup, exportLyricsBackup, readLyricsBackupFile } from './lyrics-backup';
 import type { ManualLyricsEntry } from './lyrics-backup';
@@ -406,6 +408,7 @@ export function renderHome(): HTMLElement {
             page.appendChild(renderDaypartSection());
             page.appendChild(renderPlaylistsSection());
             page.appendChild(renderStashSection());
+            page.appendChild(renderUpdateSection());
             page.appendChild(renderLyricsBackupSection());
             page.appendChild(renderFootprintEntry());
             page.appendChild(renderDeveloperSection());
@@ -4027,6 +4030,223 @@ function renderWritebackSection(): HTMLElement {
         })();
     });
 
+    return section;
+}
+
+// 应用内更新（0.1.133）：我的页卡片，检查 GitHub 最新 Release、
+// 下载 APK 并调起系统安装器，全程不出 App。进我的页时本会话只静默
+// 自动查一次：发现新版就把卡片刷成新版状态，不弹窗、不打断正在做的事；
+// 自动查失败不报红，留在可手动检查的状态。
+let updateAutoChecked = false;
+
+function renderUpdateSection(): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'daily-section update-section';
+    const head = document.createElement('div');
+    head.className = 'daily-head';
+    const heading = document.createElement('h2');
+    heading.textContent = '应用更新';
+    head.appendChild(heading);
+    const sub = document.createElement('span');
+    sub.className = 'daily-sub';
+    sub.textContent = `当前版本 v${APP_VERSION}`;
+    head.appendChild(sub);
+    section.appendChild(head);
+
+    const status = document.createElement('p');
+    status.className = 'source-notice update-status';
+    section.appendChild(status);
+    const notes = document.createElement('div');
+    notes.className = 'update-notes';
+    notes.hidden = true;
+    section.appendChild(notes);
+    const progressWrap = document.createElement('div');
+    progressWrap.className = 'update-progress';
+    progressWrap.hidden = true;
+    const progressBar = document.createElement('div');
+    progressBar.className = 'update-progress-bar';
+    progressWrap.appendChild(progressBar);
+    section.appendChild(progressWrap);
+    const actions = document.createElement('div');
+    actions.className = 'update-actions';
+    section.appendChild(actions);
+
+    type UpdateUiState =
+        | 'idle'
+        | 'checking'
+        | 'latest'
+        | 'no-apk'
+        | 'available'
+        | 'downloading'
+        | 'need-permission'
+        | 'install-launched'
+        | 'error';
+    let uiState: UpdateUiState = 'idle';
+    let result: UpdateCheckResult | null = null;
+    let downloadedPath = '';
+    let errorText = '';
+    // 失败后「重试」重复哪一步：检查／下载／安装各回各的入口。
+    let failedStep: 'check' | 'download' | 'install' = 'check';
+    let progressLoaded = 0;
+    let progressTotal = 0;
+    let progressPercent = -1;
+
+    const formatMb = (bytes: number): string => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+    const makeButton = (label: string, onClick: () => void): HTMLButtonElement => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'login-btn';
+        button.textContent = label;
+        button.addEventListener('click', onClick);
+        return button;
+    };
+
+    const render = (): void => {
+        actions.replaceChildren();
+        notes.hidden = true;
+        progressWrap.hidden = uiState !== 'downloading';
+        status.classList.remove('is-error');
+        if (uiState === 'idle') {
+            status.textContent = '还没有检查过更新';
+            actions.appendChild(makeButton('检查更新', () => void runCheck(false)));
+        } else if (uiState === 'checking') {
+            status.textContent = '正在检查更新…';
+            const button = makeButton('检查中…', () => undefined);
+            button.disabled = true;
+            actions.appendChild(button);
+        } else if (uiState === 'latest') {
+            status.textContent = `已是最新版本 v${APP_VERSION}`;
+            actions.appendChild(makeButton('检查更新', () => void runCheck(false)));
+        } else if (uiState === 'no-apk') {
+            status.textContent = `发现新版 v${result?.latestVersion ?? ''}，但该 Release 里还没有 APK，稍后再来看看`;
+            actions.appendChild(makeButton('检查更新', () => void runCheck(false)));
+        } else if (uiState === 'available' && result) {
+            const sizeText = result.size > 0 ? ` · ${formatMb(result.size)}` : '';
+            status.textContent = `发现新版 v${result.latestVersion}${sizeText}`;
+            if (result.notes) {
+                notes.textContent = result.notes;
+                notes.hidden = false;
+            }
+            actions.appendChild(makeButton('下载并安装', () => void runDownload()));
+        } else if (uiState === 'downloading') {
+            status.textContent =
+                progressPercent >= 0
+                    ? `正在下载新版… ${progressPercent}%（${formatMb(progressLoaded)} / ${formatMb(progressTotal)}）`
+                    : `正在下载新版… 已下载 ${formatMb(progressLoaded)}`;
+            progressBar.style.width = progressPercent >= 0 ? `${progressPercent}%` : '100%';
+        } else if (uiState === 'need-permission') {
+            status.textContent =
+                '安装包已下载好，但系统还没允许芷湘安装未知应用：先去开启权限，回来再点「继续安装」';
+            actions.appendChild(
+                makeButton('去开启安装权限', () => {
+                    void openInstallPermissionSettings().catch((error: unknown) => {
+                        failedStep = 'install';
+                        errorText = error instanceof Error ? error.message : '打开安装权限设置失败';
+                        uiState = 'error';
+                        render();
+                    });
+                }),
+            );
+            actions.appendChild(makeButton('继续安装', () => void runInstall()));
+        } else if (uiState === 'install-launched') {
+            status.textContent = '已打开安装器，按系统提示完成安装';
+            actions.appendChild(makeButton('检查更新', () => void runCheck(false)));
+        } else if (uiState === 'error') {
+            status.textContent = errorText || '更新失败，请稍后重试';
+            status.classList.add('is-error');
+            actions.appendChild(
+                makeButton('重试', () => {
+                    if (failedStep === 'download') {
+                        void runDownload();
+                    } else if (failedStep === 'install') {
+                        void runInstall();
+                    } else {
+                        void runCheck(false);
+                    }
+                }),
+            );
+        }
+    };
+
+    const runCheck = async (auto: boolean): Promise<void> => {
+        if (uiState === 'checking') {
+            return;
+        }
+        uiState = 'checking';
+        render();
+        try {
+            result = await checkForUpdate();
+            uiState = result.hasUpdate ? 'available' : result.reason === 'no-apk' ? 'no-apk' : 'latest';
+        } catch (error) {
+            if (auto) {
+                // 自动查是静默的：失败只回到初始态，不把红字糊用户脸上。
+                uiState = 'idle';
+            } else {
+                failedStep = 'check';
+                errorText = error instanceof Error ? error.message : '检查更新失败，请稍后重试';
+                uiState = 'error';
+            }
+        }
+        render();
+    };
+
+    const runDownload = async (): Promise<void> => {
+        if (!result || !result.apkUrl) {
+            return;
+        }
+        uiState = 'downloading';
+        progressLoaded = 0;
+        progressTotal = result.size;
+        progressPercent = result.size > 0 ? 0 : -1;
+        render();
+        try {
+            const downloaded = await downloadUpdateApk(result.apkUrl, result.latestVersion, (progress) => {
+                progressLoaded = progress.loaded;
+                progressTotal = progress.total > 0 ? progress.total : progressTotal;
+                progressPercent = progress.percent;
+                render();
+            });
+            downloadedPath = downloaded.path;
+        } catch (error) {
+            failedStep = 'download';
+            errorText = error instanceof Error ? error.message : '下载失败，请稍后重试';
+            uiState = 'error';
+            render();
+            return;
+        }
+        // 下完自动接安装，不让用户再多点一次。
+        await runInstall();
+    };
+
+    const runInstall = async (): Promise<void> => {
+        if (!downloadedPath) {
+            failedStep = 'download';
+            errorText = '安装包还没有下载好，请重新下载';
+            uiState = 'error';
+            render();
+            return;
+        }
+        try {
+            await installUpdateApk(downloadedPath);
+            uiState = 'install-launched';
+        } catch (error) {
+            const code = (error as { code?: unknown } | null)?.code;
+            if (code === 'NEED_INSTALL_PERMISSION') {
+                uiState = 'need-permission';
+            } else {
+                failedStep = 'install';
+                errorText = error instanceof Error ? error.message : '调起安装器失败，请稍后重试';
+                uiState = 'error';
+            }
+        }
+        render();
+    };
+
+    render();
+    if (!updateAutoChecked) {
+        updateAutoChecked = true;
+        void runCheck(true);
+    }
     return section;
 }
 

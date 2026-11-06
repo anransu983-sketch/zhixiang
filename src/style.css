@@ -4235,3 +4235,42 @@ body.perf-mode * {
     font-size: 13px;
     color: var(--text-2);
 }
+
+/* 0.1.133 应用内更新 */
+.update-status {
+    margin-top: 10px;
+}
+.update-notes {
+    margin-top: 10px;
+    padding: 12px 14px;
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-card);
+    background: var(--surface-3);
+    color: var(--text-2);
+    font-size: 13px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 180px;
+    overflow-y: auto;
+}
+.update-progress {
+    margin-top: 12px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--surface-3);
+    overflow: hidden;
+}
+.update-progress-bar {
+    height: 100%;
+    width: 0;
+    border-radius: 999px;
+    background: var(--accent);
+    transition: width 0.2s ease;
+}
+.update-actions {
+    margin-top: 12px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
