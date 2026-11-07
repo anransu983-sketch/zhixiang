@@ -3982,6 +3982,14 @@ function openMineSubPage(
         content = document.createElement('div');
         content.className = 'mine-sub-body';
         build(content);
+        // 标题去重：内容自带的首个标题若与子页头同文（如歌单模块
+        // 自带的 h2「我的歌单」），藏掉内容那个，免得一页两个大
+        // 标题。只比内容里的第一个 h2/h3、只藏这一个，其他同名
+        // 小节不动。
+        const firstHeading = content.querySelector<HTMLElement>('h2, h3');
+        if (firstHeading && firstHeading.textContent?.trim() === title) {
+            firstHeading.style.display = 'none';
+        }
         mineSubPageCache.set(key, content);
     }
     page.appendChild(content);

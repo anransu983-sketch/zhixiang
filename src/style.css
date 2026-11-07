@@ -3561,7 +3561,22 @@ html[data-fx="lite"] .home .login-area > h2 {
     inset: 0;
     z-index: 20;
     overflow-y: auto;
-    background: var(--bg);
+    /* 背景与 body 同款一层：--bg 打底＋scrim 罩色＋主题壁纸。
+       以前只有 var(--bg) 一层纯黑，fixed 全屏把 body 上的主题
+       壁纸整块盖死，而主题的文字变量是按浅色壁纸设计的（波奇酱
+       --text 是深梅子色），于是子页全是黑底＋深字＋发灰的卡。
+       --theme-wallpaper/--theme-scrim 是定义在 body 上的变量
+       （壁纸由 appearance.ts 写进 body 内联样式），.daily-page
+       本来就挂在 body 下、继承得到。若某主题没设
+       --theme-wallpaper，var() 为空使 background-image 整层
+       失效，只剩 --bg 底色，可接受。 */
+    background-color: var(--bg);
+    background-image:
+        linear-gradient(var(--theme-scrim, rgba(0, 0, 0, 0.3)), var(--theme-scrim, rgba(0, 0, 0, 0.3))),
+        var(--theme-wallpaper);
+    background-size: cover;
+    background-position: center;
+    background-attachment: fixed;
     padding: 20px 16px calc(20px + env(safe-area-inset-bottom));
     box-sizing: border-box;
 }
@@ -3575,7 +3590,8 @@ html[data-fx="lite"] .home .login-area > h2 {
 .daily-page-back {
     background: transparent;
     border: none;
-    color: rgba(255, 255, 255, 0.8);
+    /* 颜色走主题变量：以前写死半透明白，浅色壁纸主题下几乎看不见。 */
+    color: var(--text);
     font-size: 15px;
     min-height: 44px;
     padding: 0 12px;
