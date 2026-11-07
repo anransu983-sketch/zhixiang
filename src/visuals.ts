@@ -97,6 +97,12 @@ export function saveVisualToggles(toggles: VisualToggles): void {
     }
 }
 
+// 透镜滴采样叠加的不透明度（0.1.142）：舞台与歌词卡（lyric-drops.ts）
+// 共用同一套水滴成形口径——滴身半透不实填、底部月牙、顶部薄影、左上
+// 偏置高光、微椭圆。那边的常量同名同值（LENS_ALPHA = 0.45），调滴的
+// 「实/透」两边一起动这个数。
+const LENS_ALPHA = 0.45;
+
 // 玻璃水滴：静止圆滴（speed 0）＋下滑滴（带拖尾）；
 // 大光斑（bokeh）另起数组，只做柔光深度，不参与下落。
 interface Drop {
@@ -106,6 +112,8 @@ interface Drop {
     speed: number;
     trail: number;
     phase: number;
+    /** 纵向微椭圆系数（0.92–1.0，seed 时定死、逐帧不变）：去正圆盘感，与 lyric-drops.ts 同口径。 */
+    squash: number;
 }
 
 interface Bokeh {
@@ -319,7 +327,8 @@ export class VisualStage {
                     radius: 1.5 + Math.pow(Math.random(), 1.5) * 12.5,
                     speed: 0,
                     trail: 0,
-                    phase: Math.random() * Math.PI * 2
+                    phase: Math.random() * Math.PI * 2,
+                    squash: 0.92 + Math.random() * 0.08
                 });
             }
             for (let i = 0; i < 16; i++) {
@@ -329,7 +338,8 @@ export class VisualStage {
                     radius: 8 + Math.random() * 10,
                     speed: 0.2 + Math.random() * 0.4,
                     trail: 20 + Math.random() * 40,
-                    phase: Math.random() * Math.PI * 2
+                    phase: Math.random() * Math.PI * 2,
+                    squash: 0.92 + Math.random() * 0.08
                 });
             }
         }
@@ -577,54 +587,126 @@ export class VisualStage {
                 ctx.lineTo(x, y);
                 ctx.stroke();
             }
-            // 圆滴：大滴做透镜（把底图局部放大画进圆里，滴里能看到底色扭曲），
-            // 小滴和贴边滴用淡白填充；暗边＋亮边＋高光让它在亮底暗底都看得见。
+            // 圆滴（0.1.142 画法与歌词卡 lyric-drops.ts 统一，取向同那
+            // 边：滴身透、靠月牙与偏置高光成形、不实填）。旧画法把底图
+            // 整圆不透明画进滴里、再描整圈暗边＋正中大白点，在深色封面
+            // 上是一颗颗实心「珍珠」，与卡内新滴同屏违和，本版废除。
+            // 以下绘制全在以滴心为原点、纵向 scale 了 squash 的局部坐
+            // 标里做；拖尾已在变换外画完，不受椭圆影响。固定顺序：
+            // clip 圆 → 采样半透叠加（仅透镜滴）→ 底部月牙亮光 → 顶部
+            // 内侧薄影 → 外圈亮边（下强上弱）→ 左上偏置高光。
+            // 透镜滴＝大滴（设备半径 ≥6）且采样窗不出界，采样源仍是
+            // ensureBackground 的底图离屏（与主画布同坐标，1.3 倍放大
+            // 口径不变）；小滴/贴边滴走无采样路径，透明中心、只上光影
+            // 结构。
             const shimmer = 0.4 + 0.25 * Math.sin(tick * 0.8 + drop.phase);
+            const rimWidth = Math.max(1, scaleX);
+            const shadowWidth = Math.max(1.5, scaleX * 1.5);
             const srcSize = (r * 2) / 1.3;
-            if (
-                this.bgCanvas &&
+            const lensSrc = this.bgCanvas;
+            const hasLens =
+                !!lensSrc &&
                 r >= 6 &&
                 x - srcSize / 2 >= 0 &&
                 y - srcSize / 2 >= 0 &&
                 x + srcSize / 2 <= width &&
-                y + srcSize / 2 <= height
-            ) {
+                y + srcSize / 2 <= height;
+            ctx.save();
+            ctx.translate(x, y);
+            ctx.scale(1, drop.squash);
+            // 底部月牙：光穿过滴身在底部聚焦的亮带——径向渐变的光源点
+            // 压在滴心下方，亮度向外散尽，填满整圆后自然只在底部成
+            // 月牙（顶部离光源远、渐变已散尽）。参照图里最显眼的水感
+            // 特征就是它。
+            const drawCrescent = (): void => {
+                const glow = ctx.createRadialGradient(0, r * 0.55, 0, 0, r * 0.55, r * 0.95);
+                glow.addColorStop(0, 'rgba(255, 255, 255, 0.35)');
+                glow.addColorStop(0.55, 'rgba(255, 255, 255, 0.13)');
+                glow.addColorStop(1, 'rgba(255, 255, 255, 0)');
+                ctx.fillStyle = glow;
+                ctx.beginPath();
+                ctx.arc(0, 0, r, 0, Math.PI * 2);
+                ctx.fill();
+            };
+            // 顶部内侧薄影：只占上缘一小段，与底部月牙一暗一亮撑出
+            // 体积；不整圈描边（均匀整圈是圆盘感的来源之一，旧画法
+            // 的整圈暗边一并去掉）。
+            const drawTopShadow = (): void => {
+                ctx.strokeStyle = 'rgba(0, 0, 0, 0.10)';
+                ctx.lineWidth = shadowWidth;
+                ctx.beginPath();
+                ctx.arc(
+                    0,
+                    0,
+                    Math.max(0.5, r - shadowWidth / 2),
+                    Math.PI * 1.18,
+                    Math.PI * 1.82
+                );
+                ctx.stroke();
+            };
+            if (hasLens && lensSrc) {
                 ctx.save();
                 ctx.beginPath();
-                ctx.arc(x, y, r, 0, Math.PI * 2);
+                ctx.arc(0, 0, r, 0, Math.PI * 2);
                 ctx.clip();
+                // 滴身半透：采样只以 LENS_ALPHA 叠上来，底图从滴里透
+                // 出——滴是罩在画面上的一层水膜，不再是实心盘子。
+                ctx.globalAlpha = LENS_ALPHA;
                 ctx.drawImage(
-                    this.bgCanvas,
+                    lensSrc,
                     x - srcSize / 2,
                     y - srcSize / 2,
                     srcSize,
                     srcSize,
-                    x - r,
-                    y - r,
+                    -r,
+                    -r,
                     r * 2,
                     r * 2
                 );
+                ctx.globalAlpha = 1;
+                drawCrescent();
+                drawTopShadow();
                 ctx.restore();
             } else {
-                ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+                drawCrescent();
+                drawTopShadow();
+            }
+            // 外圈亮边：保留细边，但下半圈强、上半圈弱到 0.55 倍——
+            // 贴近光从滴底透出的样子；均匀整圈亮边会把滴画成圆圈。
+            const rimBase = hasLens ? shimmer : 0.38;
+            const rimRadius = Math.max(0.5, r - rimWidth / 2);
+            ctx.lineWidth = rimWidth;
+            ctx.strokeStyle = `rgba(255, 255, 255, ${rimBase.toFixed(3)})`;
+            ctx.beginPath();
+            ctx.arc(0, 0, rimRadius, 0, Math.PI);
+            ctx.stroke();
+            ctx.strokeStyle = `rgba(255, 255, 255, ${(rimBase * 0.55).toFixed(3)})`;
+            ctx.beginPath();
+            ctx.arc(0, 0, rimRadius, Math.PI, Math.PI * 2);
+            ctx.stroke();
+            // 高光：左上偏置的小椭圆亮点（偏约 0.34r、长半径约 0.19r、
+            // alpha 0.85）＋其右下一颗更小的次级点。旧画法的正中大白
+            // 点（0.22r、alpha 0.9）是珍珠感的元凶——务必偏、务必小。
+            // 小滴（设备半径 <5）省次级点，免得糊成一团。
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+            ctx.beginPath();
+            ctx.ellipse(
+                -r * 0.34,
+                -r * 0.34,
+                Math.max(0.7, r * 0.19),
+                Math.max(0.5, r * 0.12),
+                -0.7,
+                0,
+                Math.PI * 2
+            );
+            ctx.fill();
+            if (r >= 5) {
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
                 ctx.beginPath();
-                ctx.arc(x, y, r, 0, Math.PI * 2);
+                ctx.arc(-r * 0.16, -r * 0.14, Math.max(0.5, r * 0.07), 0, Math.PI * 2);
                 ctx.fill();
             }
-            ctx.strokeStyle = 'rgba(0, 0, 0, 0.28)';
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            ctx.arc(x, y, r, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.strokeStyle = `rgba(255, 255, 255, ${shimmer.toFixed(3)})`;
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.arc(x, y, Math.max(0.5, r - 1), 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-            ctx.beginPath();
-            ctx.arc(x - r * 0.3, y - r * 0.3, Math.max(0.8, r * 0.22), 0, Math.PI * 2);
-            ctx.fill();
+            ctx.restore();
         }
         ctx.restore();
     }
