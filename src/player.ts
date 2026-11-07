@@ -44,6 +44,7 @@ import {
     BLUR_STRENGTH_OFFSETS,
     computeBlurRadii,
     loadLyricBlurEnabled,
+    lyricOpacityForOffset,
     loadLyricBlurStrength,
     loadLyricBounce,
     loadLyricGlow,
@@ -198,7 +199,24 @@ function buildPlayerPage(): HTMLElement {
     lyricBox.className = 'player-lyrics';
     lyricClip.appendChild(lyricBox);
     lyricCollapse.appendChild(lyricClip);
-    lyricCard.append(foldButton, lyricBarWrap, lyricCollapse);
+    // 封面虚化底（0.1.136）：卡最底层铺当前封面图重模糊版，去掉卡面
+    // 一片平粉的单调感；图源由 applyCover 的 setCoverSrc/hideCover 与
+    // 大封面 img 同步维护，无封面时透明、露出卡原有渐变底兜底。
+    const lyricCardBg = document.createElement('div');
+    lyricCardBg.className = 'lyric-card-bg';
+    // 间奏呼吸点（0.1.136）：长间奏/前奏没词时浮在卡底部中央，显隐与
+    // 点亮数由 onTimeUpdate 里的 updateInterlude 按下一行时间算，不另开
+    // 定时器；默认藏，切歌/无词时复位隐藏。
+    const lyricInterlude = document.createElement('div');
+    lyricInterlude.className = 'lyric-interlude';
+    lyricInterlude.hidden = true;
+    const interludeDots: HTMLSpanElement[] = [];
+    for (let i = 0; i < 3; i++) {
+        const dot = document.createElement('span');
+        interludeDots.push(dot);
+        lyricInterlude.appendChild(dot);
+    }
+    lyricCard.append(lyricCardBg, foldButton, lyricBarWrap, lyricCollapse, lyricInterlude);
     // 折叠偏好只在创建时读一次，之后由 applyFoldState 维护；
     // 这里直接写 dataset，不经过函数，免得撞上后面 const 的初始化顺序。
     const FOLD_KEY = 'zx.player.lyricsFolded';
@@ -1149,12 +1167,16 @@ function buildPlayerPage(): HTMLElement {
             cover.src = url;
         }
         coverExpected = url;
+        // 歌词卡虚化底与封面 img 同源（含本地歌的 dataURL）；JSON 串化
+        // 给 url() 加引号并转义，URL 里带括号/引号也不会把 CSS 写坏。
+        lyricCardBg.style.backgroundImage = `url(${JSON.stringify(url)})`;
         updateCoverVisibility();
     };
     const hideCover = (): void => {
         cover.removeAttribute('src');
         coverExpected = '';
         coverLoaded = false;
+        lyricCardBg.style.backgroundImage = '';
         updateCoverVisibility();
     };
     const applyCover = (track: Track | null): void => {
@@ -1297,9 +1319,11 @@ function buildPlayerPage(): HTMLElement {
     };
     refreshPage = refresh;
 
-    // 双向歌词模糊（策略在 lyric-blur.ts）：按当前行查表给每行赋
-    // filter: blur()，半径没变的行不重复写 style，免得每次进度回调
-    // 都重启动画。关开关／纯文本词／折叠态／用户手动浏览时一律归零。
+    // 双向歌词模糊＋透明度层次（策略在 lyric-blur.ts）：按当前行查表给
+    // 每行赋 filter: blur() 与 opacity，值没变的项不重复写 style，免得
+    // 每次进度回调都重启动画。0.1.136 起层次主力是透明度梯度、模糊只留
+    // 小半径景深（邻行留字形能读）。关开关／纯文本词／折叠态／用户手动
+    // 浏览时 blur 归零、opacity 一律回 1。
     let userBrowsingLyrics = false;
     let lyricTouching = false;
     let lyricSettleTimer: number | null = null;
@@ -1329,14 +1353,87 @@ function buildPlayerPage(): HTMLElement {
                 BLUR_STRENGTH_OFFSETS[lyricBlurStrength]
             );
         }
+        // 透明度梯度的焦点与模糊同一行（前奏无当前行时同样以首行为焦点）。
+        const focusIndex = currentLineIndex >= 0 ? currentLineIndex : 0;
         children.forEach((child, childIndex) => {
             const radius = active ? (radii[childIndex] ?? 0) : 0;
             // dataset 记上次赋的整数半径，相同就不碰 style。
-            if (child.dataset.blur === String(radius)) {
-                return;
+            if (child.dataset.blur !== String(radius)) {
+                child.dataset.blur = String(radius);
+                child.style.filter = radius > 0 ? `blur(${radius}px)` : '';
             }
-            child.dataset.blur = String(radius);
-            child.style.filter = radius > 0 ? `blur(${radius}px)` : '';
+            // 透明度同理走 dataset 防重复写；非激活态恒 1（清掉内联值）。
+            const opacity = active ? lyricOpacityForOffset(childIndex - focusIndex) : 1;
+            if (child.dataset.lyricOpacity !== String(opacity)) {
+                child.dataset.lyricOpacity = String(opacity);
+                child.style.opacity = opacity === 1 ? '' : String(opacity);
+            }
+        });
+    };
+    // 间奏呼吸点（0.1.136）：长间奏/前奏没词唱时，卡底部中央浮三点填
+    // 空白。在既有 onTimeUpdate 里按 positionMs 算，不新开定时器。
+    // 显示用闩锁：remaining（距下一行开始）≥3500 且已进入当前行满
+    // 2000ms（前奏 index=-1 直接算满足）时点亮闩锁；闩上后 remaining
+    // 跌进 3000 内转倒计时逐个亮（>2000 亮 1、>1000 亮 2、≤1000 亮 3），
+    // 下一行开始（remaining≤0）或折叠/关页/无词时灭。闩锁是必要的：
+    // 只看 remaining≥3500 的话，倒计时段（≤3000）永远显示不出来。
+    let interludeLatched = false;
+    let interludeShown = false;
+    let interludeLitCount = -1;
+    const hideInterlude = (): void => {
+        interludeLatched = false;
+        if (!interludeShown && interludeLitCount === 0) {
+            return;
+        }
+        interludeShown = false;
+        interludeLitCount = 0;
+        lyricInterlude.hidden = true;
+        lyricInterlude.classList.remove('is-countdown');
+        interludeDots.forEach((dot) => dot.classList.remove('is-lit'));
+    };
+    const updateInterlude = (positionMs: number): void => {
+        // 跳动关时只停脉动、点亮逻辑保留（与 CSS 的减动效口径分开管）。
+        lyricInterlude.classList.toggle('no-pulse', !lyricBounceEnabled);
+        let lit = 0;
+        let show = false;
+        const pageVisible = overlay !== null && !overlay.hidden;
+        if (pageVisible && !lyricsFolded && lyricLines.length > 0) {
+            const nextLine = lyricLines[currentLineIndex + 1];
+            const nextStart = nextLine ? nextLine.timeMs : Number.NaN;
+            if (Number.isFinite(nextStart)) {
+                const remaining = nextStart - positionMs;
+                const currentLine = currentLineIndex >= 0 ? lyricLines[currentLineIndex] : undefined;
+                const entered =
+                    currentLineIndex < 0 ||
+                    (currentLine !== undefined &&
+                        Number.isFinite(currentLine.timeMs) &&
+                        positionMs - currentLine.timeMs >= 2000);
+                if (remaining >= 3500 && entered) {
+                    interludeLatched = true;
+                }
+                if (remaining <= 0 || !entered) {
+                    interludeLatched = false;
+                }
+                show = interludeLatched;
+                if (show) {
+                    lit = remaining > 3000 ? 0 : remaining > 2000 ? 1 : remaining > 1000 ? 2 : 3;
+                }
+            } else {
+                interludeLatched = false;
+            }
+        } else {
+            interludeLatched = false;
+        }
+        if (show === interludeShown && lit === interludeLitCount) {
+            return;
+        }
+        interludeShown = show;
+        interludeLitCount = lit;
+        lyricInterlude.hidden = !show;
+        // 倒计时段停掉脉动，只留逐个点亮，读秒才读得清。
+        lyricInterlude.classList.toggle('is-countdown', show && lit > 0);
+        interludeDots.forEach((dot, dotIndex) => {
+            dot.classList.toggle('is-lit', show && dotIndex < lit);
         });
     };
     // 手动浏览暂停：手指/滚轮动歌词盒即暂停模糊（行色区分保留），
@@ -1386,6 +1483,8 @@ function buildPlayerPage(): HTMLElement {
 
     const renderLyrics = (note: string | null): void => {
         lastLyricNote = note;
+        // 新一首的词（或无词提示）进来先把间奏点复位，下一拍再按新词算。
+        hideInterlude();
         lyricBox.textContent = '';
         if (note) {
             const noteEl = document.createElement('p');
@@ -1584,6 +1683,8 @@ function buildPlayerPage(): HTMLElement {
             }
             void pushWallpaperState();
         }
+        // 间奏呼吸点跟同一拍走：内部按页可见/折叠/下一行时间自判显隐。
+        updateInterlude(state.currentTime * 1000);
         // 逐字高亮：只动当前行的词 span，唱到的词边界变了才改 DOM。
         if (overlay !== null && !overlay.hidden && currentLineIndex >= 0) {
             const positionMs = state.currentTime * 1000;

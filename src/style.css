@@ -1590,6 +1590,98 @@ body {
     -webkit-backdrop-filter: blur(14px) saturate(1.6);
 }
 
+/* 封面虚化底（0.1.136）：卡最底层铺当前封面重模糊版，卡面不再是一片
+   平粉；无封面时本层透明，露出 .lyric-card 原有渐变底兜底。内容层
+   （折叠条/歌词折叠区）抬到 z-index 1、折叠钮本来就是 2，都在本层之上。 */
+.lyric-card-bg {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    background-size: cover;
+    background-position: center;
+    filter: blur(28px) saturate(1.25) brightness(0.72);
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+.lyric-collapse,
+.lyric-bar-wrap {
+    position: relative;
+    z-index: 1;
+}
+
+/* 间奏呼吸点（0.1.136）：长间奏/前奏没词时浮在卡底部中央；未亮是
+   半透明白环，呼吸脉动交替缩放/透明度；倒计时段（is-countdown）停
+   脉动，is-lit 的点填主题粉逐个亮。display:flex 会盖掉 hidden 的
+   默认 none，必须显式补一条。 */
+.lyric-interlude {
+    position: absolute;
+    left: 50%;
+    bottom: 12px;
+    transform: translateX(-50%);
+    z-index: 1;
+    display: flex;
+    gap: 9px;
+    pointer-events: none;
+}
+
+.lyric-interlude[hidden] {
+    display: none;
+}
+
+.lyric-interlude span {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    border: 1.5px solid rgba(255, 255, 255, 0.75);
+    background: transparent;
+    opacity: 0.55;
+    animation: lyric-interlude-pulse 1.6s ease-in-out infinite;
+}
+
+.lyric-interlude span:nth-child(2) {
+    animation-delay: 0.22s;
+}
+
+.lyric-interlude span:nth-child(3) {
+    animation-delay: 0.44s;
+}
+
+@keyframes lyric-interlude-pulse {
+    0%,
+    100% {
+        transform: scale(0.72);
+        opacity: 0.4;
+    }
+    50% {
+        transform: scale(1.18);
+        opacity: 1;
+    }
+}
+
+.lyric-interlude.is-countdown span {
+    animation: none;
+}
+
+.lyric-interlude span.is-lit {
+    background: var(--theme-accent, #f9a8d4);
+    border-color: transparent;
+    transform: scale(1.12);
+    opacity: 1;
+    animation: none;
+}
+
+/* 歌词跳动关（no-pulse，TS 按开关切）或系统减动效：脉动停，点亮保留。 */
+.lyric-interlude.no-pulse span {
+    animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .lyric-interlude span {
+        animation: none;
+    }
+}
+
 .player-lyrics {
     position: relative;
     width: 100%;
@@ -1690,9 +1782,9 @@ body {
     text-align: left;
     font-size: 20px;
     line-height: 1.6;
-    /* 双向模糊（借鉴 AM++ 口径）：半径由 TS 按行距查表赋值，
+    /* 双向模糊＋透明度层次：半径与 opacity 都由 TS 按行距查表赋值，
        300ms 线性过渡跟住切行；只挂在行这个小字块上，不做大面积模糊。 */
-    transition: filter 0.3s linear;
+    transition: filter 0.3s linear, opacity 0.3s linear;
 }
 
 /* 译文副行：正文下方小字（约正文六成字号，随正文 em 缩放），
@@ -1723,7 +1815,8 @@ body {
 .player-lyric-line.is-active {
     color: #fff;
     font-weight: 700;
-    font-size: 22px;
+    /* 0.1.136：当前行再大一号（22→24），与透明度梯度一起把层次拉开。 */
+    font-size: 24px;
     transform-origin: left center;
     animation: lyric-line-pop 0.38s ease;
 }
