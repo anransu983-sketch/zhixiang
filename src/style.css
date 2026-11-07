@@ -1604,6 +1604,24 @@ body {
     pointer-events: none;
 }
 
+/* 卡面水滴层（0.1.138）：canvas 铺满卡面，画带透镜折射的玻璃水珠
+   （lyric-drops.ts）。z-index 与内容层同为 1，靠 DOM 顺序（canvas 在
+   折叠条/歌词折叠区之前 append）压在内容之下、虚化底（0）之上；
+   折叠钮是 2，不受影响。不接指针，水滴纯看。 */
+.lyric-card-drops {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    display: block;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
+.lyric-card-drops[hidden] {
+    display: none;
+}
+
 .lyric-collapse,
 .lyric-bar-wrap {
     position: relative;
