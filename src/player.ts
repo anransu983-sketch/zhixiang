@@ -38,6 +38,7 @@ import {
 import type { LyricLine } from './lyrics';
 import { openLiveWallpaperPicker, setWallpaperState } from './native/wallpaper-plugin';
 import { loadVisualToggles, saveVisualToggles, VISUAL_PRESETS, VisualStage } from './visuals';
+import { LyricDrops } from './lyric-drops';
 import type { VisualToggles } from './visuals';
 import { deleteManualLyrics, getManualLyrics, saveManualLyrics } from './manual-lyrics';
 import {
@@ -67,6 +68,7 @@ import { pushBackHandler } from './back-stack';
 
 let overlay: HTMLElement | null = null;
 let stage: VisualStage | null = null;
+let lyricDrops: LyricDrops | null = null;
 let refreshPage: ((state: PlaybackState) => void) | null = null;
 let renderLyricsPage: ((note: string | null) => void) | null = null;
 let highlightLinePage: ((index: number, behavior?: ScrollBehavior) => void) | null = null;
@@ -144,6 +146,8 @@ function hidePlayerPage(): void {
         overlay.hidden = true;
     }
     stage?.suspend();
+    // 卡面水滴同停：poke 内部按呈现条件自判（页已 hidden → 停画藏层）。
+    lyricDrops?.poke();
     unregisterPlayerBack?.();
     unregisterPlayerBack = null;
 }
@@ -163,6 +167,9 @@ export function openPlayerPage(): void {
         stage?.resize();
         stage?.resume();
     }
+    // 雨滴档可能在我的页雨窗里改过：开页时现读存储同步给卡面水滴
+    //（setMode 内部带 poke，呈现中会立刻按新档位画/动起来）。
+    lyricDrops?.setMode(loadVisualToggles().rainMode);
     if (!unregisterPlayerBack) {
         unregisterPlayerBack = pushBackHandler(hidePlayerPage);
     }
@@ -221,6 +228,11 @@ function buildPlayerPage(): HTMLElement {
     // 大封面 img 同步维护，无封面时透明、露出卡原有渐变底兜底。
     const lyricCardBg = document.createElement('div');
     lyricCardBg.className = 'lyric-card-bg';
+    // 卡面水滴层（0.1.138）：canvas 铺满卡面，在虚化底之上、歌词内容
+    // 之下；水滴画法/档位/透镜底图全由 LyricDrops 管（lyric-drops.ts），
+    // 这里只建元素，实例在折叠状态定下来之后再建（见下方）。
+    const lyricDropsCanvas = document.createElement('canvas');
+    lyricDropsCanvas.className = 'lyric-card-drops';
     // 间奏呼吸点（0.1.136）：长间奏/前奏没词时浮在卡底部中央，显隐与
     // 点亮数由 onTimeUpdate 里的 updateInterlude 按下一行时间算，不另开
     // 定时器；默认藏，切歌/无词时复位隐藏。
@@ -233,7 +245,7 @@ function buildPlayerPage(): HTMLElement {
         interludeDots.push(dot);
         lyricInterlude.appendChild(dot);
     }
-    lyricCard.append(lyricCardBg, foldButton, lyricBarWrap, lyricCollapse, lyricInterlude);
+    lyricCard.append(lyricCardBg, lyricDropsCanvas, foldButton, lyricBarWrap, lyricCollapse, lyricInterlude);
     // 折叠偏好只在创建时读一次，之后由 applyFoldState 维护；
     // 这里直接写 dataset，不经过函数，免得撞上后面 const 的初始化顺序。
     const FOLD_KEY = 'zx.player.lyricsFolded';
@@ -250,6 +262,15 @@ function buildPlayerPage(): HTMLElement {
     lyricBarWrap.inert = !lyricsFolded;
     lyricCollapse.inert = lyricsFolded;
     content.appendChild(lyricCard);
+
+    // 卡面水滴实例（0.1.138）：呈现条件现算——播放页打开、歌词卡没被
+    // 「词」开关藏掉、未折叠，三者齐了才露面/才动；档位先按存储里的
+    // rainMode 定，开页时 openPlayerPage 还会再现读一次同步。
+    lyricDrops = new LyricDrops(lyricDropsCanvas, {
+        isPresented: () =>
+            overlay !== null && !overlay.hidden && !lyricCard.hidden && !lyricsFolded
+    });
+    lyricDrops.setMode(loadVisualToggles().rainMode);
 
     // 封面套：img 与占位共用；img 一直挂着（模糊底要靠它），
     // 是否显示由 updateCoverVisibility 定，无图时露占位不露破图。
@@ -828,6 +849,8 @@ function buildPlayerPage(): HTMLElement {
         }
         updateDegradedNote();
         stage?.poke();
+        // 预设里带 rainMode：卡面水滴同档同步。
+        lyricDrops?.setMode(toggles.rainMode);
         void pushWallpaperState();
     };
     // 歌词设置状态（模糊/译文/字体，与视觉开关同面板）：声明在设置 UI
@@ -873,6 +896,8 @@ function buildPlayerPage(): HTMLElement {
             toggles = { ...toggles, rainMode: rainDef.mode };
             saveVisualToggles(toggles);
             stage?.poke();
+            // 卡面水滴跟同一档位走（关/静态/动态）。
+            lyricDrops?.setMode(toggles.rainMode);
             void pushWallpaperState();
         });
         label.append(box, document.createTextNode(rainDef.label));
@@ -1187,6 +1212,8 @@ function buildPlayerPage(): HTMLElement {
         // 歌词卡虚化底与封面 img 同源（含本地歌的 dataURL）；JSON 串化
         // 给 url() 加引号并转义，URL 里带括号/引号也不会把 CSS 写坏。
         lyricCardBg.style.backgroundImage = `url(${JSON.stringify(url)})`;
+        // 卡面水滴的透镜底图同源同步（LyricDrops 自维护离屏重模糊版）。
+        lyricDrops?.setCover(url);
         updateCoverVisibility();
     };
     const hideCover = (): void => {
@@ -1194,6 +1221,7 @@ function buildPlayerPage(): HTMLElement {
         coverExpected = '';
         coverLoaded = false;
         lyricCardBg.style.backgroundImage = '';
+        lyricDrops?.setCover('');
         updateCoverVisibility();
     };
     const applyCover = (track: Track | null): void => {
@@ -1275,6 +1303,8 @@ function buildPlayerPage(): HTMLElement {
         updateLyricsButton();
         updateCoverVisibility();
         stage?.poke();
+        // 歌词卡藏/露直接决定水滴呈现条件，跟着 poke 一次。
+        lyricDrops?.poke();
     });
 
     stage = new VisualStage(canvas, cover, {
@@ -1639,6 +1669,8 @@ function buildPlayerPage(): HTMLElement {
         }
         // 折叠态不加模糊、展开恢复分布；highlightLine 已刷过时这里是空转。
         applyLyricBlur();
+        // 折叠/展开是水滴呈现条件之一：折叠停画藏层，展开按档位恢复。
+        lyricDrops?.poke();
     };
     foldButton.addEventListener('click', () => {
         applyFoldState(!lyricsFolded, true);
@@ -1650,6 +1682,8 @@ function buildPlayerPage(): HTMLElement {
     window.addEventListener('resize', () => {
         if (!page.hidden) {
             stage?.resize();
+            // 卡尺寸变了水滴要重播种/重采透镜底图。
+            lyricDrops?.resize();
         }
     });
 
