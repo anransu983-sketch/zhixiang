@@ -69,11 +69,17 @@ export interface LyricResult {
 //
 // 只删「纯制作信息行」，宁可漏删不可误删正文：
 // - 规则一：行首是制作信息关键词、后面带冒号（：或 :），如
-//   「作词：某某」「作曲/编曲：某某」「OP：某某某」。
+//   「作词：某某」「作曲/编曲：某某」「OP：某某某」。0.1.141 放宽
+//   两处：关键词与冒号之间允许夹一段英文职务词（如「制作人
+//   Producer ：某某」），且行首纯英文职务词（Producer: 等）也算；
+//   中段只许英文字母、空格、点与 &，不许汉字数字混入，防正文误伤。
 // - 规则二：整行就是这类 credits 且无冒号——行首关键词 + 空格 +
 //   一串人名（以空格／斜杠／顿号／逗号分隔），整行短（<=32 字）
 //   且人名部分不含句子标点与叙述词。只是句中含「作词」二字的正常
 //   歌词行不命中任何一条，不删。
+// - 规则三（0.1.141）：人名续行——credits 行的人名太长换行到下一行
+//   独立成行（如「周天澈」）时，紧贴的下一短行（<=12 字、无句子
+//   标点、无叙述虚词）一并删；只认紧贴上一行，隔一行即失效。
 // 过滤发生在哪一层：本函数是纯函数，只在播放页应用层调用——
 // fetchLyrics 各路一律回原始行，播放页持有原始 lines，按开关用
 // 本函数算出展示行；逐字行（words 非空，YRC／TTML 逐字）一律不
@@ -81,7 +87,15 @@ export interface LyricResult {
 // 正文行被删时译文随行一起去掉，过滤本身不再单独处理译文。
 
 const CREDIT_PREFIXES = [
+    // 带后缀的整词排在短词前面：正则交替按序匹配，「作词人」必须
+    // 先于「作词」命中，否则冒号/空格判定会被中间的「人」字挡住。
     '制作人',
+    '作词人',
+    '作曲人',
+    '编曲人',
+    '混音师',
+    '录音师',
+    '吉他手',
     '作词',
     '作曲',
     '编曲',
@@ -102,14 +116,40 @@ const CREDIT_PREFIXES = [
 ] as const;
 
 const CREDIT_PREFIX_ALT = CREDIT_PREFIXES.join('|');
-// 规则一：关键词（可多个以 /、& 连接）后紧跟冒号。
+const CREDIT_CHAIN = `(?:${CREDIT_PREFIX_ALT})(?:\\s*[/、&]\\s*(?:${CREDIT_PREFIX_ALT}))*`;
+// 英文职务词（行首分支用，大小写不敏感）。
+const CREDIT_EN_ALT = [
+    'Producer',
+    'Composer',
+    'Lyricist',
+    'Arranger',
+    'Songwriter',
+    'Mixing',
+    'Mastering',
+    'Recording',
+    'Vocals',
+    'Guitar',
+    'Bass',
+    'Drums',
+    'Keyboard',
+    'Piano',
+    'Lyrics',
+    'Music',
+    'OP',
+    'SP'
+].join('|');
+// 中段英文职务短语（如 Producer、Lyrics & Music）：只许英文字母、
+// 空格、点与 &，不许汉字或数字——这是放宽后的误伤边界，正文里
+// 「关键词＋纯英文短语＋冒号」的排版几乎不存在。
+const CREDIT_EN_MID = `[A-Za-z][A-Za-z .&]{0,24}`;
+// 规则一：中文关键词链（可夹一段英文职务词）或英文职务词打头，
+// 后跟冒号。
 const CREDIT_COLON_PATTERN = new RegExp(
-    `^(?:${CREDIT_PREFIX_ALT})(?:\\s*[/、&]\\s*(?:${CREDIT_PREFIX_ALT}))*\\s*[:：]`
+    `^(?:${CREDIT_CHAIN}(?:\\s*${CREDIT_EN_MID})?|(?:${CREDIT_EN_ALT})(?:\\s+${CREDIT_EN_MID})?)\\s*[:：]`,
+    'i'
 );
 // 规则二：关键词（可多个连接）+ 空格 + 人名串；人名串另行校验。
-const CREDIT_BARE_PATTERN = new RegExp(
-    `^(?:${CREDIT_PREFIX_ALT})(?:\\s*[/、&]\\s*(?:${CREDIT_PREFIX_ALT}))*\\s+(.+)$`
-);
+const CREDIT_BARE_PATTERN = new RegExp(`^${CREDIT_CHAIN}\\s+(.+)$`);
 
 function isCreditText(text: string): boolean {
     const trimmed = text.trim();
@@ -135,13 +175,48 @@ function isCreditText(text: string): boolean {
     return false;
 }
 
+// 规则三（续行）：本行自身无关键词，靠「紧贴上一行是 credits」
+// 才成立。条件比规则二更严：整行 <=12 字、无句子标点、无叙述
+// 虚词（口径与规则二的人名串校验一致）——人名一般不超过这个
+// 长度，正文短句则多带标点或虚词；仍属启发式，边界是 credits
+// 块内部，误伤最多波及 credits 后紧邻的一行短正文。
+function isCreditContinuation(text: string): boolean {
+    const trimmed = text.trim();
+    if (!trimmed || trimmed.length > 12) {
+        return false;
+    }
+    if (/[。！？；，、…：:]/.test(trimmed)) {
+        return false;
+    }
+    if (/(的|了|是|在|和你|我们|我|你|他|她|说|唱|给)/.test(trimmed)) {
+        return false;
+    }
+    return true;
+}
+
 export function filterCreditLines(lines: LyricLine[]): LyricLine[] {
-    const kept = lines.filter((line) => {
+    const kept: LyricLine[] = [];
+    // 上一行是否被判为 credits（原行或续行）：续行判定只认紧贴，
+    // 任何一行正文（或逐字行）保留下来都让它失效。
+    let prevWasCredit = false;
+    for (const line of lines) {
+        // 逐字行永不过滤，这条红线不变。
         if (line.words && line.words.length > 0) {
-            return true;
+            kept.push(line);
+            prevWasCredit = false;
+            continue;
         }
-        return !isCreditText(line.text);
-    });
+        if (isCreditText(line.text)) {
+            prevWasCredit = true;
+            continue;
+        }
+        if (prevWasCredit && isCreditContinuation(line.text)) {
+            // 续行本身也算 credits：人名连换两行的情况继续成立。
+            continue;
+        }
+        kept.push(line);
+        prevWasCredit = false;
+    }
     const removed = lines.length - kept.length;
     if (removed > 0) {
         console.log(`[Lyrics] 已过滤制作信息 ${removed} 行`);
