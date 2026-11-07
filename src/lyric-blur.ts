@@ -3,24 +3,28 @@
 // 按行距查不同的半径表——已唱离得越远糊得越快，待唱先轻后重。
 // 本模块只做纯计算（查表＋量化＋偏移钳制），不碰 DOM，播放页负责赋样式。
 //
-// 半径口径（px）：
+// 半径口径（px，0.1.136 改小）：
 // - 当前行：0
-// - 已唱方向（offset<0）：距离 1/2/3+ → 13/17/22
-// - 待唱方向（offset>0）：距离 1/2/3/4+ → 8/13/17/22
-// 强度偏移在查表后叠加（弱 -4／标准 0／强 +4），整体钳制 0..32，
-// 当前行恒为 0（偏移不许把当前行也糊掉）。结果量化到整数 px 再赋
-// CSS filter，避免小数半径在每次进度回调里反复触发重绘。
+// - 已唱方向（offset<0）：距离 1/2/3+ → 2/3/5
+// - 待唱方向（offset>0）：距离 1/2/3/4+ → 1/3/4/6
+// 为什么从大半径（旧表 13/17/22）改小：歌词字号才 20–24px，十几 px 的
+// 模糊直接把邻行糊成一团雾，真机上只剩当前行＋下一行看得清、整卡发空
+// 发单调。层次改靠下面的透明度梯度拉开，模糊只留一点点景深感，邻行
+// 必须留得住字形、能读。强度偏移在查表后叠加（弱 -1／标准 0／强 +2，
+// 与新半径成比例），整体钳制 0..32，当前行恒为 0（偏移不许把当前行
+// 也糊掉）。结果量化到整数 px 再赋 CSS filter，避免小数半径在每次
+// 进度回调里反复触发重绘。
 
-const PAST_RADII = [0, 13, 17, 22];
-const FUTURE_RADII = [0, 8, 13, 17, 22];
-export const MAX_BLUR_RADIUS = 22;
+const PAST_RADII = [0, 2, 3, 5];
+const FUTURE_RADII = [0, 1, 3, 4, 6];
+export const MAX_BLUR_RADIUS = 6;
 const RENDER_BLUR_MAX = 32;
 
 // 强度三档：偏移量直接加到查表半径上。
 export const BLUR_STRENGTH_OFFSETS = {
-    weak: -4,
+    weak: -1,
     standard: 0,
-    strong: 4
+    strong: 2
 } as const;
 export type LyricBlurStrength = keyof typeof BLUR_STRENGTH_OFFSETS;
 
@@ -57,6 +61,19 @@ export function computeBlurRadii(
         radii.push(blurRadiusForOffset(nearest, strengthOffset));
     }
     return radii;
+}
+
+// 透明度梯度（0.1.136）：层次的主力，模糊只是辅助。按与当前行的距离
+// 对称查表——offset 0 → 1、±1 → 0.82、±2 → 0.62、±3 → 0.48、≥±4 → 0.38。
+// 关模糊时播放页不调本函数、opacity 一律回 1，别在这里猜开关状态。
+const OPACITY_BY_DISTANCE = [1, 0.82, 0.62, 0.48];
+const OPACITY_FARTHEST = 0.38;
+
+export function lyricOpacityForOffset(offset: number): number {
+    const distance = Math.abs(offset);
+    return distance >= OPACITY_BY_DISTANCE.length
+        ? OPACITY_FARTHEST
+        : (OPACITY_BY_DISTANCE[distance] ?? 1);
 }
 
 // 设置持久化：跟播放页既有键风格（zx.player.* 点分小字段）。
