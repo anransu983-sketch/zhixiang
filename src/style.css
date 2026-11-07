@@ -1591,8 +1591,8 @@ body {
 }
 
 /* 封面虚化底（0.1.136）：卡最底层铺当前封面重模糊版，卡面不再是一片
-   平粉；无封面时本层透明，露出 .lyric-card 原有渐变底兜底。内容层
-   （折叠条/歌词折叠区）抬到 z-index 1、折叠钮本来就是 2，都在本层之上。 */
+   平粉；无封面时本层透明，露出 .lyric-card 原有渐变底兜底。卡内层位
+   总序（0.1.139 定）：虚化底 0 ＜ 歌词内容 1 ＜ 卡面水滴 2 ＜ 折叠钮 3。 */
 .lyric-card-bg {
     position: absolute;
     inset: 0;
@@ -1604,14 +1604,15 @@ body {
     pointer-events: none;
 }
 
-/* 卡面水滴层（0.1.138）：canvas 铺满卡面，画带透镜折射的玻璃水珠
-   （lyric-drops.ts）。z-index 与内容层同为 1，靠 DOM 顺序（canvas 在
-   折叠条/歌词折叠区之前 append）压在内容之下、虚化底（0）之上；
-   折叠钮是 2，不受影响。不接指针，水滴纯看。 */
+/* 卡面水滴层（0.1.138 建，0.1.139 抬层）：canvas 铺满卡面，画带透镜
+   折射的玻璃水珠（lyric-drops.ts）。0.1.139 按用户「改成滴压」抬到
+   z-index 2——压在歌词内容（折叠条/歌词折叠区/间奏点，都是 1）之上、
+   折叠钮（3）之下，与参照照片的滴压字一致；层位只认 z-index，DOM
+   append 顺序不再决定谁压谁。不接指针，水滴纯看。 */
 .lyric-card-drops {
     position: absolute;
     inset: 0;
-    z-index: 1;
+    z-index: 2;
     display: block;
     width: 100%;
     height: 100%;
@@ -1782,7 +1783,9 @@ body {
     right: 0;
     width: 48px;
     height: 48px;
-    z-index: 2;
+    /* 0.1.139：水滴层抬到 2 压字后，折叠钮顺延到 3 保持卡内最高，
+       不被水滴盖住点击区。 */
+    z-index: 3;
     background: transparent;
     border: none;
     color: rgba(255, 255, 255, 0.85);

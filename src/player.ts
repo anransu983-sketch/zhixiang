@@ -228,9 +228,10 @@ function buildPlayerPage(): HTMLElement {
     // 大封面 img 同步维护，无封面时透明、露出卡原有渐变底兜底。
     const lyricCardBg = document.createElement('div');
     lyricCardBg.className = 'lyric-card-bg';
-    // 卡面水滴层（0.1.138）：canvas 铺满卡面，在虚化底之上、歌词内容
-    // 之下；水滴画法/档位/透镜底图全由 LyricDrops 管（lyric-drops.ts），
-    // 这里只建元素，实例在折叠状态定下来之后再建（见下方）。
+    // 卡面水滴层（0.1.138；0.1.139 抬层）：canvas 铺满卡面，层位由 CSS
+    // z-index 定（虚化底 0＜歌词内容 1＜水滴 2＜折叠钮 3），水滴压在
+    // 歌词字上；水滴画法/档位/透镜底图全由 LyricDrops 管
+    // （lyric-drops.ts），这里只建元素，实例在折叠状态定下来之后再建。
     const lyricDropsCanvas = document.createElement('canvas');
     lyricDropsCanvas.className = 'lyric-card-drops';
     // 间奏呼吸点（0.1.136）：长间奏/前奏没词时浮在卡底部中央，显隐与
