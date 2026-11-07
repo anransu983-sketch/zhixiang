@@ -5,6 +5,7 @@ import { addToQueueEnd, getCurrentState, next, onTimeUpdate, onTrackChange, play
 import { getPlaySessions } from './playback-history';
 import { initResumeTracking, loadResume } from './resume';
 import { openPlayerPage } from './player';
+import { pushBackHandler } from './back-stack';
 import { openFootprintPage } from './footprint';
 import type { PlaybackState } from './playback';
 import {
@@ -3794,10 +3795,15 @@ function openStashPage(onChanged: () => void): void {
     back.type = 'button';
     back.className = 'daily-page-back';
     back.textContent = '返回';
-    back.addEventListener('click', () => {
+    // 关闭收敛成一条：点返回与系统返回都走 closePage，别留两份移除代码。
+    let unregisterBack: (() => void) | null = null;
+    const closePage = (): void => {
+        unregisterBack?.();
+        unregisterBack = null;
         page.remove();
         onChanged();
-    });
+    };
+    back.addEventListener('click', closePage);
     pageHead.appendChild(back);
     const pageTitle = document.createElement('h2');
     pageTitle.textContent = '速记簿';
@@ -3943,6 +3949,7 @@ function openStashPage(onChanged: () => void): void {
         }
     };
     document.body.appendChild(page);
+    unregisterBack = pushBackHandler(closePage);
     renderList();
 }
 
@@ -3968,10 +3975,15 @@ function openMineSubPage(
     back.type = 'button';
     back.className = 'daily-page-back';
     back.textContent = '返回';
-    back.addEventListener('click', () => {
+    // 关闭收敛成一条：点返回与系统返回都走 closePage，别留两份移除代码。
+    let unregisterBack: (() => void) | null = null;
+    const closePage = (): void => {
+        unregisterBack?.();
+        unregisterBack = null;
         page.remove();
         onClose?.();
-    });
+    };
+    back.addEventListener('click', closePage);
     pageHead.appendChild(back);
     const pageTitle = document.createElement('h2');
     pageTitle.textContent = title;
@@ -3994,6 +4006,7 @@ function openMineSubPage(
     }
     page.appendChild(content);
     document.body.appendChild(page);
+    unregisterBack = pushBackHandler(closePage);
 }
 
 function renderWritebackSection(): HTMLElement {

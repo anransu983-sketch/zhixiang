@@ -63,6 +63,7 @@ import { checkAllFilesAccess, getLocalCoverDataUrl, getLocalCoverFromNetease, ge
 import { posterFallbackBackground, posterHue } from './posters';
 import { getLastYtmStreamMeta } from './sources/ytm';
 import type { Track } from './types';
+import { pushBackHandler } from './back-stack';
 
 let overlay: HTMLElement | null = null;
 let stage: VisualStage | null = null;
@@ -133,6 +134,20 @@ function formatTime(totalSeconds: number): string {
     return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
+// 系统返回接入（back-stack）：播放页显示时把关闭动作压栈，
+// 页内返回与系统返回都走 hidePlayerPage 一条路；隐藏即注销，
+// 别让已关的页面还占着栈顶。
+let unregisterPlayerBack: (() => void) | null = null;
+
+function hidePlayerPage(): void {
+    if (overlay) {
+        overlay.hidden = true;
+    }
+    stage?.suspend();
+    unregisterPlayerBack?.();
+    unregisterPlayerBack = null;
+}
+
 export function openPlayerPage(): void {
     if (overlay) {
         overlay.hidden = false;
@@ -141,13 +156,16 @@ export function openPlayerPage(): void {
         refreshFromState(getCurrentState());
         stage?.resize();
         stage?.resume();
-        return;
+    } else {
+        overlay = buildPlayerPage();
+        document.body.appendChild(overlay);
+        refreshFromState(getCurrentState());
+        stage?.resize();
+        stage?.resume();
     }
-    overlay = buildPlayerPage();
-    document.body.appendChild(overlay);
-    refreshFromState(getCurrentState());
-    stage?.resize();
-    stage?.resume();
+    if (!unregisterPlayerBack) {
+        unregisterPlayerBack = pushBackHandler(hidePlayerPage);
+    }
 }
 
 function buildPlayerPage(): HTMLElement {
@@ -167,8 +185,7 @@ function buildPlayerPage(): HTMLElement {
     backButton.className = 'player-back-btn';
     backButton.textContent = '返回';
     backButton.addEventListener('click', () => {
-        page.hidden = true;
-        stage?.suspend();
+        hidePlayerPage();
     });
     content.appendChild(backButton);
 
