@@ -228,6 +228,10 @@ function buildPlayerPage(): HTMLElement {
     // 大封面 img 同步维护，无封面时透明、露出卡原有渐变底兜底。
     const lyricCardBg = document.createElement('div');
     lyricCardBg.className = 'lyric-card-bg';
+    // 歌词底影垫（0.1.140）：虚化底之上、歌词内容之下的暗渐变层，把亮
+    // 封面上的歌词行衬实；层位/z-index 见 style.css .lyric-card-scrim。
+    const lyricCardScrim = document.createElement('div');
+    lyricCardScrim.className = 'lyric-card-scrim';
     // 卡面水滴层（0.1.138；0.1.139 抬层）：canvas 铺满卡面，层位由 CSS
     // z-index 定（虚化底 0＜歌词内容 1＜水滴 2＜折叠钮 3），水滴压在
     // 歌词字上；水滴画法/档位/透镜底图全由 LyricDrops 管
@@ -246,7 +250,7 @@ function buildPlayerPage(): HTMLElement {
         interludeDots.push(dot);
         lyricInterlude.appendChild(dot);
     }
-    lyricCard.append(lyricCardBg, lyricDropsCanvas, foldButton, lyricBarWrap, lyricCollapse, lyricInterlude);
+    lyricCard.append(lyricCardBg, lyricCardScrim, lyricDropsCanvas, foldButton, lyricBarWrap, lyricCollapse, lyricInterlude);
     // 折叠偏好只在创建时读一次，之后由 applyFoldState 维护；
     // 这里直接写 dataset，不经过函数，免得撞上后面 const 的初始化顺序。
     const FOLD_KEY = 'zx.player.lyricsFolded';

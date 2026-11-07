@@ -1592,7 +1592,8 @@ body {
 
 /* 封面虚化底（0.1.136）：卡最底层铺当前封面重模糊版，卡面不再是一片
    平粉；无封面时本层透明，露出 .lyric-card 原有渐变底兜底。卡内层位
-   总序（0.1.139 定）：虚化底 0 ＜ 歌词内容 1 ＜ 卡面水滴 2 ＜ 折叠钮 3。 */
+   总序（0.1.139 定）：虚化底/底影垫 0 ＜ 歌词内容 1 ＜ 卡面水滴 2 ＜
+   折叠钮 3。 */
 .lyric-card-bg {
     position: absolute;
     inset: 0;
@@ -1601,6 +1602,19 @@ body {
     background-position: center;
     filter: blur(28px) saturate(1.25) brightness(0.72);
     opacity: 0.5;
+    pointer-events: none;
+}
+
+/* 歌词底影垫（0.1.140）：虚化底之上、歌词内容之下一层竖向暗渐变，把
+   亮封面（蓝绿这类）上的歌词行衬实——上 0.30、下 0.42，只压亮不把
+   卡变回黑盒子。层位与虚化底同为 z-index 0，靠 DOM 顺序（bg 之后、
+   内容之前）压在 bg 之上；水滴透镜采的是封面原图的离屏底图，不经
+   过这层，滴的清透不受影响。不接指针。 */
+.lyric-card-scrim {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    background-image: linear-gradient(180deg, rgba(12, 10, 18, 0.30), rgba(12, 10, 18, 0.42));
     pointer-events: none;
 }
 

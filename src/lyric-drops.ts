@@ -11,6 +11,12 @@
 //   内比卡面略亮略鲜；小滴改透明中心，只靠 1px 亮边、高光点和底部
 //   一弧极淡阴影成形，不再整圆压底、不再整圈暗边。
 //
+// 0.1.140 再调（用户看 0.1.139 真机图后拍板「滴清透」）：提亮版在饱和
+// 封面（蓝绿）上又把颜色原样吸进滴里还更艳，成了亮蓝糖豆——真水滴
+// 近乎清透、只带淡色调。本版提亮版离屏改走降饱和＋更高提亮
+// （saturate 0.55、brightness 1.18），透镜画完采样再在 clip 内叠一层
+// rgba(255,255,255,0.16) 的白再冲淡一档，滴内只留淡色调。
+//
 // 画法与手感搬自 visuals.ts 的 drawRain / ensureBackground（静止圆滴的
 // 透镜采样、亮边＋高光点、下滑滴拖尾、大光斑柔光），按卡面尺寸等比
 // 缩了密度与半径，在这里自带一份精简实现；visuals.ts 本体不动，全屏
@@ -18,10 +24,11 @@
 //
 // 透镜底图：自维护两张与卡同尺寸（设备像素）的离屏画布——暗版与卡面
 // .lyric-card-bg 同滤镜（blur＋saturate＋brightness 0.72，保留作口径
-// 对照），提亮版 blur 同步、brightness≈1.05 供透镜采样；大滴从提亮版
-// 按滴的位置放大采样（与 visuals.ts 同口径的 1.3 倍），滴里看到的是
-// 卡底封面提亮后的扭曲映像。无封面时离屏留空，滴只画边线＋高光，
-// 在卡的渐变底上照样成立。
+// 对照），清透版 blur 同步、saturate 0.55＋brightness 1.18 供透镜采样
+// （0.1.140：降饱和只留淡色调，见文件头）；大滴从清透版按滴的位置
+// 放大采样（与 visuals.ts 同口径的 1.3 倍），滴里看到的是卡底封面
+// 清透化后的扭曲映像。无封面时离屏留空，滴只画边线＋高光，在卡的
+// 渐变底上照样成立。
 //
 // 档位跟随视觉开关 rainMode（同一份存储 zhixiang.visual.toggles，不
 // 新增设置项）：0 关＝canvas 隐藏不画；1 静态＝画一帧静止滴，封面或
@@ -65,7 +72,8 @@ export class LyricDrops {
     private seededWidth = 0;
     private seededHeight = 0;
     private bgCanvas: HTMLCanvasElement | null = null;
-    // 提亮采样源（0.1.139）：与 bgCanvas 同步重建，透镜滴只采这一份。
+    // 清透采样源（0.1.139 建、0.1.140 改降饱和口径）：与 bgCanvas 同步
+    // 重建，透镜滴只采这一份。
     private bgBrightCanvas: HTMLCanvasElement | null = null;
     private bgKey = '';
     private coverImage: HTMLImageElement | null = null;
@@ -301,11 +309,12 @@ export class LyricDrops {
             }
         };
         this.bgCanvas = paint(`blur(${blurPx}px) saturate(1.25) brightness(0.72)`);
-        // 提亮采样源（0.1.139）：同一封面多画一份，blur 同步、亮度回到
-        // ≈1.05、饱和略提——透镜滴只采它，滴内图比卡面略亮略鲜，不再
-        // 把暗底图的近黑采样整圆实画成黑珍珠。离屏重建时一次画好，
-        // 不在每帧每滴上用 ctx.filter。
-        this.bgBrightCanvas = paint(`blur(${blurPx}px) saturate(1.35) brightness(1.05)`);
+        // 清透采样源（0.1.139 建提亮版，0.1.140 改清透口径）：同一封面
+        // 多画一份，blur 同步——取向是「滴内只留淡色调」：饱和压到
+        // 0.55、亮度抬到 1.18，封面再艳（蓝绿）吸进滴里也只剩一层淡
+        // 影，不再成糖豆。透镜滴只采它。离屏重建时一次画好，不在每
+        // 帧每滴上用 ctx.filter；变量名沿用 bgBrightCanvas 不改。
+        this.bgBrightCanvas = paint(`blur(${blurPx}px) saturate(0.55) brightness(1.18)`);
     }
 
     private drawFrame(time: number, animated: boolean): void {
@@ -375,10 +384,11 @@ export class LyricDrops {
                 ctx.lineTo(x, y);
                 ctx.stroke();
             }
-            // 圆滴（0.1.139 质感改版，顺序固定）：
-            // 大滴（CSS 半径 ≥6）走透镜——clip 圆 → 画提亮采样 → 底部内
-            // 阴影弧 → 亮边 → 高光点；透镜只采提亮版离屏（bgBrightCanvas，
-            // 缺失时退暗版），滴内图比周围卡面略亮略鲜，不再是黑盘子。
+            // 圆滴（0.1.139 质感改版，0.1.140 加叠白，顺序固定）：
+            // 大滴（CSS 半径 ≥6）走透镜——clip 圆 → 画清透采样 → clip 内
+            // 叠一层白冲淡 → 底部内阴影弧 → 亮边 → 高光点；透镜只采清透
+            // 版离屏（bgBrightCanvas，0.1.140 起降饱和＋提亮，缺失时退
+            // 暗版），滴内只留淡色调，不再是黑盘子、也不再是糖豆。
             // 小滴/贴边滴/无封面：透明中心，不整圆压底、不整圈暗边——只
             // 画底部一弧极淡阴影、1px 亮边（rgba(255,255,255,0.38)）、
             // 左上高光点，靠这三样在玻璃上成形。
@@ -423,6 +433,10 @@ export class LyricDrops {
                     r * 2,
                     r * 2
                 );
+                // 叠白冲淡（0.1.140）：采样本身已降饱和，这里再压一层
+                // 16% 白把残余色调冲到「近乎清透、只带淡影」。
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.16)';
+                ctx.fillRect(x - r, y - r, r * 2, r * 2);
                 drawBottomShadow();
                 ctx.restore();
                 ctx.strokeStyle = `rgba(255, 255, 255, ${shimmer.toFixed(3)})`;
