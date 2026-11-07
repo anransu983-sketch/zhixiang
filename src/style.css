@@ -1644,9 +1644,10 @@ body {
 }
 
 /* 间奏呼吸点（0.1.136）：长间奏/前奏没词时浮在卡底部中央；未亮是
-   半透明白环，呼吸脉动交替缩放/透明度；倒计时段（is-countdown）停
-   脉动，is-lit 的点填主题粉逐个亮。display:flex 会盖掉 hidden 的
-   默认 none，必须显式补一条。 */
+   半透明实心淡点，呼吸脉动交替缩放/透明度；倒计时段（is-countdown）
+   停脉动，is-lit 的点填主题粉逐个亮。未亮态不用空心描边环——白圈
+   看着像单选钮，点亮该是「淡点变实变粉」而非「空圈填色」（0.1.142）。
+   display:flex 会盖掉 hidden 的默认 none，必须显式补一条。 */
 .lyric-interlude {
     position: absolute;
     left: 50%;
@@ -1666,8 +1667,10 @@ body {
     width: 9px;
     height: 9px;
     border-radius: 50%;
-    border: 1.5px solid rgba(255, 255, 255, 0.75);
-    background: transparent;
+    /* 边框留同宽透明占位：盒子尺寸与旧描边版、与 is-lit（本来就用
+       transparent 边框）完全一致，点亮切换不跳尺寸。 */
+    border: 1.5px solid transparent;
+    background: rgba(255, 255, 255, 0.22);
     opacity: 0.55;
     animation: lyric-interlude-pulse 1.6s ease-in-out infinite;
 }

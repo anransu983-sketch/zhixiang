@@ -73,6 +73,9 @@ export interface LyricResult {
 //   两处：关键词与冒号之间允许夹一段英文职务词（如「制作人
 //   Producer ：某某」），且行首纯英文职务词（Producer: 等）也算；
 //   中段只许英文字母、空格、点与 &，不许汉字数字混入，防正文误伤。
+//   0.1.142 再补一组仅规则一可用的前缀（词/曲/演唱/原唱/翻唱）：
+//   不少 LRC 是单字式「词：某某」「曲：某某」；单字「词/曲」只许
+//   带冒号命中，绝不进规则二的裸行链，防「词不达意」类正文误伤。
 // - 规则二：整行就是这类 credits 且无冒号——行首关键词 + 空格 +
 //   一串人名（以空格／斜杠／顿号／逗号分隔），整行短（<=32 字）
 //   且人名部分不含句子标点与叙述词。只是句中含「作词」二字的正常
@@ -117,6 +120,13 @@ const CREDIT_PREFIXES = [
 
 const CREDIT_PREFIX_ALT = CREDIT_PREFIXES.join('|');
 const CREDIT_CHAIN = `(?:${CREDIT_PREFIX_ALT})(?:\\s*[/、&]\\s*(?:${CREDIT_PREFIX_ALT}))*`;
+// 仅冒号规则可用的前缀（0.1.142）：不少 LRC 的 credits 是单字式
+// 「词：某某」「曲：某某」，外加「演唱/原唱/翻唱：某某」。这组只并
+// 进冒号规则的链——单字「词/曲」若进规则二的裸行关键词链，「曲终
+// 人散」一类正文开头的空格行会被人名串校验误伤，必须隔开。
+const CREDIT_COLON_ONLY_PREFIXES = ['演唱', '原唱', '翻唱', '词', '曲'];
+const CREDIT_COLON_ALT = [...CREDIT_PREFIXES, ...CREDIT_COLON_ONLY_PREFIXES].join('|');
+const CREDIT_COLON_CHAIN = `(?:${CREDIT_COLON_ALT})(?:\\s*[/、&]\\s*(?:${CREDIT_COLON_ALT}))*`;
 // 英文职务词（行首分支用，大小写不敏感）。
 const CREDIT_EN_ALT = [
     'Producer',
@@ -143,9 +153,10 @@ const CREDIT_EN_ALT = [
 // 「关键词＋纯英文短语＋冒号」的排版几乎不存在。
 const CREDIT_EN_MID = `[A-Za-z][A-Za-z .&]{0,24}`;
 // 规则一：中文关键词链（可夹一段英文职务词）或英文职务词打头，
-// 后跟冒号。
+// 后跟冒号。链用 CREDIT_COLON_CHAIN（含仅冒号可用的单字前缀），
+// 规则二仍用 CREDIT_CHAIN，两条链不要混用。
 const CREDIT_COLON_PATTERN = new RegExp(
-    `^(?:${CREDIT_CHAIN}(?:\\s*${CREDIT_EN_MID})?|(?:${CREDIT_EN_ALT})(?:\\s+${CREDIT_EN_MID})?)\\s*[:：]`,
+    `^(?:${CREDIT_COLON_CHAIN}(?:\\s*${CREDIT_EN_MID})?|(?:${CREDIT_EN_ALT})(?:\\s+${CREDIT_EN_MID})?)\\s*[:：]`,
     'i'
 );
 // 规则二：关键词（可多个连接）+ 空格 + 人名串；人名串另行校验。
