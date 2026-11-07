@@ -26,30 +26,65 @@
 // 白点是珍珠/眼睛感的元凶）；外圈亮边下半强、上半弱，不画均匀描边
 // 圆；每滴带 seed 时定死的微椭圆系数（0.92–1.0），去掉正圆盘感。
 //
-// 画法与手感搬自 visuals.ts 的 drawRain / ensureBackground（静止圆滴的
-// 透镜采样、亮边＋高光点、下滑滴拖尾、大光斑柔光），按卡面尺寸等比
-// 缩了密度与半径，在这里自带一份精简实现；visuals.ts 本体不动，全屏
-// 舞台行为不受影响。
+// 0.1.143 照片级折射引擎（用户对着《刀马旦》参照照片逐像素核对后
+// 定版，前几版全栽在同一个根子上：**拿糊图采样**——卡面底图是重模
+// 糊的，滴里再怎么画也只有一团色；照片里的滴恰恰相反：背景越糊、
+// 滴里越锐）。新引擎三要素：
+// - 锐图翻转采样：另备一份不加 blur 的锐版封面离屏，滴的采样窗比滴
+//   径小一圈（约滴径/1.55，等于放大 1.55 倍看），绘入时上下翻转
+//   （真折射是倒像），alpha 约 0.9 近实——滴里装的是清清楚楚的实景。
+// - 团块形状：中大滴是主圆＋2–4 颗卫星圆黏连的并集 path，不再是
+//   圆/椭圆；卫星位置 seed 时定死、逐帧不变。
+// - 密布：团块＋中滴＋细小水点三档按面积密铺（参照照片整屏满铺的
+//   密度），细点不采样、只给底色淡芯＋一颗白亮点。
+// 光影只做收尾：1–2 颗偏边小高光火花＋下缘一道细亮弧；整圈描边与
+// 月牙渐变取消——照片里的滴靠折射内容成形，不靠描边。0.1.141 的半透
+// 口径（LENS_ALPHA、月牙、提亮/清透采样源）就此废除，不留两套。
 //
-// 透镜底图：自维护两张与卡同尺寸（设备像素）的离屏画布——暗版与卡面
+// 静态滴（团块＋中滴＋细点）在种子/底图变化时先预渲染到一层离屏
+// （staticLayer），每帧只 drawImage 这层＋活画下滑滴，禁止逐帧重算
+// 团块采样（性能红线）；动态档同理，静态层打底、下滑滴活绘。
+//
+// 透镜底图：自维护与卡同尺寸（设备像素）的离屏画布——暗版与卡面
 // .lyric-card-bg 同滤镜（blur＋saturate＋brightness 0.72，保留作口径
-// 对照），清透版 blur 同步、saturate 0.55＋brightness 1.18 供透镜采样
-// （0.1.140：降饱和只留淡色调，见文件头）；大滴从清透版按滴的位置
-// 放大采样（与 visuals.ts 同口径的 1.3 倍），滴里看到的是卡底封面
-// 清透化后的扭曲映像。无封面时离屏留空，滴只画边线＋高光，在卡的
-// 渐变底上照样成立。
+// 对照，不再被采样）；锐版是同一封面原图不加 blur、按卡面尺寸 cover
+// 绘制，与暗版同键同批重建/清理，是新引擎唯一的采样源。采样坐标与
+// 卡面底图共用同一 cover 映射，翻转只翻滴内图、不挪位置。无封面时
+// 离屏留空，滴只画形状＋高光＋亮弧，在卡的渐变底上照样成立。
 //
 // 档位跟随视觉开关 rainMode（同一份存储 zhixiang.visual.toggles，不
 // 新增设置项）：0 关＝canvas 隐藏不画；1 静态＝画一帧静止滴，封面或
-// 卡尺寸变了才重画；2 动态＝rAF 动画（下滑滴滑落、光斑微动、亮边呼吸）。
+// 卡尺寸变了才重画；2 动态＝rAF 动画（下滑滴滑落、光斑微动）。
 //
 // 动画纪律同 VisualStage 的 poke/suspend：只在外部告知「已呈现」
 // （播放页打开、歌词卡显示中、未折叠）且 document 可见时跑 rAF，
 // 其余一律停画不空转；document 隐藏停、恢复可见由监听 poke 回来。
 
-// 透镜滴采样叠加的不透明度（0.1.141）：滴身半透是本版画法的根，
-// 调滴的「实/透」只动这一个数。
-const LENS_ALPHA = 0.45;
+// 折射采样（0.1.143）：采样窗与滴径之比的倒数——窗越小、滴里放得
+// 越大。照片级水珠的放大感约 1.55 倍。
+const REFRACT_ZOOM = 1.55;
+// 团块滴采样叠加的不透明度：照片里的滴近实，滴里是锐图不是雾。
+const REFRACT_ALPHA_BLOB = 0.9;
+// 中滴个头小、采样窗更小，略透一点免得成色块。
+const REFRACT_ALPHA_MID = 0.85;
+
+type DropKind = 'blob' | 'mid' | 'speck' | 'slider';
+
+interface DropPart {
+    /** 圆心偏移（以主圆半径为单位），seed 时定死。 */
+    dx: number;
+    dy: number;
+    /** 该圆半径（以主圆半径为单位；主圆恒为 1）。 */
+    rr: number;
+}
+
+interface DropSpark {
+    /** 高光火花位置（以主圆半径为单位，偏边定死、不取正中）。 */
+    dx: number;
+    dy: number;
+    /** 火花半径（以主圆半径为单位）。 */
+    rr: number;
+}
 
 interface Drop {
     x: number;
@@ -57,9 +92,15 @@ interface Drop {
     radius: number;
     speed: number;
     trail: number;
-    phase: number;
-    /** 纵向微椭圆系数（0.92–1.0，seed 时定死、逐帧不变）：去正圆盘感。 */
+    /** 纵向微椭圆系数（seed 时定死、逐帧不变）：团块在并集之上再略压。 */
     squash: number;
+    kind: DropKind;
+    /** 团块并集的圆组成（主圆＋卫星圆）；单圆滴为 null。 */
+    parts: DropPart[] | null;
+    /** 并集外接半宽（以主圆半径为单位，≥1）：定采样窗与绘制范围。 */
+    extent: number;
+    /** 偏边小高光火花（1–2 颗，seed 时定死）；细水点不用（自带亮点）。 */
+    sparks: DropSpark[];
 }
 
 interface Bokeh {
@@ -87,10 +128,14 @@ export class LyricDrops {
     private seededWidth = 0;
     private seededHeight = 0;
     private bgCanvas: HTMLCanvasElement | null = null;
-    // 清透采样源（0.1.139 建、0.1.140 改降饱和口径）：与 bgCanvas 同步
-    // 重建，透镜滴只采这一份。
-    private bgBrightCanvas: HTMLCanvasElement | null = null;
+    // 锐版采样源（0.1.143）：同一封面原图不加 blur、cover 绘满卡面，
+    // 与 bgCanvas 同步重建；团块/中滴/下滑滴的折射只采这一份。
+    private bgSharpCanvas: HTMLCanvasElement | null = null;
     private bgKey = '';
+    // 静态滴预渲染层（0.1.143）：种子或底图一变就置脏，下一帧重建；
+    // 尺寸与主画布不一致时也重建（DPR 变化等）。
+    private staticLayer: HTMLCanvasElement | null = null;
+    private staticDirty = true;
     private coverImage: HTMLImageElement | null = null;
     private coverSrc = '';
     private coverReady = false;
@@ -126,7 +171,7 @@ export class LyricDrops {
         this.bgKey = '';
         if (!src) {
             this.bgCanvas = null;
-            this.bgBrightCanvas = null;
+            this.bgSharpCanvas = null;
             this.poke();
             return;
         }
@@ -217,6 +262,50 @@ export class LyricDrops {
         this.rebuildBackground();
     }
 
+    // 团块并集：主圆＋2–4 颗卫星圆（半径 0.38–0.68 主圆、圆心距
+    // 0.45–0.85 主圆半径、纵向再乘 0.85 略压），seed 时定死。
+    private makeParts(): DropPart[] {
+        const parts: DropPart[] = [{ dx: 0, dy: 0, rr: 1 }];
+        const satellites = 2 + Math.floor(Math.random() * 3);
+        for (let i = 0; i < satellites; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const dist = 0.45 + Math.random() * 0.4;
+            parts.push({
+                dx: Math.cos(angle) * dist,
+                dy: Math.sin(angle) * dist * 0.85,
+                rr: 0.38 + Math.random() * 0.3
+            });
+        }
+        return parts;
+    }
+
+    private extentOf(parts: DropPart[] | null): number {
+        if (!parts) {
+            return 1;
+        }
+        let extent = 1;
+        for (const part of parts) {
+            extent = Math.max(extent, Math.abs(part.dx) + part.rr, Math.abs(part.dy) + part.rr);
+        }
+        return extent;
+    }
+
+    // 高光火花：1–2 颗，离心 0.35–0.62（偏边、不取正中），seed 定死。
+    private makeSparks(): DropSpark[] {
+        const sparks: DropSpark[] = [];
+        const count = 1 + Math.floor(Math.random() * 2);
+        for (let i = 0; i < count; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const dist = 0.35 + Math.random() * 0.27;
+            sparks.push({
+                dx: Math.cos(angle) * dist,
+                dy: Math.sin(angle) * dist,
+                rr: 0.09 + Math.random() * 0.07
+            });
+        }
+        return sparks;
+    }
+
     private seed(width: number, height: number): void {
         if (
             width === this.seededWidth &&
@@ -230,37 +319,57 @@ export class LyricDrops {
         this.drops = [];
         this.bokeh = [];
         const area = width * height;
-        // 密度按卡面积换算：参照密铺观感，以约 300×260 的卡面给静止滴
-        // 约 50 颗为锚（每 1600px² 一颗），密度总数不减；半径 3–12px
-        // （0.1.139 上限从 14 收到 12、指数 1.6→1.9 更偏小头），大滴
-        // （透镜滴）占比压下来，免得几颗大滴压字面积太招摇；
-        // 卡变大变小都按面积等比增减，钳住上下限免得极端尺寸失真。
-        const stillCount = Math.round(Math.min(90, Math.max(16, area / 1600)));
-        for (let i = 0; i < stillCount; i++) {
+        const push = (
+            kind: DropKind,
+            radius: number,
+            blob: boolean,
+            speed = 0,
+            trail = 0
+        ): void => {
+            const parts = blob ? this.makeParts() : null;
             this.drops.push({
                 x: Math.random() * width,
                 y: Math.random() * height,
-                radius: 3 + Math.pow(Math.random(), 1.9) * 9,
-                speed: 0,
-                trail: 0,
-                phase: Math.random() * Math.PI * 2,
-                squash: 0.92 + Math.random() * 0.08
+                radius,
+                speed,
+                trail,
+                squash: blob ? 0.94 + Math.random() * 0.06 : 1,
+                kind,
+                parts,
+                extent: this.extentOf(parts),
+                sparks: kind === 'speck' ? [] : this.makeSparks()
             });
+        };
+        // 密度按卡面积换算（0.1.143 照片级密布口径）：以约 300×260 的
+        // 卡面为锚——团块约 28 颗（area/2800，半径 7–20）、中滴约 70
+        // 颗（area/1100，半径 3–7）、细水点约 170 颗（area/450，半径
+        // 0.8–2.2）；卡变大变小按面积等比增减，钳住上下限防极端尺寸
+        // 失真。参照照片是整屏满铺，这个密度只少不多。
+        const blobCount = Math.round(Math.min(64, Math.max(8, area / 2800)));
+        for (let i = 0; i < blobCount; i++) {
+            push('blob', 7 + Math.pow(Math.random(), 1.5) * 13, true);
         }
-        // 下滑滴：全屏舞台是 16 颗/整屏，卡面按面积约 5 颗；半径 5–11
-        // （0.1.139 同步收小），生长感靠速度慢、拖尾短先立住，
-        // 滑落→出界→顶部重生。
+        const midCount = Math.round(Math.min(170, Math.max(24, area / 1100)));
+        for (let i = 0; i < midCount; i++) {
+            push('mid', 3 + Math.random() * 4, false);
+        }
+        const speckCount = Math.round(Math.min(400, Math.max(60, area / 450)));
+        for (let i = 0; i < speckCount; i++) {
+            push('speck', 0.8 + Math.pow(Math.random(), 1.3) * 1.4, false);
+        }
+        // 下滑滴：数量保持现行量级（卡面按面积约 5 颗），半径 5–11；
+        // 半径 ≥7 的走团块＋锐采样，小的走单圆，拖尾保留白渐变细线，
+        // 滑落→出界→顶部重生（重生只换 x，团块/火花/压扁系数不变）。
         const sliderCount = Math.round(Math.min(8, Math.max(2, area / 16000)));
         for (let i = 0; i < sliderCount; i++) {
-            this.drops.push({
-                x: Math.random() * width,
-                y: Math.random() * height,
-                radius: 5 + Math.random() * 6,
-                speed: 0.25 + Math.random() * 0.45,
-                trail: 14 + Math.random() * 26,
-                phase: Math.random() * Math.PI * 2,
-                squash: 0.92 + Math.random() * 0.08
-            });
+            const radius = 5 + Math.random() * 6;
+            push(
+                'slider',
+                radius,
+                radius >= 7,
+                0.25 + Math.random() * 0.45,
+                14 + Math.random() * 26
+            );
         }
         // 大光斑：只做柔光深度，半径按卡面缩（全屏 30–80 → 卡面 22–58）。
         const bokehCount = Math.round(Math.min(6, Math.max(2, area / 26000)));
@@ -273,10 +382,12 @@ export class LyricDrops {
                 phase: Math.random() * Math.PI * 2
             });
         }
+        // 种子换了：静态层作废，下一帧重建。
+        this.staticDirty = true;
     }
 
-    // 透镜底图离屏缓存：封面或尺寸没变就复用（键同 visuals.ts 口径）；
-    // 无封面时置空，drawDrops 自动退回无透镜画法。
+    // 采样底图离屏缓存：封面或尺寸没变就复用（键同 visuals.ts 口径）；
+    // 无封面时置空，滴自动退回无折射画法（只剩形状＋高光＋亮弧）。
     private rebuildBackground(): void {
         const width = this.canvas.width;
         const height = this.canvas.height;
@@ -285,14 +396,18 @@ export class LyricDrops {
             return;
         }
         this.bgKey = key;
+        // 底图换了：静态层里的折射内容作废，下一帧重建。
+        this.staticDirty = true;
         const img = this.coverImage;
         if (!this.coverReady || !img || img.naturalWidth <= 0 || width <= 1 || height <= 1) {
             this.bgCanvas = null;
-            this.bgBrightCanvas = null;
+            this.bgSharpCanvas = null;
             return;
         }
-        // 与卡面 .lyric-card-bg 同观感：blur 28px 是 CSS 像素口径，离屏在
-        // 设备像素上画，半径按倍率折算；saturate/brightness 与 CSS 一致。
+        // 与卡面 .lyric-card-bg 同 cover 映射：三份离屏共用同一套
+        // cover 几何（居中裁切绘满），采样坐标才与卡面底图对得齐。
+        // blur 28px 是 CSS 像素口径，离屏在设备像素上画，半径按倍率
+        // 折算；saturate/brightness 与 CSS 一致（仅暗版需要）。
         const ratio = this.seededWidth > 0 ? width / this.seededWidth : 1;
         const blurPx = Math.round(24 * ratio);
         const paint = (filter: string): HTMLCanvasElement | null => {
@@ -305,7 +420,9 @@ export class LyricDrops {
             }
             tctx.save();
             try {
-                tctx.filter = filter;
+                if (filter) {
+                    tctx.filter = filter;
+                }
                 const scale = Math.max(width / img.naturalWidth, height / img.naturalHeight);
                 const drawWidth = img.naturalWidth * scale;
                 const drawHeight = img.naturalHeight * scale;
@@ -318,7 +435,7 @@ export class LyricDrops {
                 );
                 return target;
             } catch {
-                // 图源跨域/损坏时 drawImage 可能抛错：无透镜兜底，不掀翻整卡。
+                // 图源跨域/损坏时 drawImage 可能抛错：无折射兜底，不掀翻整卡。
                 return null;
             } finally {
                 tctx.filter = 'none';
@@ -326,12 +443,9 @@ export class LyricDrops {
             }
         };
         this.bgCanvas = paint(`blur(${blurPx}px) saturate(1.25) brightness(0.72)`);
-        // 清透采样源（0.1.139 建提亮版，0.1.140 改清透口径）：同一封面
-        // 多画一份，blur 同步——取向是「滴内只留淡色调」：饱和压到
-        // 0.55、亮度抬到 1.18，封面再艳（蓝绿）吸进滴里也只剩一层淡
-        // 影，不再成糖豆。透镜滴只采它。离屏重建时一次画好，不在每
-        // 帧每滴上用 ctx.filter；变量名沿用 bgBrightCanvas 不改。
-        this.bgBrightCanvas = paint(`blur(${blurPx}px) saturate(0.55) brightness(1.18)`);
+        // 锐版（0.1.143）：不加任何滤镜——滴里要的就是未模糊的原图，
+        // 与暗版同批重建。旧提亮/清透版离屏随半透画法一并废除。
+        this.bgSharpCanvas = paint('');
     }
 
     private drawFrame(time: number, animated: boolean): void {
@@ -342,25 +456,10 @@ export class LyricDrops {
         const width = this.canvas.width;
         const height = this.canvas.height;
         ctx.clearRect(0, 0, width, height);
-        this.drawDrops(ctx, width, height, time, animated);
-    }
-
-    // 水滴本体：坐标口径同 visuals.ts 的 drawRain（CSS 像素存、绘制时
-    // 按 scale 换到设备像素），光斑微动是卡面多的一项；单滴画法
-    // 0.1.141 起不再照搬全屏版，按参照图的透光结构自成一套（见文件头）。
-    private drawDrops(
-        ctx: CanvasRenderingContext2D,
-        width: number,
-        height: number,
-        time: number,
-        animated: boolean
-    ): void {
         const cssWidth = this.canvas.clientWidth || width;
         const cssHeight = this.canvas.clientHeight || height;
         const scaleX = width / cssWidth;
         const scaleY = height / cssHeight;
-        const tick = animated ? performance.now() / 1000 : 0;
-        ctx.save();
         // 大光斑：失焦柔光，只做深度；动态档给几像素的正弦微动（全屏版
         // 是静止的，卡面小，微动才看得出「活气」），静态帧不偏移。
         for (const spot of this.bokeh) {
@@ -377,8 +476,17 @@ export class LyricDrops {
             );
             ctx.fill();
         }
+        // 静态滴：预渲染层整张贴上（团块采样只在重建时算一次）。
+        this.buildStaticLayer(scaleX, scaleY);
+        if (this.staticLayer) {
+            ctx.drawImage(this.staticLayer, 0, 0);
+        }
+        // 下滑滴：活画（静态档也画一帧，停在种子位置）。
         for (const drop of this.drops) {
-            if (animated && drop.speed > 0) {
+            if (drop.kind !== 'slider') {
+                continue;
+            }
+            if (animated) {
                 drop.y += drop.speed;
                 if (drop.y - drop.trail > cssHeight) {
                     drop.y = -drop.trail;
@@ -388,8 +496,7 @@ export class LyricDrops {
             const x = drop.x * scaleX;
             const y = drop.y * scaleY;
             const r = drop.radius * scaleX;
-            // 下滑拖尾（0.1.139）：半透明白色渐变细线，尾端全透明、近滴
-            // 处 0.35——水痕是亮的，不再用偏蓝深色线。
+            // 下滑拖尾：半透明白色渐变细线，尾端全透明、近滴处 0.35。
             if (drop.trail > 0) {
                 const trailTop = y - drop.trail * scaleY;
                 const gradient = ctx.createLinearGradient(0, trailTop, 0, y);
@@ -402,123 +509,164 @@ export class LyricDrops {
                 ctx.lineTo(x, y);
                 ctx.stroke();
             }
-            // 圆滴（0.1.141 画法重画，取向见文件头：滴身透、靠月牙与
-            // 偏置高光成形、不实填）。以下绘制全在以滴心为原点、纵向
-            // scale 了 squash 的局部坐标里做；拖尾已在变换外画完，不受
-            // 椭圆影响。固定顺序：clip 圆 → 采样半透叠加（仅透镜滴）→
-            // 底部月牙亮光 → 顶部内侧薄影 → 外圈亮边（下强上弱）→
-            // 左上偏置高光。
-            // 透镜滴＝大滴（CSS 半径 ≥6）且采样窗不出界：只采清透版离
-            // 屏（bgBrightCanvas，降饱和＋提亮，缺失时退暗版）；小滴/
-            // 贴边滴/无封面走无采样路径，透明中心、只上光影结构。
-            const shimmer = 0.4 + 0.25 * Math.sin(tick * 0.8 + drop.phase);
-            const rimWidth = Math.max(1, scaleX);
-            const shadowWidth = Math.max(1.5, scaleX * 1.5);
-            const srcSize = (r * 2) / 1.3;
-            const lensSrc = this.bgBrightCanvas ?? this.bgCanvas;
-            const hasLens =
-                !!lensSrc &&
-                drop.radius >= 6 &&
-                x - srcSize / 2 >= 0 &&
-                y - srcSize / 2 >= 0 &&
-                x + srcSize / 2 <= width &&
-                y + srcSize / 2 <= height;
-            ctx.save();
-            ctx.translate(x, y);
-            ctx.scale(1, drop.squash);
-            // 底部月牙：光穿过滴身在底部聚焦的亮带——径向渐变的光源点
-            // 压在滴心下方，亮度向外散尽，填满整圆后自然只在底部成
-            // 月牙（顶部离光源远、渐变已散尽）。参照图里最显眼的水感
-            // 特征就是它。
-            const drawCrescent = (): void => {
-                const glow = ctx.createRadialGradient(0, r * 0.55, 0, 0, r * 0.55, r * 0.95);
-                glow.addColorStop(0, 'rgba(255, 255, 255, 0.35)');
-                glow.addColorStop(0.55, 'rgba(255, 255, 255, 0.13)');
-                glow.addColorStop(1, 'rgba(255, 255, 255, 0)');
-                ctx.fillStyle = glow;
-                ctx.beginPath();
-                ctx.arc(0, 0, r, 0, Math.PI * 2);
-                ctx.fill();
-            };
-            // 顶部内侧薄影：只占上缘一小段，与底部月牙一暗一亮撑出
-            // 体积；不整圈描边（均匀整圈是圆盘感的来源之一）。
-            const drawTopShadow = (): void => {
-                ctx.strokeStyle = 'rgba(0, 0, 0, 0.10)';
-                ctx.lineWidth = shadowWidth;
-                ctx.beginPath();
-                ctx.arc(
-                    0,
-                    0,
-                    Math.max(0.5, r - shadowWidth / 2),
-                    Math.PI * 1.18,
-                    Math.PI * 1.82
-                );
-                ctx.stroke();
-            };
-            if (hasLens && lensSrc) {
-                ctx.save();
-                ctx.beginPath();
-                ctx.arc(0, 0, r, 0, Math.PI * 2);
-                ctx.clip();
-                // 滴身半透：采样只以 LENS_ALPHA 叠上来，卡面从滴里
-                // 透出——滴是罩在字上的一层水膜，不再是实心盘子。
-                // 0.1.140 的整圆叠白随实填一起废除（它的活由月牙接）。
-                ctx.globalAlpha = LENS_ALPHA;
-                ctx.drawImage(
-                    lensSrc,
-                    x - srcSize / 2,
-                    y - srcSize / 2,
-                    srcSize,
-                    srcSize,
-                    -r,
-                    -r,
-                    r * 2,
-                    r * 2
-                );
-                ctx.globalAlpha = 1;
-                drawCrescent();
-                drawTopShadow();
-                ctx.restore();
-            } else {
-                drawCrescent();
-                drawTopShadow();
+            this.paintDropBody(ctx, drop, x, y, r, scaleX);
+        }
+    }
+
+    // 静态层预渲染（0.1.143 性能红线）：团块＋中滴＋细点在种子/底图
+    // 变化时绘到离屏一次，逐帧只贴图。细点的底色靠读一次锐版像素
+    // （重建时一次性开销），不逐点 drawImage。
+    private buildStaticLayer(scaleX: number, scaleY: number): void {
+        const width = this.canvas.width;
+        const height = this.canvas.height;
+        if (
+            !this.staticDirty &&
+            this.staticLayer &&
+            this.staticLayer.width === width &&
+            this.staticLayer.height === height
+        ) {
+            return;
+        }
+        const layer = document.createElement('canvas');
+        layer.width = width;
+        layer.height = height;
+        const lctx = layer.getContext('2d');
+        if (!lctx) {
+            return;
+        }
+        let speckData: ImageData | null = null;
+        const sharp = this.bgSharpCanvas;
+        if (sharp) {
+            const sctx = sharp.getContext('2d');
+            if (sctx) {
+                try {
+                    speckData = sctx.getImageData(0, 0, width, height);
+                } catch {
+                    speckData = null;
+                }
             }
-            // 外圈亮边：保留 1px，但下半圈强、上半圈弱到 0.55 倍——
-            // 贴近光从滴底透出的样子；均匀整圈亮边会把滴画成圆圈。
-            const rimBase = hasLens ? shimmer : 0.38;
-            const rimRadius = Math.max(0.5, r - rimWidth / 2);
-            ctx.lineWidth = rimWidth;
-            ctx.strokeStyle = `rgba(255, 255, 255, ${rimBase.toFixed(3)})`;
-            ctx.beginPath();
-            ctx.arc(0, 0, rimRadius, 0, Math.PI);
-            ctx.stroke();
-            ctx.strokeStyle = `rgba(255, 255, 255, ${(rimBase * 0.55).toFixed(3)})`;
-            ctx.beginPath();
-            ctx.arc(0, 0, rimRadius, Math.PI, Math.PI * 2);
-            ctx.stroke();
-            // 高光：左上偏置的小椭圆亮点（偏约 0.35r、长半径约 0.19r、
-            // alpha 0.85）＋其右下一颗更小的次级点。正中大白点是珍珠
-            // 感的元凶——务必偏、务必小。小滴（设备半径 <5）省次级点，
-            // 免得糊成一团。
-            ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+        }
+        for (const drop of this.drops) {
+            if (drop.kind === 'slider') {
+                continue;
+            }
+            const x = drop.x * scaleX;
+            const y = drop.y * scaleY;
+            const r = drop.radius * scaleX;
+            if (drop.kind === 'speck') {
+                // 细水点：不采样，底色淡芯（有锐版就取该点像素色，没有
+                // 退半透明白）＋左上一颗白色小亮点。
+                let core = 'rgba(255, 255, 255, 0.12)';
+                if (speckData) {
+                    const px = Math.min(width - 1, Math.max(0, Math.round(x)));
+                    const py = Math.min(height - 1, Math.max(0, Math.round(y)));
+                    const idx = (py * width + px) * 4;
+                    core = `rgba(${speckData.data[idx]}, ${speckData.data[idx + 1]}, ${speckData.data[idx + 2]}, 0.5)`;
+                }
+                lctx.fillStyle = core;
+                lctx.beginPath();
+                lctx.arc(x, y, r, 0, Math.PI * 2);
+                lctx.fill();
+                lctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+                lctx.beginPath();
+                lctx.arc(
+                    x - r * 0.35,
+                    y - r * 0.38,
+                    Math.max(0.4, r * 0.34),
+                    0,
+                    Math.PI * 2
+                );
+                lctx.fill();
+                continue;
+            }
+            this.paintDropBody(lctx, drop, x, y, r, scaleX);
+        }
+        this.staticLayer = layer;
+        this.staticDirty = false;
+    }
+
+    // 单滴滴身（团块/中滴/下滑滴共用，0.1.143 照片级折射画法）：
+    // 以滴心为原点、纵向 scale 了 squash 的局部坐标里绘制——
+    // 并集 path（主圆＋卫星圆同 path 多 arc，nonzero 填充即并集）→
+    // clip → 锐版采样上下翻转＋放大绘入（采样窗＝并集外接宽/1.55，
+    // 居中对滴心；卫星区由同一张采样图自然延展覆盖）→ 下缘细亮弧 →
+    // 偏边高光火花。采样窗出界（贴边滴）或无锐版时跳过采样，只剩
+    // 形状＋亮弧＋火花，边缘不消失靠的就是这道下缘弧兜底。
+    private paintDropBody(
+        ctx: CanvasRenderingContext2D,
+        drop: Drop,
+        x: number,
+        y: number,
+        r: number,
+        scaleX: number
+    ): void {
+        const width = this.canvas.width;
+        const height = this.canvas.height;
+        const sharp = this.bgSharpCanvas;
+        const alpha = drop.kind === 'mid' ? REFRACT_ALPHA_MID : REFRACT_ALPHA_BLOB;
+        const extentPx = r * drop.extent;
+        const win = (extentPx * 2) / REFRACT_ZOOM;
+        const canRefract =
+            !!sharp &&
+            x - win / 2 >= 0 &&
+            y - win / 2 >= 0 &&
+            x + win / 2 <= width &&
+            y + win / 2 <= height;
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(1, drop.squash);
+        ctx.beginPath();
+        if (drop.parts) {
+            for (const part of drop.parts) {
+                ctx.moveTo(part.dx * r + part.rr * r, part.dy * r);
+                ctx.arc(part.dx * r, part.dy * r, part.rr * r, 0, Math.PI * 2);
+            }
+        } else {
+            ctx.arc(0, 0, r, 0, Math.PI * 2);
+        }
+        ctx.clip();
+        if (canRefract && sharp) {
+            ctx.save();
+            // 上下翻转只作用于滴内采样图：scale(1,-1) 后同一目标矩形
+            // 落位不变、内容倒置（真折射的倒像）；位置仍对滴心，采样
+            // 坐标走锐版的 cover 映射，与卡面底图对齐。
+            ctx.scale(1, -1);
+            ctx.globalAlpha = alpha;
+            ctx.drawImage(
+                sharp,
+                x - win / 2,
+                y - win / 2,
+                win,
+                win,
+                -extentPx,
+                -extentPx,
+                extentPx * 2,
+                extentPx * 2
+            );
+            ctx.globalAlpha = 1;
+            ctx.restore();
+        }
+        // 下缘细亮弧：光从滴底透出的亮边，只走下半（0.15π–0.85π），
+        // 是全删描边后唯一的边缘兜底。
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+        ctx.lineWidth = Math.max(1, scaleX * 0.9);
+        ctx.beginPath();
+        ctx.arc(0, 0, Math.max(0.5, r * 0.94), Math.PI * 0.15, Math.PI * 0.85);
+        ctx.stroke();
+        // 高光火花：seed 时定死的偏边小亮点（椭圆、略压），1–2 颗。
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+        for (const spark of drop.sparks) {
             ctx.beginPath();
             ctx.ellipse(
-                -r * 0.34,
-                -r * 0.34,
-                Math.max(0.7, r * 0.19),
-                Math.max(0.5, r * 0.12),
-                -0.7,
+                spark.dx * r,
+                spark.dy * r,
+                Math.max(0.5, spark.rr * r),
+                Math.max(0.35, spark.rr * r * 0.7),
+                0,
                 0,
                 Math.PI * 2
             );
             ctx.fill();
-            if (r >= 5) {
-                ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-                ctx.beginPath();
-                ctx.arc(-r * 0.16, -r * 0.14, Math.max(0.5, r * 0.07), 0, Math.PI * 2);
-                ctx.fill();
-            }
-            ctx.restore();
         }
         ctx.restore();
     }
