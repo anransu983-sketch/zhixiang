@@ -1498,6 +1498,9 @@ function buildPlayerPage(): HTMLElement {
     let coverExpected = '';
     let coverLoaded = false;
     let coverForTrackId: string | null = null;
+    // 上次实际套上的封面地址：同一首歌封面被异步换掉时（B站拆歌段匹配
+    // 到网易云本歌封面）id 不变、只地址变，守卫要连地址一起比才肯重套。
+    let coverAppliedUrl: string | null = null;
     let coverTrackPresent = false;
     const coverCache = new Map<string, string>();
     const updateCoverVisibility = (): void => {
@@ -1543,6 +1546,7 @@ function buildPlayerPage(): HTMLElement {
     const applyCover = (track: Track | null): void => {
         if (!track) {
             coverForTrackId = null;
+            coverAppliedUrl = null;
             coverTrackPresent = false;
             hideCover();
             return;
@@ -1551,13 +1555,15 @@ function buildPlayerPage(): HTMLElement {
         coverPlaceholder.style.background = posterFallbackBackground(track.id);
         if (!track.coverUrl) {
             coverForTrackId = null;
+            coverAppliedUrl = null;
             hideCover();
             return;
         }
-        if (track.id === coverForTrackId) {
+        if (track.id === coverForTrackId && track.coverUrl === coverAppliedUrl) {
             return;
         }
         coverForTrackId = track.id;
+        coverAppliedUrl = track.coverUrl;
         const cached = coverCache.get(track.id);
         if (cached) {
             setCoverSrc(cached);
