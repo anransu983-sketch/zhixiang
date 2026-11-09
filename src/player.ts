@@ -368,15 +368,17 @@ function buildPlayerPage(): HTMLElement {
     repeatLabel.className = 'player-bottom-label';
     repeatLabel.textContent = '关';
     repeatButton.append(repeatGlyph, repeatLabel);
-    const repeatOrder: RepeatMode[] = ['off', 'queue', 'one'];
+    const repeatOrder: RepeatMode[] = ['off', 'queue', 'one', 'shuffle'];
     const repeatLabelText: Record<RepeatMode, string> = {
         off: '关',
         queue: '循环',
-        one: '单曲'
+        one: '单曲',
+        shuffle: '随机'
     };
     const updateRepeatButton = (): void => {
         const mode = getRepeatMode();
         repeatLabel.textContent = repeatLabelText[mode];
+        repeatGlyph.textContent = mode === 'shuffle' ? '⇌' : '↻︎';
         repeatButton.classList.toggle('is-active', mode !== 'off');
     };
     repeatButton.addEventListener('click', () => {

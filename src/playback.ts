@@ -82,15 +82,17 @@ export interface PlaybackState {
 }
 
 // 循环模式（播放页底排用，只影响自然播完与队尾手动下一首，不动淡入淡出）：
-// off = 不循环，queue = 列表循环，one = 单曲循环。存在 localStorage。
-export type RepeatMode = 'off' | 'queue' | 'one';
+// off = 不循环，queue = 列表循环，one = 单曲循环，shuffle = 随机播放
+// （同一轮不重复、不连播当前曲，「上一首」按真实播放历史回退，见下）。
+// 存在 localStorage。
+export type RepeatMode = 'off' | 'queue' | 'one' | 'shuffle';
 
 const REPEAT_KEY = 'zx_repeat_mode_v1';
 
 export function getRepeatMode(): RepeatMode {
     try {
         const raw = localStorage.getItem(REPEAT_KEY);
-        if (raw === 'queue' || raw === 'one') {
+        if (raw === 'queue' || raw === 'one' || raw === 'shuffle') {
             return raw;
         }
     } catch {
@@ -105,6 +107,114 @@ export function setRepeatMode(mode: RepeatMode): void {
     } catch {
         // 存不下只影响下次打开的默认值。
     }
+}
+
+// ---- 随机播放的真实历史栈 ----
+// 随机模式下光靠队列下标算不出「上一首」：真实顺序只存在于实际播出
+// 的序列里。故每次成功起播都把 queueIndex 压进历史栈（相邻重复去重、
+// 上限 100 条）；随机「上一首」沿栈回退、「下一首」先沿栈前进（redo），
+// 走完历史才再掷随机。历史持久化时带队列指纹（各曲 source:id 拼接的
+// 简单哈希）：playQueue 设新队列时指纹一致才恢复，不一致清栈重记，
+// 免得把上一个队列的下标错套到新队列上。
+const HISTORY_KEY = 'zx.playback.history.v1';
+const HISTORY_LIMIT = 100;
+let playHistory: number[] = [];
+let historyCursor = -1;
+let historyFingerprint = '';
+let shufflePlayed = new Set<number>();
+// 历史内移动（随机上下首的回退/redo）时置真：那次起播不压栈，只移游标。
+let historySuppress = false;
+
+function queueFingerprintOf(tracks: Track[]): string {
+    const raw = tracks.map((t) => `${t.source}:${t.id}`).join('|');
+    let hash = 5381;
+    for (let i = 0; i < raw.length; i++) {
+        hash = ((hash << 5) + hash + raw.charCodeAt(i)) >>> 0;
+    }
+    return `${tracks.length}:${hash.toString(16)}`;
+}
+
+function persistHistory(): void {
+    try {
+        localStorage.setItem(
+            HISTORY_KEY,
+            JSON.stringify({ fp: historyFingerprint, stack: playHistory })
+        );
+    } catch {
+        // 存不下只影响重启后的历史恢复，本次会话内的栈照常工作。
+    }
+}
+
+function setupHistoryForQueue(tracks: Track[]): void {
+    historyFingerprint = queueFingerprintOf(tracks);
+    shufflePlayed = new Set<number>();
+    playHistory = [];
+    historyCursor = -1;
+    try {
+        const raw = localStorage.getItem(HISTORY_KEY);
+        const parsed = raw ? (JSON.parse(raw) as { fp?: unknown; stack?: unknown }) : null;
+        if (parsed && parsed.fp === historyFingerprint && Array.isArray(parsed.stack)) {
+            playHistory = parsed.stack
+                .filter(
+                    (i): i is number =>
+                        typeof i === 'number' && Number.isInteger(i) && i >= 0 && i < tracks.length
+                )
+                .slice(-HISTORY_LIMIT);
+            historyCursor = playHistory.length - 1;
+            for (const i of playHistory) {
+                shufflePlayed.add(i);
+            }
+        }
+    } catch {
+        // 存档损坏按新队列清栈处理。
+    }
+}
+
+function recordHistory(index: number): void {
+    shufflePlayed.add(index);
+    if (historySuppress) {
+        return;
+    }
+    if (playHistory[historyCursor] === index) {
+        return;
+    }
+    // redo 尾巴上下一首正好是它：只移游标，不重复压栈。
+    if (historyCursor < playHistory.length - 1 && playHistory[historyCursor + 1] === index) {
+        historyCursor += 1;
+        persistHistory();
+        return;
+    }
+    playHistory = playHistory.slice(0, historyCursor + 1);
+    playHistory.push(index);
+    if (playHistory.length > HISTORY_LIMIT) {
+        playHistory.shift();
+    }
+    historyCursor = playHistory.length - 1;
+    persistHistory();
+}
+
+// 随机选一首的起点：优先没在本轮播过的、且不是当前曲；本轮播满
+// （或只剩当前曲）时重置本轮集合（保留当前曲在集合里，仍不连播）。
+function pickShuffleStart(): number {
+    if (queue.length <= 1) {
+        return 0;
+    }
+    let candidates: number[] = [];
+    for (let i = 0; i < queue.length; i++) {
+        if (i !== queueIndex && !shufflePlayed.has(i)) {
+            candidates.push(i);
+        }
+    }
+    if (candidates.length === 0) {
+        shufflePlayed = new Set<number>([queueIndex]);
+        candidates = [];
+        for (let i = 0; i < queue.length; i++) {
+            if (i !== queueIndex) {
+                candidates.push(i);
+            }
+        }
+    }
+    return candidates[Math.floor(Math.random() * candidates.length)] ?? 0;
 }
 
 type StateListener = (state: PlaybackState) => void;
@@ -739,6 +849,7 @@ async function tryPlayFrom(
                 return { played: false, failed, stale: true };
             }
             queueIndex = i;
+            recordHistory(i);
             return { played: true, failed, stale: false };
         } catch (error) {
             // 0.1.105：网易云曲目起不来时，先试 B 站兜底（歌名歌手时长评分）；
@@ -753,6 +864,7 @@ async function tryPlayFrom(
                         }
                         queue[i] = fallback;
                         queueIndex = i;
+                        recordHistory(i);
                         return { played: true, failed, stale: false };
                     } catch {
                         // 兜底也失败：按原路计失败、继续跳歌。
@@ -775,6 +887,82 @@ async function tryPlayFrom(
         }
     }
     return { played: false, failed, stale: false };
+}
+
+// 随机推进：先从随机起点顺序试（沿用 tryPlayFrom 的失败上限语义），
+// 起点之后全失败时再从队首兜底一轮（可能重试起点之后的失败曲，
+// 由失败上限封顶，不会整单无限刷）。成功落点由 recordHistory 记栈。
+async function tryPlayShuffle(
+    crossfade: boolean
+): Promise<{ played: boolean; failed: number; stale: boolean }> {
+    const start = pickShuffleStart();
+    const first = await tryPlayFrom(start, crossfade, 1);
+    if (first.played || first.stale || start === 0) {
+        return first;
+    }
+    const wrap = await tryPlayFrom(0, crossfade, 1);
+    if (wrap.stale) {
+        return wrap;
+    }
+    return {
+        played: wrap.played,
+        failed: first.failed + wrap.failed,
+        stale: false
+    };
+}
+
+// 随机「下一首」：先沿历史前进（redo），走完历史才掷随机。
+// redo 命中目标时只移游标；因失败落到别的下标时，把落点当新分支压栈。
+async function playNextShuffle(
+    crossfade: boolean
+): Promise<{ played: boolean; failed: number; stale: boolean }> {
+    if (historyCursor < playHistory.length - 1) {
+        const target = playHistory[historyCursor + 1]!;
+        historySuppress = true;
+        try {
+            const result = await tryPlayFrom(target, crossfade, 1);
+            if (result.played) {
+                if (queueIndex === target) {
+                    historyCursor += 1;
+                    persistHistory();
+                } else {
+                    historySuppress = false;
+                    recordHistory(queueIndex);
+                }
+            }
+            return result;
+        } finally {
+            historySuppress = false;
+        }
+    }
+    return tryPlayShuffle(crossfade);
+}
+
+// 随机「上一首」：沿真实历史回退一格。无历史可退时回 null，
+// 调用方走既有口径（回开头/队列上一首）。
+async function playPrevShuffle(
+    crossfade: boolean
+): Promise<{ played: boolean; failed: number; stale: boolean } | null> {
+    if (historyCursor <= 0) {
+        return null;
+    }
+    const target = playHistory[historyCursor - 1]!;
+    historySuppress = true;
+    try {
+        const result = await tryPlayFrom(target, crossfade, -1);
+        if (result.played) {
+            if (queueIndex === target) {
+                historyCursor -= 1;
+                persistHistory();
+            } else {
+                historySuppress = false;
+                recordHistory(queueIndex);
+            }
+        }
+        return result;
+    } finally {
+        historySuppress = false;
+    }
 }
 
 // 全部失败时的提示：单首失败保留旧文案，多首才注明跳过了几首。
@@ -815,6 +1003,30 @@ async function advanceAfterEnded(): Promise<void> {
             }
             return;
         }
+    }
+    // 随机模式：与队列位置无关，沿历史 redo 或掷随机；全失败按播完停。
+    if (mode === 'shuffle' && queue.length > 0) {
+        const shuffleResult = await playNextShuffle(false);
+        if (shuffleResult.stale) {
+            return;
+        }
+        if (shuffleResult.played) {
+            return;
+        }
+        playing = false;
+        lastError = skipAllMessage(shuffleResult.failed);
+        emitTrackChange();
+        try {
+            await stopPlaybackService();
+        } catch {
+            // 忽略。
+        }
+        try {
+            await stopStreamProxy();
+        } catch {
+            // 忽略。
+        }
+        return;
     }
     if (queueIndex >= queue.length - 1) {
         // 列表循环：队尾播完回到队首；队首起全播不了时按播完处理并提示。
@@ -899,6 +1111,8 @@ export async function playQueue(tracks: Track[], startIndex: number): Promise<vo
         const crossfade = playing && activeSlot !== null && currentTrack !== null;
         queue = [...tracks];
         queueIndex = clamped;
+        // 新队列定版：指纹一致恢复历史栈，不一致清栈（见历史栈注释）。
+        setupHistoryForQueue(queue);
         // 从起始下标向前逐首试：中途失败自动往后跳，全部失败才抛错。
         const result = await tryPlayFrom(clamped, crossfade, 1);
         if (result.stale) {
@@ -1035,6 +1249,19 @@ export async function next(): Promise<void> {
         return;
     }
     ++playIntent;
+    // 随机模式：与队列位置无关，先 redo 再掷随机。
+    if (getRepeatMode() === 'shuffle') {
+        const shuffleResult = await playNextShuffle(playing);
+        if (shuffleResult.stale) {
+            return;
+        }
+        if (!shuffleResult.played) {
+            playing = false;
+            lastError = skipAllMessage(shuffleResult.failed);
+            emitTrackChange();
+        }
+        return;
+    }
     if (queueIndex >= queue.length - 1) {
         // 队尾手动下一首：列表循环回队首，单曲循环重播当前，其它模式不动。
         const mode = getRepeatMode();
@@ -1079,6 +1306,40 @@ export async function next(): Promise<void> {
 
 export async function previous(): Promise<void> {
     if (!activeSlot || !currentTrack) {
+        return;
+    }
+    // 随机模式：先按真实历史回退；无历史可退才落回既有口径。
+    if (getRepeatMode() === 'shuffle') {
+        ++playIntent;
+        const shuffleResult = await playPrevShuffle(playing);
+        if (shuffleResult !== null) {
+            if (shuffleResult.stale) {
+                return;
+            }
+            if (!shuffleResult.played) {
+                playing = false;
+                lastError = skipAllMessage(shuffleResult.failed);
+                emitTrackChange();
+            }
+            return;
+        }
+        // playIntent 已在上面加过，下面既有路径不要重复加：
+        if (queueIndex <= 0) {
+            activeSlot.audio.currentTime = 0;
+            if (!playing) {
+                await resume();
+            }
+            return;
+        }
+        const fallbackResult = await tryPlayFrom(queueIndex - 1, playing, -1);
+        if (fallbackResult.stale) {
+            return;
+        }
+        if (!fallbackResult.played) {
+            playing = false;
+            lastError = skipAllMessage(fallbackResult.failed);
+            emitTrackChange();
+        }
         return;
     }
     if (queueIndex <= 0) {
@@ -1205,6 +1466,7 @@ export async function togglePlay(): Promise<void> {
                 if (result === 'stale') {
                     return;
                 }
+                recordHistory(queueIndex);
             } catch (error) {
                 lastError = error instanceof Error ? error.message : '播放失败，请换一首试试';
                 emitTrackChange();
