@@ -34,7 +34,7 @@ import {
 import { loadVisualToggles, saveVisualToggles } from './visuals';
 import { nearestTraditionalColor } from './traditional-colors';
 import { SOURCES } from './sources/index';
-import { BILI_CHART_ZONES, fetchBilibiliChart, fetchBilibiliPlaylistVideos, fetchBilibiliVideoDesc, fetchBilibiliVideoDurationSec, parseBiliDescSegments } from './sources/bilibili';
+import { BILI_CHART_ZONES, fetchBilibiliChart, fetchBilibiliChapters, fetchBilibiliPlaylistVideos, fetchBilibiliVideoDesc, fetchBilibiliVideoDurationSec, mergeBiliSegmentSources, parseBiliDescSegments } from './sources/bilibili';
 import type { BiliChartZone } from './sources/bilibili';
 import { checkAllFilesAccess, getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalNotice, getLocalSidecarCoverDataUrl, localSource, requestAllFilesAccess } from './sources/local';
 import { addMyImportIds, loadMyImportIds, removeMyImportId } from './my-imports';
@@ -5551,8 +5551,8 @@ function renderBiliPlaylistSection(status: HTMLElement): HTMLElement {
 }
 
 // 歌单视频详情页：与榜单详情页同款整页机制（浮层＋返回钮摘页）。
-// 进页异步拉简介拆歌；解析不出（简介拿不到或时间戳不足 3 条）就明说
-// 没解析到、只留整条播放，不假装有分段。
+// 进页异步双源拆歌（简介时间戳＋官方章节，谁条数多用谁）；两源都
+// 解析不出就明说没解析到、只留整条播放，不假装有分段。
 function openBiliPlaylistPage(video: Track, status: HTMLElement): void {
     const page = document.createElement('div');
     page.className = 'daily-page';
@@ -5624,7 +5624,7 @@ function openBiliPlaylistPage(video: Track, status: HTMLElement): void {
 
     const notice = document.createElement('p');
     notice.className = 'source-notice';
-    notice.textContent = '正在解析简介里的时间戳歌单…';
+    notice.textContent = '正在解析时间戳歌单…';
     page.appendChild(notice);
 
     const segmentList = document.createElement('ul');
@@ -5637,22 +5637,39 @@ function openBiliPlaylistPage(video: Track, status: HTMLElement): void {
         const bvid = video.id.startsWith('bilibili:')
             ? video.id.slice('bilibili:'.length)
             : video.id;
-        const [desc, durationSec] = await Promise.all([
-            fetchBilibiliVideoDesc(bvid),
+        // 双源并行：简介时间戳（带 buvid 指纹＋已登录时带会话 cookie）、
+        // 官方章节、总时长，谁都不等谁。
+        const [desc, chapters, durationSec] = await Promise.all([
+            fetchBilibiliVideoDesc(bvid, loadBiliSession()?.cookie),
+            fetchBilibiliChapters(bvid),
             fetchBilibiliVideoDurationSec(bvid)
         ]);
-        // 总时长优先 pagelist 的权威秒数，拿不到用搜索自带的 durationMs。
-        const totalSec =
+        // 总时长优先 pagelist 的权威秒数，拿不到用搜索自带的 durationMs；
+        // 再拿不到而章节可用时，用最后一条章节的段尾兜底（章节自带
+        // endSec，不该被总时长缺失整体拖废）。
+        let totalSec =
             durationSec ?? (video.durationMs ? Math.round(video.durationMs / 1000) : 0);
-        const parsed = desc ? parseBiliDescSegments(desc, totalSec) : [];
-        if (parsed.length === 0 || totalSec <= 0) {
+        const descSegs = desc ? parseBiliDescSegments(desc, totalSec) : [];
+        const merged = mergeBiliSegmentSources(descSegs, chapters);
+        if (totalSec <= 0 && chapters.length > 0) {
+            totalSec = chapters[chapters.length - 1]!.endSec;
+        }
+        console.log(
+            merged.length > 0
+                ? `[Bili] 拆歌 ${bvid}：章节 ${chapters.length} 条、简介 ${descSegs.length} 条，采用 ${merged.length} 条`
+                : `[Bili] 拆歌 ${bvid}：章节 ${chapters.length} 条、简介 ${descSegs.length} 条，均无可用分段`
+        );
+        if (merged.length === 0 || totalSec <= 0) {
             notice.textContent = '这条没解析到时间戳歌单，只能整条播放';
             return;
         }
         // 分段曲：id 带 @startSec 后缀（取链时剥掉），时长与起止偏移
-        // 都按段算，最后一段的终点是视频总时长。
-        const segments: Track[] = parsed.map((seg, index) => {
-            const endSec = index + 1 < parsed.length ? parsed[index + 1]!.startSec : totalSec;
+        // 都按段算；段尾优先章节自带的 endSec，简介源才按下一条
+        // start／总时长推。
+        const segments: Track[] = merged.map((seg, index) => {
+            const endSec =
+                seg.endSec ??
+                (index + 1 < merged.length ? merged[index + 1]!.startSec : totalSec);
             return {
                 id: `bilibili:${bvid}@${seg.startSec}`,
                 title: seg.title,
