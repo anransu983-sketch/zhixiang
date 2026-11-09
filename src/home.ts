@@ -10,12 +10,15 @@ import { openFootprintPage } from './footprint';
 import type { PlaybackState } from './playback';
 import {
     POSTER_SECTIONS,
+    POSTER_TTL_MS,
     friendlyPosterError,
+    invalidatePosterCache,
+    isPosterCacheExpired,
     posterFallbackBackground,
     posterHue
 } from './posters';
 import type { PosterSectionDefinition } from './posters';
-import { renderShelfLayer } from './shelf';
+import { destroyShelfLayer, renderShelfLayer } from './shelf';
 import { clearLogs, copyPlainText, getLogEntries, getLogModules, getLogText, subscribeLogs, type LogEntry } from './logger';
 import {
     applyPerfMode,
@@ -487,6 +490,14 @@ export function renderHome(): HTMLElement {
         if (tabId === 'bilibili' && biliSessionDirty && biliFavRefresh) {
             biliSessionDirty = false;
             biliFavRefresh();
+        }
+        // 0.1.146：切到某页时复查该页海报／榜单是否已过期，过期才静默
+        // 重拉（回调自己查时间戳），没过期什么都不做。
+        const rechecks = tabRecheckCallbacks.get(tabId);
+        if (rechecks) {
+            for (const recheck of rechecks) {
+                recheck();
+            }
         }
         // 滑动指示条：按激活按钮实测位置走，不用 25% 估算（padding/gap 会偏）。
         const activeButton = tabButtons.get(tabId);
@@ -2636,7 +2647,21 @@ function renderPosterModule(definition: PosterSectionDefinition): HTMLElement {
         posterLayoutButtons.push(button);
         layoutSwitch.appendChild(button);
     }
-    head.appendChild(layoutSwitch);
+    // 0.1.146：版式开关与刷新钮并成头部右侧动作组。刷新＝作废本路
+    // 海报缓存后重拉（见下方 loadPosters 的 refresh 路径）。
+    const headActions = document.createElement('div');
+    headActions.className = 'poster-module-head-actions';
+    headActions.appendChild(layoutSwitch);
+    const refreshButton = document.createElement('button');
+    refreshButton.type = 'button';
+    refreshButton.className = 'poster-refresh-btn';
+    refreshButton.textContent = '刷新';
+    refreshButton.addEventListener('click', () => {
+        invalidatePosterCache(definition.key);
+        void loadPosters('refresh');
+    });
+    headActions.appendChild(refreshButton);
+    head.appendChild(headActions);
     module.appendChild(head);
 
     const playNotice = document.createElement('p');
@@ -2649,10 +2674,11 @@ function renderPosterModule(definition: PosterSectionDefinition): HTMLElement {
     module.appendChild(grid);
 
     // 3D 架形态：同一路数据走共享缓存，与海报墙形态只发一次请求；
-    // 层标题不画，由模块头统一展示。
+    // 层标题不画，由模块头统一展示。刷新时整体换层（旧层退订清理）。
     const shelfWrap = document.createElement('div');
     shelfWrap.className = 'poster-shelf-wrap';
-    shelfWrap.appendChild(renderShelfLayer(definition, playNotice, false));
+    let shelfLayer = renderShelfLayer(definition, playNotice, false);
+    shelfWrap.appendChild(shelfLayer);
     module.appendChild(shelfWrap);
 
     const notice = document.createElement('p');
@@ -2676,31 +2702,87 @@ function renderPosterModule(definition: PosterSectionDefinition): HTMLElement {
     onTrackChange(refreshHighlight);
     refreshHighlight(getCurrentState());
 
-    void (async () => {
-        let posters: Poster[];
-        try {
-            posters = await definition.load();
-        } catch (error) {
-            const reason = friendlyPosterError(definition, error);
-            console.warn(`[Poster] ${definition.label} 加载失败：${reason}`);
-            notice.textContent = reason;
-            return;
-        }
+    let hasData = false;
+    let loading = false;
+
+    // 一批海报数据落到界面上：海报墙按现行逻辑重建卡片；3D 架整体
+    // 换新层（新层走同一份缓存自加载）。首次加载不换层——层与墙调
+    // 的是同一次 load，层自己会画，没必要刚画好又换一层重画。
+    const applyPosters = (posters: Poster[], replaceShelf: boolean): void => {
+        postersById.clear();
+        cards.clear();
+        grid.replaceChildren();
         if (posters.length === 0) {
+            hasData = false;
+            notice.hidden = false;
             notice.textContent = definition.emptyNotice;
-            return;
-        }
-        notice.hidden = true;
-        for (const [index, poster] of posters.entries()) {
-            postersById.set(poster.id, poster);
-            const card = renderPosterCard(poster, playNotice);
-            // 入场 rise 的 stagger：最多前 8 张，后面的不再加延迟。
-            card.style.setProperty('--i', String(Math.min(index, 7)));
-            cards.set(poster.id, card);
-            grid.appendChild(card);
+        } else {
+            hasData = true;
+            notice.hidden = true;
+            for (const [index, poster] of posters.entries()) {
+                postersById.set(poster.id, poster);
+                const card = renderPosterCard(poster, playNotice);
+                // 入场 rise 的 stagger：最多前 8 张，后面的不再加延迟。
+                card.style.setProperty('--i', String(Math.min(index, 7)));
+                cards.set(poster.id, card);
+                grid.appendChild(card);
+            }
         }
         refreshHighlight(getCurrentState());
-    })();
+        if (replaceShelf) {
+            const nextLayer = renderShelfLayer(definition, playNotice, false);
+            shelfWrap.replaceChildren(nextLayer);
+            destroyShelfLayer(shelfLayer);
+            shelfLayer = nextLayer;
+        }
+    };
+
+    // 三种入口共用一条加载路：initial 首次、refresh 手动刷新（缓存已
+    // 由按钮作废）、recheck 切页复查发现过期后的静默重拉。
+    // 失败保留口径：已有数据时刷新／复查失败不清空旧海报，手动刷新
+    // 在 notice 报原因、复查全程静默；没有旧数据（首次失败）走原
+    // 路径，notice 直接报原因。
+    const loadPosters = async (mode: 'initial' | 'refresh' | 'recheck'): Promise<void> => {
+        if (loading) {
+            return;
+        }
+        loading = true;
+        if (mode === 'refresh') {
+            refreshButton.disabled = true;
+            refreshButton.textContent = '刷新中…';
+        }
+        try {
+            const posters = await definition.load();
+            applyPosters(posters, mode !== 'initial');
+        } catch (error) {
+            const reason = friendlyPosterError(definition, error);
+            if (!hasData) {
+                console.warn(`[Poster] ${definition.label} 加载失败：${reason}`);
+                notice.hidden = false;
+                notice.textContent = reason;
+            } else if (mode === 'refresh') {
+                notice.hidden = false;
+                notice.textContent = reason;
+            }
+            // recheck 失败：旧海报留着，什么都不显示，下次切页再试。
+        } finally {
+            loading = false;
+            if (mode === 'refresh') {
+                refreshButton.disabled = false;
+                refreshButton.textContent = '刷新';
+            }
+        }
+    };
+
+    // 切页复查：definition.key 与 Tab id 同名（local/netease/ytm），
+    // 切回本页时缓存已过期才静默重拉，没过期不发请求。
+    registerTabRecheck(definition.key as HomeTabId, () => {
+        if (isPosterCacheExpired(definition.key)) {
+            void loadPosters('recheck');
+        }
+    });
+
+    void loadPosters('initial');
 
     return module;
 }
@@ -4688,11 +4770,24 @@ function renderNeteaseDailySection(): HTMLElement {
 // 0.1.105 B 站发现页（参考截图：今日推荐＋音乐排行榜四栏）：
 // 今日推荐取全站音乐榜头条（个性化推荐要登录，v1 用榜单头条代替）；
 // 排行榜四栏按栏懒加载、本页内缓存；点行即播整榜（复用 renderTracks）。
+// 0.1.146：榜单缓存加 6 小时时效＋「刷新榜单」手动强刷＋切页复查，
+// 过期／强刷都先顶旧榜、失败保留旧榜（见 renderZone）。
 // 0.1.111 B 站登录＋收藏夹：B 站页顶的账号区（扫码登录／收藏夹歌单）。
 // 0.1.113：B站登录从 B站页顶移到听歌钥匙——收藏夹区留在 B站页，
 // 登录态变化时由这里通知它重渲染（切回 B站页时触发）。
 let biliFavRefresh: (() => void) | null = null;
 let biliSessionDirty = false;
+
+// 切页复查登记（0.1.146）：与 biliFavRefresh 同模式（模块级回调＋
+// switchTab 切页时触发）——海报模块与 B站榜单各自按 Tab 注册一个
+// 复查回调，切到该页时若数据已超 6 小时就静默重拉，没过期不动。
+const tabRecheckCallbacks = new Map<HomeTabId, Array<() => void>>();
+
+function registerTabRecheck(tabId: HomeTabId, callback: () => void): void {
+    const list = tabRecheckCallbacks.get(tabId) ?? [];
+    list.push(callback);
+    tabRecheckCallbacks.set(tabId, list);
+}
 
 // 0.1.113 听歌钥匙里的 B站登录块：与网易云／YTM 块同形（login-block），
 // 三态全在块内切换（未登录／扫码中／已登录），登录成功与退出时通知外层
@@ -5131,12 +5226,26 @@ function renderBilibiliDiscoverySection(status: HTMLElement): HTMLElement {
     openPageButton.disabled = true;
     section.appendChild(openPageButton);
 
+    // 0.1.146：手动刷新当前分区（无视 6 小时时效强拉）。
+    const refreshButton = document.createElement('button');
+    refreshButton.type = 'button';
+    refreshButton.className = 'login-btn';
+    refreshButton.textContent = '刷新榜单';
+    section.appendChild(refreshButton);
+
     const notice = document.createElement('p');
     notice.className = 'source-notice';
     notice.textContent = '加载中…';
     section.appendChild(notice);
 
-    const cache = new Map<string, Track[]>();
+    // 0.1.146：缓存条目带拉取时间，6 小时过期（与海报缓存共用
+    // posters.ts 的 POSTER_TTL_MS 同一口径）；以前只存 Track[]、
+    // 永不过期，用户才觉得榜单冻住不刷新。
+    interface BiliChartCacheEntry {
+        tracks: Track[];
+        fetchedAt: number;
+    }
+    const cache = new Map<string, BiliChartCacheEntry>();
     let currentKey = BILI_CHART_ZONES[0]!.key;
     let currentZone = BILI_CHART_ZONES[0]!;
     let currentTracks: Track[] = [];
@@ -5164,22 +5273,29 @@ function renderBilibiliDiscoverySection(status: HTMLElement): HTMLElement {
         }
     };
 
-    const renderZone = async (zone: BiliChartZone): Promise<void> => {
+    const renderZone = async (zone: BiliChartZone, force = false): Promise<void> => {
         for (const [key, button] of tabButtons) {
             button.classList.toggle('is-active', key === zone.key);
         }
         const cached = cache.get(zone.key);
-        if (cached) {
-            applyTracks(zone, cached);
+        if (!force && cached && Date.now() - cached.fetchedAt < POSTER_TTL_MS) {
+            applyTracks(zone, cached.tracks);
             return;
         }
-        notice.textContent = '加载中…';
-        notice.classList.remove('is-error');
-        playAll.disabled = true;
-        openPageButton.disabled = true;
+        // 有旧数据（过期重拉／手动刷新）：旧榜先顶着显示，不打回
+        // 加载态、不清计数与按钮；完全没数据才走原来的加载中路径。
+        const hasOld = cached !== undefined && cached.tracks.length > 0;
+        if (hasOld) {
+            applyTracks(zone, cached.tracks);
+        } else {
+            notice.textContent = '加载中…';
+            notice.classList.remove('is-error');
+            playAll.disabled = true;
+            openPageButton.disabled = true;
+        }
         try {
             const tracks = await fetchBilibiliChart(zone);
-            cache.set(zone.key, tracks);
+            cache.set(zone.key, { tracks, fetchedAt: Date.now() });
             if (currentKey !== zone.key) {
                 return;
             }
@@ -5188,10 +5304,39 @@ function renderBilibiliDiscoverySection(status: HTMLElement): HTMLElement {
             if (currentKey !== zone.key) {
                 return;
             }
+            // 失败保留旧榜：只在 notice 报错，不动已显示的数据与按钮态。
             notice.textContent = friendlySearchError(error);
             notice.classList.add('is-error');
         }
     };
+
+    let chartRefreshing = false;
+    refreshButton.addEventListener('click', () => {
+        if (chartRefreshing) {
+            return;
+        }
+        chartRefreshing = true;
+        refreshButton.disabled = true;
+        refreshButton.textContent = '刷新中…';
+        void (async () => {
+            try {
+                await renderZone(currentZone, true);
+            } finally {
+                chartRefreshing = false;
+                refreshButton.disabled = false;
+                refreshButton.textContent = '刷新榜单';
+            }
+        })();
+    });
+
+    // 切页复查：切回 B站页时当前分区已过期才重拉（renderZone 的
+    // 过期路径会先顶旧榜再换新），没过期什么都不做。
+    registerTabRecheck('bilibili', () => {
+        const cached = cache.get(currentZone.key);
+        if (cached && Date.now() - cached.fetchedAt >= POSTER_TTL_MS) {
+            void renderZone(currentZone);
+        }
+    });
 
     playAll.addEventListener('click', () => {
         if (currentTracks.length === 0) {
