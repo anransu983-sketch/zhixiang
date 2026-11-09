@@ -1550,6 +1550,42 @@ body {
     text-shadow: 0 1px 6px rgba(0, 0, 0, 0.45);
 }
 
+/* 选词模式：文字片选中态（主题粉描边+字色，与预设分段同语言）。 */
+.player-text-chip.is-active {
+    border-color: var(--theme-accent, #f9a8d4);
+    color: var(--theme-accent, #f9a8d4);
+}
+
+/* 选词工具条：底排第二行下方小条，计数/复制/导出/完成/状态横排。 */
+.player-lyric-select-bar {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.player-lyric-select-bar[hidden] {
+    display: none;
+}
+.player-lyric-select-status {
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.75);
+    text-shadow: 0 1px 6px rgba(0, 0, 0, 0.45);
+}
+
+/* 选词模式下歌词行可点，选中行以主题粉淡底+圆角标出（不改字号，
+   免得选中切换引起排版跳动）。 */
+.player-lyrics.lyric-selecting .player-lyric-line {
+    cursor: pointer;
+}
+.player-lyric-line.is-selected {
+    background: rgba(232, 160, 191, 0.22);
+    border-radius: 10px;
+    box-shadow: inset 0 0 0 1px var(--theme-accent, #f9a8d4);
+    color: #fff;
+}
+
 .player-sleep-picker {
     width: 100%;
     display: flex;

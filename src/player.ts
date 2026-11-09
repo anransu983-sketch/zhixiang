@@ -7,7 +7,7 @@
 // 雨滴开关只管雨滴本身，关了雨滴模糊底仍在。
 // 封面：远程 http(s) 直用；本地 content:// 由原生按专辑 id 转 data URL
 // （播放页点开当前曲目时调一次，不批量扫库）；加载失败时隐藏，不露破图。
-// 歌词行只展示，不绑点击、不做跳转。
+// 歌词行平时只展示，不做跳转；「选词」模式下点行切换选中（复制/出图用）。
 //
 // 状态来源：只用第 5 块已有的 onTrackChange / onTimeUpdate /
 // getCurrentState / getAnalyser，不新增播放引擎口子。
@@ -60,7 +60,8 @@ import {
 import { isTtmlText, parseTtml } from './ttml';
 import { linesToLrc } from './batch-writeback';
 import { clearLyricFont, getLyricFontName, importLyricFont, LYRIC_FONT_CSS, restoreLyricFont } from './lyric-font';
-import { checkAllFilesAccess, getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalPath, getLocalSidecarCoverDataUrl, requestAllFilesAccess, writeSidecar } from './sources/local';
+import { checkAllFilesAccess, getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalPath, getLocalSidecarCoverDataUrl, requestAllFilesAccess, saveFileToDownloads, writeSidecar } from './sources/local';
+import { sampleCoverColor } from './cover-color';
 import { posterFallbackBackground, posterHue } from './posters';
 import { getLastYtmStreamMeta } from './sources/ytm';
 import type { Track } from './types';
@@ -69,6 +70,11 @@ import { pushBackHandler } from './back-stack';
 let overlay: HTMLElement | null = null;
 let stage: VisualStage | null = null;
 let lyricDrops: LyricDrops | null = null;
+// 选词模式的跨函数钩子（buildPlayerPage 内赋值，renderLyrics 用）：
+// 退出选词、点行切换选中。页面只建一次，模块层持钩即可。
+let exitLyricSelectMode: (() => void) | null = null;
+let toggleLyricSelection: ((index: number, lineEl: HTMLElement) => void) | null = null;
+
 let refreshPage: ((state: PlaybackState) => void) | null = null;
 let renderLyricsPage: ((note: string | null) => void) | null = null;
 let highlightLinePage: ((index: number, behavior?: ScrollBehavior) => void) | null = null;
@@ -125,6 +131,152 @@ function saveFavorites(favorites: Set<string>): void {
 
 function favoriteKey(track: Track): string {
     return `${track.source}:${track.id}`;
+}
+
+// 字节转 base64（分块拼字符串，与 lyrics-backup 同口径，免得大图爆栈）。
+function bytesToBase64(bytes: Uint8Array): string {
+    let binary = '';
+    const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+    }
+    return btoa(binary);
+}
+
+// 选词导出 PNG 分享卡（离屏 canvas，1080 宽）：封面取色底（采不到
+// 用主题深色底；有已加载封面时再压一层半透封面图）、歌名/歌手、
+// 所选歌词原文行（长行按宽换行，最多画 12 行、超出截断并在状态里
+// 说明）、底部小字「芷湘」。落地优先走原生下载桥（与歌词备份同一
+// 条 saveFileToDownloads）存到下载目录；原生不可用时用 blob +
+// <a download> 兜底并在状态里如实说明走的是兜底路。
+async function exportSelectedLyricsPng(
+    selected: ReadonlySet<number>,
+    statusEl: HTMLElement,
+    getCoverImg: () => HTMLImageElement | null
+): Promise<void> {
+    const indices = [...selected].sort((a, b) => a - b);
+    if (indices.length === 0) {
+        statusEl.textContent = '先点几行歌词再导出';
+        return;
+    }
+    const track = getCurrentState().track;
+    const allTexts = indices
+        .map((i) => lyricLines[i]?.text ?? '')
+        .filter((t) => t.length > 0);
+    const truncated = allTexts.length > 12;
+    const texts = allTexts.slice(0, 12);
+    const width = 1080;
+    const pad = 72;
+    const maxTextWidth = width - pad * 2;
+    const measure = document.createElement('canvas').getContext('2d');
+    if (!measure) {
+        statusEl.textContent = '导出失败：画布不可用';
+        return;
+    }
+    measure.font = '44px sans-serif';
+    const visualLines: string[] = [];
+    for (const text of texts) {
+        let rest = text;
+        while (rest.length > 0) {
+            if (measure.measureText(rest).width <= maxTextWidth) {
+                visualLines.push(rest);
+                rest = '';
+                break;
+            }
+            let cut = rest.length;
+            while (cut > 1 && measure.measureText(rest.slice(0, cut)).width > maxTextWidth) {
+                cut -= 1;
+            }
+            visualLines.push(rest.slice(0, cut));
+            rest = rest.slice(cut);
+        }
+    }
+    const lineHeight = 68;
+    const height = pad + 64 + 48 + 36 + visualLines.length * lineHeight + 44 + 36 + pad;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+        statusEl.textContent = '导出失败：画布不可用';
+        return;
+    }
+    ctx.fillStyle = '#17101f';
+    ctx.fillRect(0, 0, width, height);
+    // 取色底：远程封面采样主色做竖向渐变（深色化到近黑），采不到保持深底。
+    if (track?.coverUrl && (track.coverUrl.startsWith('http://') || track.coverUrl.startsWith('https://'))) {
+        const hex = await sampleCoverColor(track.coverUrl);
+        if (hex) {
+            const gradient = ctx.createLinearGradient(0, 0, 0, height);
+            gradient.addColorStop(0, hex);
+            gradient.addColorStop(1, '#17101f');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, width, height);
+            ctx.fillStyle = 'rgba(10, 6, 16, 0.45)';
+            ctx.fillRect(0, 0, width, height);
+        }
+    }
+    // 已加载的封面整幅压底（cover 映射），再罩一层暗色保文字可读。
+    const coverImg = getCoverImg();
+    if (coverImg && coverImg.naturalWidth > 0) {
+        const scale = Math.max(width / coverImg.naturalWidth, height / coverImg.naturalHeight);
+        const dw = coverImg.naturalWidth * scale;
+        const dh = coverImg.naturalHeight * scale;
+        ctx.globalAlpha = 0.3;
+        ctx.drawImage(coverImg, (width - dw) / 2, (height - dh) / 2, dw, dh);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = 'rgba(10, 6, 16, 0.5)';
+        ctx.fillRect(0, 0, width, height);
+    }
+    let y = pad;
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '700 54px sans-serif';
+    ctx.fillText(track?.title ?? '', pad, y + 54, maxTextWidth);
+    y += 64 + 48;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+    ctx.font = '36px sans-serif';
+    ctx.fillText(track?.artist ?? '', pad, y, maxTextWidth);
+    y += 36 + lineHeight;
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '44px sans-serif';
+    for (const line of visualLines) {
+        ctx.fillText(line, pad, y);
+        y += lineHeight;
+    }
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
+    ctx.font = '28px sans-serif';
+    ctx.fillText('芷湘', pad, height - pad + 28);
+    const blob = await new Promise<Blob | null>((resolve) => {
+        canvas.toBlob((b) => resolve(b), 'image/png');
+    });
+    if (!blob) {
+        statusEl.textContent = '导出失败：图片生成不出来';
+        return;
+    }
+    const now = new Date();
+    const stamp =
+        `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}` +
+        `-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
+    const filename = `zhixiang-lyrics-${stamp}.png`;
+    const suffix = truncated ? '（只导出前 12 行）' : '';
+    try {
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        const result = await saveFileToDownloads(filename, bytesToBase64(bytes));
+        console.log(`[Player] 选词导出图片：${texts.length} 行`);
+        statusEl.textContent = `已存到下载目录：${result.filename || filename}${suffix}`;
+    } catch {
+        // 原生桥不可用（浏览器预览等）：blob 下载兜底，如实说明。
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = filename;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 5000);
+        console.log(`[Player] 选词导出图片：${texts.length} 行（浏览器下载兜底）`);
+        statusEl.textContent = `已用浏览器下载保存：${filename}${suffix}`;
+    }
 }
 
 function formatTime(totalSeconds: number): string {
@@ -807,10 +959,127 @@ function buildPlayerPage(): HTMLElement {
     // 第二行：文字片与角标单独成行居中排，窄板里也横得下，不再挤第一行。
     const bottomRow2 = document.createElement('div');
     bottomRow2.className = 'player-bottom-row2';
-    bottomRow2.append(pasteButton, coverButton, qualityBadge);
+    // 选词（复制/导出 PNG）：入口与贴词/换封面同行同款文字片。
+    const selectButton = document.createElement('button');
+    selectButton.type = 'button';
+    selectButton.className = 'player-text-chip';
+    selectButton.textContent = '选词';
+    bottomRow2.append(pasteButton, coverButton, selectButton, qualityBadge);
     content.appendChild(bottomRow);
     content.appendChild(bottomRow2);
     content.appendChild(sleepPicker);
+
+    // ---- 选词模式：点歌词行切换选中，工具条负责复制/导出/完成 ----
+    // 选中只存行下标集合；复制拼原文行（译文副行不带），日志只记行数
+    // 不记歌词正文。退出（完成/切歌重渲染）清选中。
+    let lyricSelectMode = false;
+    const selectedLyricIndices = new Set<number>();
+    const lyricSelectBar = document.createElement('div');
+    lyricSelectBar.className = 'player-lyric-select-bar';
+    lyricSelectBar.hidden = true;
+    const selectCount = document.createElement('span');
+    selectCount.className = 'player-lyric-select-status';
+    const selectCopyButton = document.createElement('button');
+    selectCopyButton.type = 'button';
+    selectCopyButton.className = 'player-text-chip';
+    selectCopyButton.textContent = '复制所选';
+    const selectExportButton = document.createElement('button');
+    selectExportButton.type = 'button';
+    selectExportButton.className = 'player-text-chip';
+    selectExportButton.textContent = '导出图片';
+    const selectDoneButton = document.createElement('button');
+    selectDoneButton.type = 'button';
+    selectDoneButton.className = 'player-text-chip';
+    selectDoneButton.textContent = '完成';
+    const selectStatus = document.createElement('span');
+    selectStatus.className = 'player-lyric-select-status';
+    lyricSelectBar.append(selectCount, selectCopyButton, selectExportButton, selectDoneButton, selectStatus);
+    content.appendChild(lyricSelectBar);
+    const updateLyricSelectBar = (): void => {
+        selectCount.textContent = `已选 ${selectedLyricIndices.size} 行`;
+    };
+    const exitLyricSelect = (): void => {
+        lyricSelectMode = false;
+        selectedLyricIndices.clear();
+        lyricSelectBar.hidden = true;
+        selectButton.classList.remove('is-active');
+        lyricBox.classList.remove('lyric-selecting');
+        lyricBox.querySelectorAll('.player-lyric-line.is-selected').forEach((el) => {
+            el.classList.remove('is-selected');
+        });
+        selectStatus.textContent = '';
+    };
+    exitLyricSelectMode = exitLyricSelect;
+    toggleLyricSelection = (index: number, lineEl: HTMLElement): void => {
+        if (!lyricSelectMode) {
+            return;
+        }
+        if (selectedLyricIndices.has(index)) {
+            selectedLyricIndices.delete(index);
+        } else {
+            selectedLyricIndices.add(index);
+        }
+        lineEl.classList.toggle('is-selected', selectedLyricIndices.has(index));
+        updateLyricSelectBar();
+    };
+    selectButton.addEventListener('click', () => {
+        if (lyricSelectMode) {
+            exitLyricSelect();
+            return;
+        }
+        if (lyricLines.length === 0) {
+            flashButton(selectButton, '暂无歌词');
+            return;
+        }
+        lyricSelectMode = true;
+        lyricSelectBar.hidden = false;
+        selectButton.classList.add('is-active');
+        lyricBox.classList.add('lyric-selecting');
+        selectStatus.textContent = '';
+        updateLyricSelectBar();
+    });
+    selectDoneButton.addEventListener('click', () => {
+        exitLyricSelect();
+    });
+    selectCopyButton.addEventListener('click', () => {
+        void (async () => {
+            const indices = [...selectedLyricIndices].sort((a, b) => a - b);
+            if (indices.length === 0) {
+                selectStatus.textContent = '先点几行歌词再复制';
+                return;
+            }
+            const text = indices
+                .map((i) => lyricLines[i]?.text ?? '')
+                .filter((t) => t.length > 0)
+                .join('\n');
+            let copied = false;
+            try {
+                await navigator.clipboard.writeText(text);
+                copied = true;
+            } catch {
+                // 剪贴板 API 不可用时走 textarea + execCommand 兜底。
+                const area = document.createElement('textarea');
+                area.value = text;
+                area.style.position = 'fixed';
+                area.style.opacity = '0';
+                document.body.appendChild(area);
+                area.select();
+                try {
+                    copied = document.execCommand('copy');
+                } catch {
+                    copied = false;
+                }
+                area.remove();
+            }
+            console.log(`[Player] 选词复制：${indices.length} 行`);
+            selectStatus.textContent = copied ? `已复制 ${indices.length} 行` : '复制失败，再试一次';
+        })();
+    });
+    selectExportButton.addEventListener('click', () => {
+        void exportSelectedLyricsPng(selectedLyricIndices, selectStatus, () =>
+            coverLoaded ? cover : null
+        );
+    });
 
     // 「视觉」收进底排（0.1.57）：独立磁吸卡撤掉，底排末尾 ✦ 入口，
     // 点开展开玻璃面板（与睡眠选择器同款展开位）。折叠走 grid 0fr/1fr
@@ -1546,6 +1815,9 @@ function buildPlayerPage(): HTMLElement {
 
     const renderLyrics = (note: string | null): void => {
         lastLyricNote = note;
+        // 歌词整体重渲染（切歌/切译文显隐等）即退出选词模式、清选中，
+        // 免得旧下标套到新词上。
+        exitLyricSelectMode?.();
         // 新一首的词（或无词提示）进来先把间奏点复位，下一拍再按新词算。
         hideInterlude();
         lyricBox.textContent = '';
@@ -1559,8 +1831,12 @@ function buildPlayerPage(): HTMLElement {
             const lineEl = document.createElement('p');
             lineEl.className = 'player-lyric-line';
             lineEl.dataset.index = String(index);
-            // 只展示，不绑点击、不做跳转。定时行按词分 span（真逐字或
-            // 行内均分近似），纯文本行保持整行文本。
+            // 平时只展示、不做跳转；选词模式下点行切换选中（钩子内部
+            // 按模式自判，非选词模式点击无反应）。定时行按词分 span
+            // （真逐字或行内均分近似），纯文本行保持整行文本。
+            lineEl.addEventListener('click', () => {
+                toggleLyricSelection?.(index, lineEl);
+            });
             const nextStart =
                 index + 1 < lyricLines.length ? lyricLines[index + 1]!.timeMs : null;
             const words = Number.isFinite(line.timeMs)
