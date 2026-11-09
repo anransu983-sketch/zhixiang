@@ -29,6 +29,7 @@
 // 歌词行只展示、不做点击跳转：本模块不提供 seek 口子，播放页也不给
 // 歌词行绑任何点击处理。
 
+import { isBiliSegmentTrack, resolveBiliSegmentMatch } from './bili-segment-match';
 import { getManualLyrics } from './manual-lyrics';
 import { isTtmlText, parseTtml } from './ttml';
 import { httpGet } from './native/http';
@@ -728,6 +729,21 @@ function parseBiliTitleCandidates(
 }
 
 async function fetchBilibiliLyrics(track: Track): Promise<LyricResult> {
+    // 拆歌分段曲优先走网易云匹配：段标题是干净歌名，按段标题＋段长
+    // 硬过滤匹配到网易云同名版本就按其 id 直取词（现行补源要按标题＋
+    // 歌手匹配，分段曲歌手是 UP 主名对不上、基本落空）。时间轴不用
+    // 偏移：播放状态的 currentTime 已是段内相对值，网易云词的时间
+    // 也是歌曲自身从 0 起，两边天然对齐。未命中、或命中但无词，
+    // 落回下面的 CC 字幕→标题候选补源链，一字不改。
+    if (isBiliSegmentTrack(track)) {
+        const match = await resolveBiliSegmentMatch(track);
+        if (match) {
+            const segmentLyric = await fetchNeteaseLyricById(match.neteaseId);
+            if (segmentLyric.lines.length > 0) {
+                return segmentLyric;
+            }
+        }
+    }
     // 0.1.105：先试 B 站 CC 字幕轨（有轨才用，实测音乐视频多无轨）。
     const cc = await getBilibiliSubtitleLines(track);
     if (cc) {

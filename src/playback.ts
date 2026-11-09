@@ -70,6 +70,7 @@ import {
     loadAutoMixEnabled,
     measureRms
 } from './automix';
+import { isBiliSegmentTrack, resolveBiliSegmentMatch } from './bili-segment-match';
 import type { Track } from './types';
 
 // ---- 淡入淡出常量（集中一处，见文件头注释） ----
@@ -989,6 +990,27 @@ async function startTrack(track: Track, crossfade: boolean): Promise<'ok' | 'sta
     }
     // 新曲接管：AutoMix 采样按本 load 重新起（开关关或无图时内部空转退出）。
     startAutoMixSampler(loadId);
+    // B站拆歌分段曲：起播后异步匹配网易云同名版本，命中就把封面换成
+    // 本歌自己的（段原来顶的是整个视频的合集封面）。队列与 currentTrack
+    // 是同一对象引用（playQueue 只浅拷数组），改 track.coverUrl 后发一次
+    // track change，队列行/迷你条/播放页随之刷新；回来时已切歌则不碰。
+    // 匹配是增值：未命中、命中但无封面都保持原封面不动，绝不换占位图。
+    if (isBiliSegmentTrack(track)) {
+        void resolveBiliSegmentMatch(track)
+            .then((match) => {
+                if (!match || !match.coverUrl) {
+                    return;
+                }
+                if (currentTrack !== track || track.coverUrl === match.coverUrl) {
+                    return;
+                }
+                track.coverUrl = match.coverUrl;
+                emitTrackChange();
+            })
+            .catch(() => {
+                // 匹配内部已兜错，这里只防万一，不影响播放。
+            });
+    }
     return 'ok';
 }
 
