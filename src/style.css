@@ -1658,14 +1658,16 @@ body {
 /* 封面虚化底（0.1.136）：卡最底层铺当前封面重模糊版，卡面不再是一片
    平粉；无封面时本层透明，露出 .lyric-card 原有渐变底兜底。卡内层位
    总序（0.1.139 定）：虚化底/底影垫 0 ＜ 歌词内容 1 ＜ 卡面水滴 2 ＜
-   折叠钮 3。 */
+   折叠钮 3。本轮同步提亮（对《刀马旦》参照的「糊但亮」）：saturate
+   1.25→1.4、brightness 0.72→0.85（相对旧值饱和 ×1.12、亮度
+   ×1.18），lyric-drops.ts 暗版离屏滤镜与此保持同值。 */
 .lyric-card-bg {
     position: absolute;
     inset: 0;
     z-index: 0;
     background-size: cover;
     background-position: center;
-    filter: blur(28px) saturate(1.25) brightness(0.72);
+    filter: blur(28px) saturate(1.4) brightness(0.85);
     opacity: 0.5;
     pointer-events: none;
 }

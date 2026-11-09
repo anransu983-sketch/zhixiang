@@ -21,6 +21,11 @@
 // - 页面不可见（document.hidden）时停掉 rAF，可见恢复后由 poke() 重启。
 // - 播放停止/暂停时只画一帧静态画面就停画，不空转；状态变化时由
 //   播放页调用 poke() 重启动画。toggle 变化也调 poke() 立即生效。
+//
+// 单层玻璃（本轮，用户对《刀马旦》参照定）：参照里整屏只有一层湿
+// 玻璃罩在糊亮的照片上，雨是唯一主角。播放页实例经 setGlassOnly
+// 置真后，只要雨滴开着（rainMode>0），星空与粒子就不画、让路给
+// 雨；雨关则恢复各预设原样。非播放页实例默认关此开关，行为不变。
 
 import { sampleCoverColor } from './cover-color';
 import { AnimClock } from './anim-rate';
@@ -127,6 +132,21 @@ const REFRACTION_ZOOM = 1.55;
 // 折射采样绘入的不透明度：近实绘，让滴里的锐图压住背后的糊底。
 const REFRACTION_ALPHA = 0.9;
 
+// 模糊底提亮（本轮）：旧口径 brightness(0.85) 把封面糊底压得偏暗，
+// 参照《刀马旦》的底是「糊但亮」的照片。本轮相对旧值提一档：亮度
+// ×1.18（0.85→1.0）、饱和 ×1.12（1.4→1.57）。只动糊底的生成滤镜，
+// 封面本体显示（唱片/海报）不经此路、不受影响。
+const BG_BRIGHTNESS = 1.0;
+const BG_SATURATE = 1.57;
+
+// 滴内亮度下限（本轮，visuals 与 lyric-drops 两处画法同值同法）：
+// 采样锐图在生成处过一道 brightness＋contrast<1——contrast 把暗部
+// 抬离纯黑、同时压住高光上限：暗封面上的滴是透灰亮的水，不再是
+// 实心黑圆（黑珍珠复发点）；亮封面高光被钳住、不过曝成白盘
+// （0.1.140 教训）。数值保守，下轮按真机反馈单点调。
+const DROP_FLOOR_BRIGHTNESS = 1.22;
+const DROP_FLOOR_CONTRAST = 0.85;
+
 // 下滑滴（带拖尾，逐帧活绘）；静止滴三类（团块/中滴/细水点）走预渲染
 // 静态层（ensureStaticRain），不进这个数组。
 // 大光斑（bokeh）另起数组，只做柔光深度，不参与下落。
@@ -199,6 +219,9 @@ export class VisualStage {
     private rafId: number | null = null;
     private running = false;
     private suspended = false;
+    // 单层玻璃开关（实例级，默认关）：只有播放页实例由 player.ts
+    // 在挂载时置真，见 setGlassOnly。
+    private glassOnly = false;
     // 动画速率：rAF 时间戳经 AnimClock 按生效速率累加成动画时间，
     // 逐帧位移（下滑滴/粒子）再乘 frameScale（anim-rate.ts）。
     private animClock = new AnimClock();
@@ -213,7 +236,8 @@ export class VisualStage {
     private seededHeight = 0;
     private bgCanvas: HTMLCanvasElement | null = null;
     private bgKey = '';
-    // 锐图采样源（与 bgCanvas 同批维护）：未模糊的背景原图，水滴折射采它。
+    // 锐图采样源（与 bgCanvas 同批维护）：未模糊的背景原图，过一道
+    // 滴内亮度下限（applyDropFloor）后存这里，水滴折射采它。
     private sharpCanvas: HTMLCanvasElement | null = null;
     // 静态水滴预渲染层：静态滴全部画在这一张里，每帧只 drawImage。
     private staticBlobs: RainBlob[] = [];
@@ -297,11 +321,12 @@ export class VisualStage {
             return false;
         }
         const toggles = this.options.getToggles();
+        // 单层玻璃时星空/粒子不画，也不值得为它们空转循环。
+        const glass = this.glassActive(toggles);
         return (
             toggles.rainMode === 2 ||
-            toggles.particles ||
+            (!glass && (toggles.particles || toggles.stars)) ||
             toggles.pulse ||
-            toggles.stars ||
             this.swordStart !== null
         );
     }
@@ -324,6 +349,22 @@ export class VisualStage {
     resume(): void {
         this.suspended = false;
         this.poke();
+    }
+
+    // 单层玻璃（本轮）：置真后，本实例在雨滴开启（rainMode>0）时
+    // 不画星空与粒子——参照《刀马旦》整屏只有一层湿玻璃、雨是唯一
+    // 主角，多层同开会把玻璃感打散。只由 player.ts 对播放页专属
+    // 实例调用（挂载置真、卸载置假）；其它语境的实例不调用、默认
+    // 关，预设与各层行为一字不变。雨关（rainMode=0）时本开关无
+    // 效，各层按 toggles 原样画。
+    setGlassOnly(on: boolean): void {
+        this.glassOnly = on;
+    }
+
+    // 当前是否处于「单层玻璃」：开关开且雨滴开着（逐帧现算，
+    // 预设/档位切换立刻生效，不用额外 poke）。
+    private glassActive(toggles: VisualToggles): boolean {
+        return this.glassOnly && toggles.rainMode > 0;
     }
 
     // 切歌时调用：剑来开着才起效，记下出鞘时刻，动画由 drawFrame 逐帧画；
@@ -538,10 +579,13 @@ export class VisualStage {
             ctx.fillRect(0, 0, width, height);
         }
 
-        if (toggles.stars) {
+        // 单层玻璃（播放页＋雨开）：星空/粒子让路，雨是唯一主角层；
+        // 雨关或非播放页实例时此门恒开，各层按 toggles 原样画。
+        const glass = this.glassActive(toggles);
+        if (toggles.stars && !glass) {
             this.drawStars(ctx, width, height, time, animated);
         }
-        if (toggles.particles) {
+        if (toggles.particles && !glass) {
             this.drawParticles(ctx, width, height, energy, animated);
         }
         if (toggles.rainMode === 2) {
@@ -618,7 +662,7 @@ export class VisualStage {
         bctx.save();
         try {
             if (cover && cover.complete && cover.naturalWidth > 0) {
-                bctx.filter = 'blur(28px) brightness(0.85) saturate(1.4)';
+                bctx.filter = `blur(28px) brightness(${BG_BRIGHTNESS}) saturate(${BG_SATURATE})`;
                 const scale = Math.max(
                     width / cover.naturalWidth,
                     height / cover.naturalHeight
@@ -646,10 +690,12 @@ export class VisualStage {
             bctx.filter = 'none';
             bctx.restore();
         }
-        // 锐图采样源（0.1.143）：同一张封面、同一 cover 映射，但不加
-        // 任何 filter——背景原图直绘。水滴折射采它，才有「背景糊、滴
+        // 锐图采样源（0.1.143）：同一张封面、同一 cover 映射，绘入时
+        // 不加 blur——背景原图直绘。水滴折射采它，才有「背景糊、滴
         // 里锐」的照片感。与 bgCanvas 同批重建（同 key 门控）；可见
-        // 背景的呈现仍只由上面的糊底负责，这张不直接出画。
+        // 背景的呈现仍只由上面的糊底负责，这张不直接出画。建好后
+        // 再过一道滴内亮度下限（下方 applyDropFloor 调用）——那是
+        // 采样源的下限处理、不是糊化，折射结构（翻转×1.55）不动。
         const sharp = document.createElement('canvas');
         sharp.width = width;
         sharp.height = height;
@@ -682,10 +728,43 @@ export class VisualStage {
                 sctx.fillRect(0, 0, width, height);
             }
         }
+        this.applyDropFloor(sharp);
         this.sharpCanvas = sharp;
         this.bgCanvas = bg;
         this.bgKey = key;
         return bg;
+    }
+
+    // 滴内亮度下限（本轮）：把采样锐图在生成处过一道提亮——经中转
+    // 画布以 DROP_FLOOR_BRIGHTNESS / DROP_FLOOR_CONTRAST 重绘一次再
+    // 写回原画布。只在底图重建时跑（与糊底/锐图同批、同 key 门
+    // 控），逐帧采样零代价；静态雨层的 key 含 bgKey，底图一换采样
+    // 源与静态层同步重建，不存在新旧混用。滤镜不可用/抛错时静默
+    // 保留原图（旧观感），不掀翻底图生成。
+    private applyDropFloor(target: HTMLCanvasElement): void {
+        const tctx = target.getContext('2d');
+        if (!tctx || target.width <= 1 || target.height <= 1) {
+            return;
+        }
+        const scratch = document.createElement('canvas');
+        scratch.width = target.width;
+        scratch.height = target.height;
+        const sctx = scratch.getContext('2d');
+        if (!sctx) {
+            return;
+        }
+        try {
+            sctx.filter = `brightness(${DROP_FLOOR_BRIGHTNESS}) contrast(${DROP_FLOOR_CONTRAST})`;
+            sctx.drawImage(target, 0, 0);
+        } catch {
+            return;
+        } finally {
+            sctx.filter = 'none';
+        }
+        tctx.save();
+        tctx.clearRect(0, 0, target.width, target.height);
+        tctx.drawImage(scratch, 0, 0);
+        tctx.restore();
     }
 
     private drawRain(

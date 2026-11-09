@@ -299,6 +299,8 @@ function hidePlayerPage(): void {
         overlay.hidden = true;
     }
     stage?.suspend();
+    // 单层玻璃随卸载置假，下次开页由 openPlayerPage 重新置真。
+    stage?.setGlassOnly(false);
     // 卡面水滴同停：poke 内部按呈现条件自判（页已 hidden → 停画藏层）。
     lyricDrops?.poke();
     unregisterPlayerBack?.();
@@ -306,6 +308,8 @@ function hidePlayerPage(): void {
 }
 
 export function openPlayerPage(): void {
+    // 单层玻璃随挂载置真（首建时 stage 还为 null，创建处另有置真）。
+    stage?.setGlassOnly(true);
     if (overlay) {
         overlay.hidden = false;
         // 重开也要刷新：页关着时切过歌，标题/收藏/角标/歌词都会 stale，
@@ -1636,6 +1640,11 @@ function buildPlayerPage(): HTMLElement {
         getToggles: () => loadVisualToggles(),
         getCoverImage: () => (cover.complete && cover.naturalWidth > 0 ? cover : null)
     });
+    // 单层玻璃（本轮）：本实例是播放页专属舞台，挂载即置真——播放
+    // 页里雨开时星空/粒子让路（参照《刀马旦》整屏只有一层湿玻
+    // 璃）；关页时 hidePlayerPage 置假、开页时 openPlayerPage 再置
+    // 真。其它语境没有 VisualStage 实例，此规则天然只限播放页。
+    stage.setGlassOnly(true);
 
     const updateDegradedNote = (): void => {
         degradedNote.hidden = !(
