@@ -34,7 +34,7 @@ import {
 import { loadVisualToggles, saveVisualToggles } from './visuals';
 import { nearestTraditionalColor } from './traditional-colors';
 import { SOURCES } from './sources/index';
-import { BILI_CHART_ZONES, fetchBilibiliChart, fetchBilibiliChapters, fetchBilibiliPlaylistVideos, fetchBilibiliVideoDesc, fetchBilibiliVideoDurationSec, mergeBiliSegmentSources, parseBiliDescSegments } from './sources/bilibili';
+import { BILI_CHART_ZONES, fetchBilibiliChart, fetchBilibiliChapters, fetchBilibiliPlaylistVideos, fetchBilibiliTopCommentSegments, fetchBilibiliVideoDurationSec, fetchBilibiliViewInfo, mergeBiliSegmentSources, parseBiliDescSegments } from './sources/bilibili';
 import type { BiliChartZone } from './sources/bilibili';
 import { checkAllFilesAccess, getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalNotice, getLocalSidecarCoverDataUrl, localSource, requestAllFilesAccess } from './sources/local';
 import { addMyImportIds, loadMyImportIds, removeMyImportId } from './my-imports';
@@ -5551,8 +5551,9 @@ function renderBiliPlaylistSection(status: HTMLElement): HTMLElement {
 }
 
 // 歌单视频详情页：与榜单详情页同款整页机制（浮层＋返回钮摘页）。
-// 进页异步双源拆歌（简介时间戳＋官方章节，谁条数多用谁）；两源都
-// 解析不出就明说没解析到、只留整条播放，不假装有分段。
+// 进页异步三源拆歌（简介时间戳＋官方章节，置顶评论仅在前两源都不足
+// 时门控拉取；条数多者胜）；三源都解析不出就明说没解析到、只留整
+// 条播放，不假装有分段。
 function openBiliPlaylistPage(video: Track, status: HTMLElement): void {
     const page = document.createElement('div');
     page.className = 'daily-page';
@@ -5637,27 +5638,42 @@ function openBiliPlaylistPage(video: Track, status: HTMLElement): void {
         const bvid = video.id.startsWith('bilibili:')
             ? video.id.slice('bilibili:'.length)
             : video.id;
-        // 双源并行：简介时间戳（带 buvid 指纹＋已登录时带会话 cookie）、
-        // 官方章节、总时长，谁都不等谁。
-        const [desc, chapters, durationSec] = await Promise.all([
-            fetchBilibiliVideoDesc(bvid, loadBiliSession()?.cookie),
+        // 三源拉取：view 一次拿全（简介＋aid＋时长，带 buvid 指纹＋已
+        // 登录时带会话 cookie）、官方章节、pagelist 总时长并行，谁都
+        // 不等谁。
+        const [view, chapters, durationSec] = await Promise.all([
+            fetchBilibiliViewInfo(bvid, loadBiliSession()?.cookie),
             fetchBilibiliChapters(bvid),
             fetchBilibiliVideoDurationSec(bvid)
         ]);
-        // 总时长优先 pagelist 的权威秒数，拿不到用搜索自带的 durationMs；
-        // 再拿不到而章节可用时，用最后一条章节的段尾兜底（章节自带
-        // endSec，不该被总时长缺失整体拖废）。
+        // 总时长优先 pagelist 的权威秒数，其次 view 自带时长，再拿不到
+        // 用搜索自带的 durationMs；再拿不到而章节可用时，用最后一条
+        // 章节的段尾兜底（章节自带 endSec，不该被总时长缺失整体拖废）。
         let totalSec =
-            durationSec ?? (video.durationMs ? Math.round(video.durationMs / 1000) : 0);
-        const descSegs = desc ? parseBiliDescSegments(desc, totalSec) : [];
-        const merged = mergeBiliSegmentSources(descSegs, chapters);
+            durationSec ??
+            view.durationSec ??
+            (video.durationMs ? Math.round(video.durationMs / 1000) : 0);
+        const descSegs = view.desc ? parseBiliDescSegments(view.desc, totalSec) : [];
+        // 评论源门控：章节＋简介都不足 3 条才拉置顶评论（解析器/章节
+        // 函数的口径是 ≥3 条或为空，不足即为空），常见路径零额外
+        // 请求；commentSegs 为 null 表示被门控跳过、未拉。
+        let commentSegs: ReturnType<typeof parseBiliDescSegments> | null = null;
+        if (descSegs.length < 3 && chapters.length < 3 && view.aid) {
+            commentSegs = await fetchBilibiliTopCommentSegments(
+                view.aid,
+                totalSec,
+                loadBiliSession()?.cookie
+            );
+        }
+        const merged = mergeBiliSegmentSources(descSegs, chapters, commentSegs ?? []);
         if (totalSec <= 0 && chapters.length > 0) {
             totalSec = chapters[chapters.length - 1]!.endSec;
         }
+        const commentPart = commentSegs === null ? '未拉' : `${commentSegs.length} 条`;
         console.log(
             merged.length > 0
-                ? `[Bili] 拆歌 ${bvid}：章节 ${chapters.length} 条、简介 ${descSegs.length} 条，采用 ${merged.length} 条`
-                : `[Bili] 拆歌 ${bvid}：章节 ${chapters.length} 条、简介 ${descSegs.length} 条，均无可用分段`
+                ? `[Bili] 拆歌 ${bvid}：章节 ${chapters.length} 条、简介 ${descSegs.length} 条、评论 ${commentPart}，采用 ${merged.length} 条`
+                : `[Bili] 拆歌 ${bvid}：章节 ${chapters.length} 条、简介 ${descSegs.length} 条、评论 ${commentPart}，均无可用分段`
         );
         if (merged.length === 0 || totalSec <= 0) {
             notice.textContent = '这条没解析到时间戳歌单，只能整条播放';
@@ -5665,7 +5681,8 @@ function openBiliPlaylistPage(video: Track, status: HTMLElement): void {
         }
         // 分段曲：id 带 @startSec 后缀（取链时剥掉），时长与起止偏移
         // 都按段算；段尾优先章节自带的 endSec，简介源才按下一条
-        // start／总时长推。
+        // start／总时长推。隐含片头段把 implicit 标记传成
+        // segmentImplicit，匹配侧据此跳过（列表/队列里仍是普通一段）。
         const segments: Track[] = merged.map((seg, index) => {
             const endSec =
                 seg.endSec ??
@@ -5678,7 +5695,8 @@ function openBiliPlaylistPage(video: Track, status: HTMLElement): void {
                 coverUrl: video.coverUrl,
                 source: 'bilibili',
                 segmentStartMs: seg.startSec * 1000,
-                segmentEndMs: endSec * 1000
+                segmentEndMs: endSec * 1000,
+                segmentImplicit: seg.implicit ? true : undefined
             };
         });
         playSplit.disabled = false;

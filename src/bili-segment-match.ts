@@ -120,6 +120,15 @@ function saveSegmentMatchCache(cache: Record<string, SegmentMatchCacheEntry>): v
 const inflightMatches = new Map<string, Promise<BiliSegmentMatch | null>>();
 
 export function resolveBiliSegmentMatch(track: Track): Promise<BiliSegmentMatch | null> {
+    // 隐含片头段守卫：归一化补出的「片头（未标注）」不是一首歌，绝不
+    // 进网易云匹配（标记由 bilibili.ts 归一化打、经 home.ts 的 Track
+    // 构造传到这里）。封面（playback）与歌词（lyrics）两路都经本入
+    // 口，一处守卫全覆盖；隐含段歌词照常走 B 站 CC 字幕链，那条链
+    // 按 bvid 取词、不经这里，不受影响。
+    if (track.segmentImplicit) {
+        console.log(`[Bili] 拆歌匹配 ${segmentKeyOf(track)} 跳过（隐含片头段不匹配）`);
+        return Promise.resolve(null);
+    }
     if (!isBiliSegmentTrack(track)) {
         return Promise.resolve(null);
     }
