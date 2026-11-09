@@ -23,6 +23,7 @@
 //   播放页调用 poke() 重启动画。toggle 变化也调 poke() 立即生效。
 
 import { sampleCoverColor } from './cover-color';
+import { AnimClock } from './anim-rate';
 
 // 高光火花种子：主火花在左上偏边处，二号火花（团块才有）在右侧偏上。
 // dx/dy/radius 均为相对主圆半径的比例，seed 时定死、逐帧不变。
@@ -198,6 +199,10 @@ export class VisualStage {
     private rafId: number | null = null;
     private running = false;
     private suspended = false;
+    // 动画速率：rAF 时间戳经 AnimClock 按生效速率累加成动画时间，
+    // 逐帧位移（下滑滴/粒子）再乘 frameScale（anim-rate.ts）。
+    private animClock = new AnimClock();
+    private frameScale = 1;
     private staticDrawn = false;
     private drops: Drop[] = [];
     private bokeh: Bokeh[] = [];
@@ -274,7 +279,8 @@ export class VisualStage {
                     this.poke();
                     return;
                 }
-                this.drawFrame(time, true);
+                this.frameScale = this.animClock.frameScale();
+                this.drawFrame(this.animClock.advance(time), true);
                 this.rafId = requestAnimationFrame(step);
             };
             this.rafId = requestAnimationFrame(step);
@@ -708,7 +714,7 @@ export class VisualStage {
         // 下滑滴：保持旧量级逐帧活绘（移动/拖尾形态不变，滴身换新引擎）。
         for (const drop of this.drops) {
             if (animated && drop.speed > 0) {
-                drop.y += drop.speed;
+                drop.y += drop.speed * this.frameScale;
                 if (drop.y - drop.trail > cssHeight) {
                     drop.y = -drop.trail;
                     drop.x = Math.random() * cssWidth;
@@ -906,8 +912,8 @@ export class VisualStage {
         ctx.fillStyle = 'rgba(232, 160, 191, 0.85)';
         for (const particle of this.particles) {
             if (animated) {
-                particle.x += particle.vx * boost;
-                particle.y += particle.vy * boost;
+                particle.x += particle.vx * boost * this.frameScale;
+                particle.y += particle.vy * boost * this.frameScale;
                 if (particle.x < 0 || particle.x > cssWidth) {
                     particle.vx *= -1;
                 }

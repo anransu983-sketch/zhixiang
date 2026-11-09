@@ -28,6 +28,7 @@ import {
     togglePlay
 } from './playback';
 import { loadAutoMixEnabled, saveAutoMixEnabled } from './automix';
+import { applyAnimRateToCss, loadAnimRate, saveAnimRate } from './anim-rate';
 import type { PlaybackState, RepeatMode } from './playback';
 import {
     approximateWords,
@@ -328,6 +329,8 @@ export function openPlayerPage(): void {
 }
 
 function buildPlayerPage(): HTMLElement {
+    // 动画速率 CSS 变量先落一次（画布侧速率由两舞台各自现读存储）。
+    applyAnimRateToCss();
     const page = document.createElement('section');
     page.className = 'player-page';
 
@@ -1329,6 +1332,34 @@ function buildPlayerPage(): HTMLElement {
     });
     automixLabel.append(automixBox, document.createTextNode('AutoMix 节拍过渡'));
     visualPad.appendChild(automixLabel);
+
+    // 动画速率（0.5×–2.0×，步进 0.1）：CSS 转场/歌词动画走时长
+    // 变量、两块画布走 AnimClock 缩放（anim-rate.ts）；系统减动效
+    // 优先于本设置（生效速率钳 ≤1.0，在 anim-rate.ts 内处理）。
+    const animRateRow = document.createElement('div');
+    animRateRow.className = 'player-preset-row';
+    const animRateLabel = document.createElement('span');
+    animRateLabel.className = 'player-preset-label';
+    animRateLabel.textContent = '动画速率';
+    const animRateRange = document.createElement('input');
+    animRateRange.type = 'range';
+    animRateRange.className = 'player-range';
+    animRateRange.min = '0.5';
+    animRateRange.max = '2';
+    animRateRange.step = '0.1';
+    let animRate = loadAnimRate();
+    animRateRange.value = String(animRate);
+    const animRateValue = document.createElement('span');
+    animRateValue.className = 'player-preset-label';
+    animRateValue.textContent = `${animRate.toFixed(1)}×`;
+    animRateRange.addEventListener('input', () => {
+        animRate = Number(animRateRange.value);
+        animRateValue.textContent = `${animRate.toFixed(1)}×`;
+        saveAnimRate(animRate);
+        applyAnimRateToCss();
+    });
+    animRateRow.append(animRateLabel, animRateRange, animRateValue);
+    visualPad.appendChild(animRateRow);
 
     // 歌词字体行：当前字体名 + 导入 + 恢复默认；导入失败只提示，
     // 旧字体保留可用（事务口径在 lyric-font.ts）。

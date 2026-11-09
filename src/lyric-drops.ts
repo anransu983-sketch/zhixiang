@@ -60,6 +60,8 @@
 // （播放页打开、歌词卡显示中、未折叠）且 document 可见时跑 rAF，
 // 其余一律停画不空转；document 隐藏停、恢复可见由监听 poke 回来。
 
+import { AnimClock } from './anim-rate';
+
 // 折射采样（0.1.143）：采样窗与滴径之比的倒数——窗越小、滴里放得
 // 越大。照片级水珠的放大感约 1.55 倍。
 const REFRACT_ZOOM = 1.55;
@@ -123,6 +125,10 @@ export class LyricDrops {
     private mode = 0;
     private rafId: number | null = null;
     private running = false;
+    // 动画速率：同 VisualStage 口径，rAF 时间经 AnimClock 缩放，
+    // 下滑滴逐帧位移乘 frameScale（anim-rate.ts）。
+    private animClock = new AnimClock();
+    private frameScale = 1;
     private drops: Drop[] = [];
     private bokeh: Bokeh[] = [];
     private seededWidth = 0;
@@ -230,7 +236,8 @@ export class LyricDrops {
                     this.poke();
                     return;
                 }
-                this.drawFrame(time, true);
+                this.frameScale = this.animClock.frameScale();
+                this.drawFrame(this.animClock.advance(time), true);
                 this.rafId = requestAnimationFrame(step);
             };
             this.rafId = requestAnimationFrame(step);
@@ -487,7 +494,7 @@ export class LyricDrops {
                 continue;
             }
             if (animated) {
-                drop.y += drop.speed;
+                drop.y += drop.speed * this.frameScale;
                 if (drop.y - drop.trail > cssHeight) {
                     drop.y = -drop.trail;
                     drop.x = Math.random() * cssWidth;

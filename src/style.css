@@ -1,5 +1,9 @@
 :root {
     color-scheme: dark;
+    /* 动画速率时长因子（anim-rate.ts 按生效速率写 1/rate 到 html 内联
+       样式覆盖此默认值）：播放页核心 transition/animation 时长走
+       calc(原时长 × var(--zx-anim-dur-factor))，速率越高时长越短。 */
+    --zx-anim-dur-factor: 1;
 
     --bg: #09090b;
     --surface-1: #14121a;
@@ -1360,7 +1364,7 @@ body {
     height: 100%;
     object-fit: cover;
     border-radius: 22px;
-    transition: transform 0.2s ease;
+    transition: transform calc(0.2s * var(--zx-anim-dur-factor, 1)) ease;
 }
 
 .player-cover-ph {
@@ -1708,7 +1712,7 @@ body {
     border: 1.5px solid transparent;
     background: rgba(255, 255, 255, 0.22);
     opacity: 0.55;
-    animation: lyric-interlude-pulse 1.6s ease-in-out infinite;
+    animation: lyric-interlude-pulse calc(1.6s * var(--zx-anim-dur-factor, 1)) ease-in-out infinite;
 }
 
 .lyric-interlude span:nth-child(2) {
@@ -1858,7 +1862,7 @@ body {
     line-height: 1.6;
     /* 双向模糊＋透明度层次：半径与 opacity 都由 TS 按行距查表赋值，
        300ms 线性过渡跟住切行；只挂在行这个小字块上，不做大面积模糊。 */
-    transition: filter 0.3s linear, opacity 0.3s linear;
+    transition: filter calc(0.3s * var(--zx-anim-dur-factor, 1)) linear, opacity calc(0.3s * var(--zx-anim-dur-factor, 1)) linear;
 }
 
 /* 译文副行：正文下方小字（约正文六成字号，随正文 em 缩放），
@@ -1892,7 +1896,7 @@ body {
     /* 0.1.136：当前行再大一号（22→24），与透明度梯度一起把层次拉开。 */
     font-size: 24px;
     transform-origin: left center;
-    animation: lyric-line-pop 0.38s ease;
+    animation: lyric-line-pop calc(0.38s * var(--zx-anim-dur-factor, 1)) ease;
 }
 
 /* 逐字弹跳（0.1.134）：词被唱到的瞬间弹一下——上跳放大、轻微过冲再落回。
@@ -1923,7 +1927,7 @@ body {
 
 .player-lyric-word.is-sung {
     color: var(--theme-accent, #f9a8d4);
-    animation: lyric-word-bounce 0.45s cubic-bezier(0.28, 0.84, 0.42, 1);
+    animation: lyric-word-bounce calc(0.45s * var(--zx-anim-dur-factor, 1)) cubic-bezier(0.28, 0.84, 0.42, 1);
 }
 
 /* 歌词辉光（0.1.131，借鉴 AM++ 的 CJK 长尾辉光）：正在唱的 CJK 词按
@@ -2013,7 +2017,7 @@ body {
     width: 100%;
     border: 1px solid transparent;
     border-radius: 18px;
-    transition: grid-template-rows 0.26s ease-out, border-color 0.26s ease-out, box-shadow 0.26s ease-out, background-color 0.26s ease-out;
+    transition: grid-template-rows calc(0.26s * var(--zx-anim-dur-factor, 1)) ease-out, border-color calc(0.26s * var(--zx-anim-dur-factor, 1)) ease-out, box-shadow calc(0.26s * var(--zx-anim-dur-factor, 1)) ease-out, background-color calc(0.26s * var(--zx-anim-dur-factor, 1)) ease-out;
 }
 
 .visual-panel[data-open="true"] {
@@ -3299,7 +3303,7 @@ button:not(.poster-card):not(.shelf-record):active::after {
 
 .np-btn.np-play.burst,
 .player-icon-btn.is-main.burst {
-    animation: play-burst 450ms ease-out;
+    animation: play-burst calc(450ms * var(--zx-anim-dur-factor, 1)) ease-out;
 }
 
 /* 页标题与登录区标题：极光字＋进页 1.2s 扫过（Tab 显隐会重启动画，正好当进页扫）。 */
