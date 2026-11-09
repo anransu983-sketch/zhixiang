@@ -41,6 +41,20 @@
 // 月牙渐变取消——照片里的滴靠折射内容成形，不靠描边。0.1.141 的半透
 // 口径（LENS_ALPHA、月牙、提亮/清透采样源）就此废除，不留两套。
 //
+// 0.1.145 滴答循环（用户装 0.1.144 后指着歌词卡下令「做成那种动
+// 态，雨滴滴答滴答滴压那种」）：动态档原先的下滑滴是恒速匀速下滑＋
+// 白色渐变细线拖尾，像一道雨幕——真实雨滴在玻璃上是一颗一颗过日
+// 子的：先在原地凝聚长大，攒到临界时压扁微颤（就是「压」），然后
+// 突然滑落、沿途留下会自己消失的残留微滴。本版把下滑滴换成状态
+// 机：凝聚（dwell，2.5–6 秒由小长到释放阈值）→ 临界微颤（teeter，
+// 纵向压到约 0.82、越临界颤得越明显）→ 滑落（slide，自静止加速到
+// 与半径成正比的终端速度，轻微蛇形、纵向拉长，约三成概率半途挂
+// 住回到凝聚）→ 等待（wait，随机延迟后在卡面上部 2/3 凝聚重
+// 生）。同一时刻最多 2 颗在滑，相位全程错开，要的是间歇的滴答节
+// 奏、不是雨量。白色细线拖尾废弃，改残留微滴（滑过路径上每隔数
+// px 留一颗，1.2–2 秒内缩小淡出，全卡上限 120 颗）。滴身画法、
+// 折射采样、静态层机制全部不动，动态滴仍复用 paintDropBody。
+//
 // 静态滴（团块＋中滴＋细点）在种子/底图变化时先预渲染到一层离屏
 // （staticLayer），每帧只 drawImage 这层＋活画下滑滴，禁止逐帧重算
 // 团块采样（性能红线）；动态档同理，静态层打底、下滑滴活绘。
@@ -54,7 +68,7 @@
 //
 // 档位跟随视觉开关 rainMode（同一份存储 zhixiang.visual.toggles，不
 // 新增设置项）：0 关＝canvas 隐藏不画；1 静态＝画一帧静止滴，封面或
-// 卡尺寸变了才重画；2 动态＝rAF 动画（下滑滴滑落、光斑微动）。
+// 卡尺寸变了才重画；2 动态＝rAF 动画（下滑滴走滴答循环、光斑微动）。
 //
 // 动画纪律同 VisualStage 的 poke/suspend：只在外部告知「已呈现」
 // （播放页打开、歌词卡显示中、未折叠）且 document 可见时跑 rAF，
@@ -88,12 +102,43 @@ interface DropSpark {
     rr: number;
 }
 
+/** 下滑滴滴答循环的阶段（0.1.145）：凝聚→临界微颤→滑落→等待重生。 */
+type SliderPhase = 'dwell' | 'teeter' | 'slide' | 'wait';
+
 interface Drop {
     x: number;
     y: number;
     radius: number;
+    // —— 以下为下滑滴（kind 'slider'）的滴答循环状态，其余 kind 不用 ——
+    /** 当前阶段；非 slider 恒为 'dwell' 且从不推进。 */
+    phase: SliderPhase;
+    /** 当前阶段已耗时（ms，动画时间口径）。 */
+    phaseT: number;
+    /** 当前阶段总时长（ms）：凝聚/微颤/等待各有随机量。 */
+    phaseDur: number;
+    /** 凝聚起点半径（约 3）：长大从这里算。 */
+    startRadius: number;
+    /** 释放阈值半径（随机 8–12，挂住后再长时顺延）：长到它就滑。 */
+    threshold: number;
+    /** 凝聚起点 y：全程只许极轻微下沉（≤2px），以它为锚。 */
+    dwellY: number;
+    /** 滑落当前速度（CSS px/s），自 0 加速到 terminal。 */
     speed: number;
-    trail: number;
+    /** 终端速度（CSS px/s，与半径成正比）。 */
+    terminal: number;
+    /** 滑落起点半径：沿途吞并长大的上限是它的 1.25 倍。 */
+    slideBase: number;
+    /** 滑落锚点 x 与已滑距离：蛇形横摆按距离算，不逐帧漂移累积。 */
+    anchorX: number;
+    dist: number;
+    /** 半途挂住的 y（seed 滑落时约三成概率定下）；null＝一路滑出。 */
+    hangY: number | null;
+    /** 微颤正弦相位与蛇形相位（seed/入阶段时随机）。 */
+    wobblePhase: number;
+    snakePhase: number;
+    /** 残留微滴落点间距（6–10px）与距上个落点已滑距离。 */
+    residueGap: number;
+    residueSince: number;
     /** 纵向微椭圆系数（seed 时定死、逐帧不变）：团块在并集之上再略压。 */
     squash: number;
     kind: DropKind;
@@ -103,6 +148,16 @@ interface Drop {
     extent: number;
     /** 偏边小高光火花（1–2 颗，seed 时定死）；细水点不用（自带亮点）。 */
     sparks: DropSpark[];
+}
+
+/** 滑落路径上的残留微滴（0.1.145）：细点简形，生老病死自带时钟。 */
+interface Residue {
+    x: number;
+    y: number;
+    radius: number;
+    /** 已存活时间与总寿命（ms）：寿命内线性缩小＋淡出。 */
+    age: number;
+    life: number;
 }
 
 interface Bokeh {
@@ -125,11 +180,16 @@ export class LyricDrops {
     private mode = 0;
     private rafId: number | null = null;
     private running = false;
-    // 动画速率：同 VisualStage 口径，rAF 时间经 AnimClock 缩放，
-    // 下滑滴逐帧位移乘 frameScale（anim-rate.ts）。
+    // 动画速率：同 VisualStage 口径，rAF 时间经 AnimClock 缩放成
+    // 动画时间（anim-rate.ts）；滴答状态机按动画时间的帧差 dt 推
+    // 进，速率已含在 dt 里，不再另乘逐帧位移系数。
     private animClock = new AnimClock();
-    private frameScale = 1;
     private drops: Drop[] = [];
+    private residues: Residue[] = [];
+    // 上一动画帧的动画时间（ms）：滴答状态机按相邻帧差 dt 推进，
+    // dt 钳 50ms 上限——切回前台时 AnimClock 累计会跳一大截，不能
+    // 让滴一帧窜出去。-1＝还没有上一帧。
+    private lastAnimTime = -1;
     private bokeh: Bokeh[] = [];
     private seededWidth = 0;
     private seededHeight = 0;
@@ -236,7 +296,6 @@ export class LyricDrops {
                     this.poke();
                     return;
                 }
-                this.frameScale = this.animClock.frameScale();
                 this.drawFrame(this.animClock.advance(time), true);
                 this.rafId = requestAnimationFrame(step);
             };
@@ -324,28 +383,40 @@ export class LyricDrops {
         this.seededWidth = width;
         this.seededHeight = height;
         this.drops = [];
+        this.residues = [];
         this.bokeh = [];
         const area = width * height;
-        const push = (
-            kind: DropKind,
-            radius: number,
-            blob: boolean,
-            speed = 0,
-            trail = 0
-        ): void => {
+        const push = (kind: DropKind, radius: number, blob: boolean): Drop => {
             const parts = blob ? this.makeParts() : null;
-            this.drops.push({
+            const drop: Drop = {
                 x: Math.random() * width,
                 y: Math.random() * height,
                 radius,
-                speed,
-                trail,
+                phase: 'dwell',
+                phaseT: 0,
+                phaseDur: 0,
+                startRadius: radius,
+                threshold: radius,
+                dwellY: 0,
+                speed: 0,
+                terminal: 0,
+                slideBase: radius,
+                anchorX: 0,
+                dist: 0,
+                hangY: null,
+                wobblePhase: Math.random() * Math.PI * 2,
+                snakePhase: Math.random() * Math.PI * 2,
+                residueGap: 6 + Math.random() * 4,
+                residueSince: 0,
                 squash: blob ? 0.94 + Math.random() * 0.06 : 1,
                 kind,
                 parts,
                 extent: this.extentOf(parts),
                 sparks: kind === 'speck' ? [] : this.makeSparks()
-            });
+            };
+            drop.dwellY = drop.y;
+            this.drops.push(drop);
+            return drop;
         };
         // 密度按卡面积换算（0.1.143 照片级密布口径）：以约 300×260 的
         // 卡面为锚——团块约 28 颗（area/2800，半径 7–20）、中滴约 70
@@ -364,19 +435,21 @@ export class LyricDrops {
         for (let i = 0; i < speckCount; i++) {
             push('speck', 0.8 + Math.pow(Math.random(), 1.3) * 1.4, false);
         }
-        // 下滑滴：数量保持现行量级（卡面按面积约 5 颗），半径 5–11；
-        // 半径 ≥7 的走团块＋锐采样，小的走单圆，拖尾保留白渐变细线，
-        // 滑落→出界→顶部重生（重生只换 x，团块/火花/压扁系数不变）。
+        // 下滑滴（0.1.145 滴答循环）：数量保持原量级（卡面按面积约
+        // 5 颗）。播种即进凝聚态：从约 3 长到阈值 8–12，各滴的凝聚
+        // 进度随机散开（phaseT 预填随机一段），保证开画就是「这滴
+        // 在攒、那滴快满」的错相；半径 ≥7 的走团块＋锐采样（长到阈
+        // 值后自然达标），团块/火花/压扁系数全程不变。
         const sliderCount = Math.round(Math.min(8, Math.max(2, area / 16000)));
         for (let i = 0; i < sliderCount; i++) {
-            const radius = 5 + Math.random() * 6;
-            push(
-                'slider',
-                radius,
-                radius >= 7,
-                0.25 + Math.random() * 0.45,
-                14 + Math.random() * 26
-            );
+            const drop = push('slider', 3, false);
+            this.resetDwell(drop, width, height, true);
+            // 团块按最终个头定（阈值 8–12 恒 ≥7，与现行「半径 ≥7 走
+            // 团块」同口径）：seed 时定死，之后凝聚/滑落/重生都不换。
+            if (drop.threshold >= 7) {
+                drop.parts = this.makeParts();
+                drop.extent = this.extentOf(drop.parts);
+            }
         }
         // 大光斑：只做柔光深度，半径按卡面缩（全屏 30–80 → 卡面 22–58）。
         const bokehCount = Math.round(Math.min(6, Math.max(2, area / 26000)));
@@ -455,6 +528,213 @@ export class LyricDrops {
         this.bgSharpCanvas = paint('');
     }
 
+    // —— 滴答循环状态机（0.1.145，只管 kind 'slider' 的滴） ——
+
+    // 进凝聚态：全新一滴（播种/重生）从约 3 长到阈值 8–12，位置在
+    // 卡面上部 2/3 随机落点；scatter 时预填一段随机进度，错开相位。
+    private resetDwell(drop: Drop, width: number, height: number, scatter: boolean): void {
+        drop.phase = 'dwell';
+        drop.phaseDur = 2500 + Math.random() * 3500;
+        drop.phaseT = scatter ? Math.random() * drop.phaseDur * 0.92 : 0;
+        drop.startRadius = 2.8 + Math.random() * 0.7;
+        drop.threshold = 8 + Math.random() * 4;
+        drop.speed = 0;
+        drop.hangY = null;
+        drop.dist = 0;
+        drop.x = Math.random() * width;
+        drop.dwellY = Math.random() * height * (2 / 3);
+        const eased = Math.pow(drop.phaseT / drop.phaseDur, 1.6);
+        drop.radius =
+            drop.startRadius + (drop.threshold - drop.startRadius) * eased;
+        drop.y = drop.dwellY + 2 * eased;
+    }
+
+    // 挂住后回凝聚：不换位置、不回小滴，从当前个头继续往上攒一点。
+    private resumeDwell(drop: Drop): void {
+        drop.phase = 'dwell';
+        drop.phaseDur = 1500 + Math.random() * 2000;
+        drop.phaseT = 0;
+        drop.startRadius = drop.radius;
+        drop.threshold = Math.min(14, drop.radius + 1.5 + Math.random() * 2.5);
+        drop.speed = 0;
+        drop.hangY = null;
+        drop.dwellY = drop.y;
+    }
+
+    // 释放滑落：速度从 0 起，终端速度与半径成正比（约 13px/s 每
+    // 1px 半径，合现行恒速的 2–4 倍量级）；约三成概率半途挂住。
+    private startSlide(drop: Drop, height: number): void {
+        drop.phase = 'slide';
+        drop.phaseT = 0;
+        drop.speed = 0;
+        drop.slideBase = drop.radius;
+        drop.terminal = drop.radius * 13;
+        drop.anchorX = drop.x;
+        drop.dist = 0;
+        drop.snakePhase = Math.random() * Math.PI * 2;
+        drop.residueSince = 0;
+        drop.residueGap = 6 + Math.random() * 4;
+        drop.hangY = null;
+        if (Math.random() < 0.3) {
+            const hangY = drop.y + (0.25 + Math.random() * 0.45) * (height - drop.y);
+            if (hangY < height - drop.radius) {
+                drop.hangY = hangY;
+            }
+        }
+    }
+
+    private addResidue(x: number, y: number): void {
+        this.residues.push({
+            x,
+            y,
+            radius: 0.8 + Math.random() * 1.0,
+            age: 0,
+            life: 1200 + Math.random() * 800
+        });
+        // 全卡上限 120 颗，超了先淘汰最老的。
+        while (this.residues.length > 120) {
+            this.residues.shift();
+        }
+    }
+
+    private updateResidues(dtMs: number): void {
+        for (let i = this.residues.length - 1; i >= 0; i--) {
+            const item = this.residues[i];
+            if (!item) {
+                continue;
+            }
+            item.age += dtMs;
+            if (item.age >= item.life) {
+                this.residues.splice(i, 1);
+            }
+        }
+    }
+
+    private updateSliders(dtMs: number, width: number, height: number): void {
+        const dt = dtMs / 1000;
+        let sliding = 0;
+        for (const drop of this.drops) {
+            if (drop.kind === 'slider' && drop.phase === 'slide') {
+                sliding++;
+            }
+        }
+        for (const drop of this.drops) {
+            if (drop.kind !== 'slider') {
+                continue;
+            }
+            if (drop.phase === 'wait') {
+                drop.phaseT += dtMs;
+                if (drop.phaseT >= drop.phaseDur) {
+                    this.resetDwell(drop, width, height, false);
+                }
+            } else if (drop.phase === 'dwell') {
+                drop.phaseT += dtMs;
+                const p = Math.min(1, drop.phaseT / drop.phaseDur);
+                // 长大前慢后快（p^1.6）：慢得看得出在「攒」。
+                const eased = Math.pow(p, 1.6);
+                drop.radius =
+                    drop.startRadius + (drop.threshold - drop.startRadius) * eased;
+                drop.y = drop.dwellY + 2 * eased;
+                if (drop.radius >= drop.threshold * 0.85) {
+                    drop.phase = 'teeter';
+                    drop.phaseT = 0;
+                    drop.phaseDur = 300 + Math.random() * 900;
+                    drop.wobblePhase = Math.random() * Math.PI * 2;
+                }
+            } else if (drop.phase === 'teeter') {
+                drop.phaseT += dtMs;
+                // 越临界颤得越快：相位推进随阶段进度加速。
+                drop.wobblePhase +=
+                    dtMs * (0.022 + 0.028 * Math.min(1, drop.phaseT / drop.phaseDur));
+                // 微颤期间仍极慢地往阈值 creep。
+                drop.radius = Math.min(
+                    drop.threshold,
+                    drop.radius +
+                        ((drop.threshold - drop.radius) * dtMs) /
+                            Math.max(1, drop.phaseDur)
+                );
+                if (drop.phaseT >= drop.phaseDur) {
+                    if (sliding < 2) {
+                        this.startSlide(drop, height);
+                        sliding++;
+                    } else {
+                        // 已有 2 颗在滑：排队，留在临界态继续颤。
+                        drop.phaseT = drop.phaseDur - 120;
+                    }
+                }
+            } else {
+                // slide：加速到终端速度，过了挂点则减速到停。
+                drop.phaseT += dtMs;
+                let hung = false;
+                if (drop.hangY !== null && drop.y >= drop.hangY) {
+                    drop.speed = Math.max(0, drop.speed - drop.terminal * 2.8 * dt);
+                    if (drop.speed <= 0.5) {
+                        this.resumeDwell(drop);
+                        hung = true;
+                    }
+                } else {
+                    drop.speed = Math.min(
+                        drop.terminal,
+                        drop.speed + (drop.terminal / 0.28) * dt
+                    );
+                }
+                if (hung) {
+                    sliding--;
+                    continue;
+                }
+                const dy = drop.speed * dt;
+                drop.y += dy;
+                drop.dist += dy;
+                // 蛇形横摆：按已滑距离算正弦，幅度 ≤ 半径 0.3，起步
+                // 30px 内渐入免得横跳。
+                drop.x =
+                    drop.anchorX +
+                    Math.sin(drop.dist * 0.05 + drop.snakePhase) *
+                        drop.radius *
+                        0.3 *
+                        Math.min(1, drop.dist / 30);
+                // 沿途吞并长大：滑过半个卡高约长满 +25%。
+                drop.radius = Math.min(
+                    drop.slideBase * 1.25,
+                    drop.radius + (drop.slideBase * 0.25 * dy) / (height * 0.5)
+                );
+                // 残留微滴：每滑过一个间距落一颗在身后。
+                drop.residueSince += dy;
+                while (drop.residueSince >= drop.residueGap) {
+                    drop.residueSince -= drop.residueGap;
+                    this.addResidue(
+                        drop.x,
+                        drop.y - drop.residueSince - drop.radius * 0.6
+                    );
+                    drop.residueGap = 6 + Math.random() * 4;
+                }
+                if (drop.y - drop.radius * drop.extent > height) {
+                    drop.phase = 'wait';
+                    drop.phaseT = 0;
+                    drop.phaseDur = 400 + Math.random() * 2100;
+                    sliding--;
+                }
+            }
+        }
+    }
+
+    // 动态压扁/拉长（paintDropBody 的可选入参）：凝聚态为中性 1；
+    // 微颤态纵向在 1 与约 0.82 间正弦压扁（进度越深幅度越大，横向
+    // 按 1/√sy 略宽，体积感守恒的大意）；滑落态按速度比纵向拉长到
+    // 约 1.28、横向相应略窄。与 seed 定死的 squash 是两回事，叠乘。
+    private dynSquash(drop: Drop): { sx: number; sy: number } {
+        if (drop.phase === 'teeter') {
+            const p = Math.min(1, drop.phaseT / drop.phaseDur);
+            const sy = 1 - 0.18 * p * (0.5 + 0.5 * Math.sin(drop.wobblePhase));
+            return { sx: 1 / Math.sqrt(sy), sy };
+        }
+        if (drop.phase === 'slide' && drop.terminal > 0) {
+            const sy = 1 + 0.28 * Math.min(1, drop.speed / drop.terminal);
+            return { sx: 1 / Math.sqrt(sy), sy };
+        }
+        return { sx: 1, sy: 1 };
+    }
+
     private drawFrame(time: number, animated: boolean): void {
         const ctx = this.context;
         if (!ctx) {
@@ -467,6 +747,18 @@ export class LyricDrops {
         const cssHeight = this.canvas.clientHeight || height;
         const scaleX = width / cssWidth;
         const scaleY = height / cssHeight;
+        // 滴答循环推进（只动态档）：dt 是 AnimClock 缩放后的动画时间
+        // 差（速率已在里面），钳 50ms 上限防切回前台一帧跳很远；静
+        // 态帧不推进状态、只按当前状态画一帧。
+        if (animated) {
+            const dtMs =
+                this.lastAnimTime < 0
+                    ? 16
+                    : Math.min(50, Math.max(0, time - this.lastAnimTime));
+            this.lastAnimTime = time;
+            this.updateSliders(dtMs, cssWidth, cssHeight);
+            this.updateResidues(dtMs);
+        }
         // 大光斑：失焦柔光，只做深度；动态档给几像素的正弦微动（全屏版
         // 是静止的，卡面小，微动才看得出「活气」），静态帧不偏移。
         for (const spot of this.bokeh) {
@@ -488,35 +780,33 @@ export class LyricDrops {
         if (this.staticLayer) {
             ctx.drawImage(this.staticLayer, 0, 0);
         }
-        // 下滑滴：活画（静态档也画一帧，停在种子位置）。
+        // 残留微滴：画在静态层之上、下滑滴之下，细点简形（淡芯＋左
+        // 上一颗小亮点，随年龄缩小并淡出），不走团块采样。
+        for (const item of this.residues) {
+            const ageRatio = item.age / item.life;
+            const fade = 1 - ageRatio;
+            const x = item.x * scaleX;
+            const y = item.y * scaleY;
+            const r = Math.max(0.3, item.radius * scaleX * (1 - 0.55 * ageRatio));
+            ctx.fillStyle = `rgba(255, 255, 255, ${(0.3 * fade).toFixed(3)})`;
+            ctx.beginPath();
+            ctx.arc(x, y, r, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = `rgba(255, 255, 255, ${(0.75 * fade).toFixed(3)})`;
+            ctx.beginPath();
+            ctx.arc(x - r * 0.35, y - r * 0.38, Math.max(0.3, r * 0.34), 0, Math.PI * 2);
+            ctx.fill();
+        }
+        // 下滑滴：活画（静态档也画一帧，停在当前凝聚态、不推进）；
+        // 等待重生中的滴不画。动态压扁/拉长经可选入参进 paintDropBody。
         for (const drop of this.drops) {
-            if (drop.kind !== 'slider') {
+            if (drop.kind !== 'slider' || drop.phase === 'wait') {
                 continue;
-            }
-            if (animated) {
-                drop.y += drop.speed * this.frameScale;
-                if (drop.y - drop.trail > cssHeight) {
-                    drop.y = -drop.trail;
-                    drop.x = Math.random() * cssWidth;
-                }
             }
             const x = drop.x * scaleX;
             const y = drop.y * scaleY;
             const r = drop.radius * scaleX;
-            // 下滑拖尾：半透明白色渐变细线，尾端全透明、近滴处 0.35。
-            if (drop.trail > 0) {
-                const trailTop = y - drop.trail * scaleY;
-                const gradient = ctx.createLinearGradient(0, trailTop, 0, y);
-                gradient.addColorStop(0, 'rgba(255, 255, 255, 0)');
-                gradient.addColorStop(1, 'rgba(255, 255, 255, 0.35)');
-                ctx.strokeStyle = gradient;
-                ctx.lineWidth = Math.max(1, r * 0.25);
-                ctx.beginPath();
-                ctx.moveTo(x, trailTop);
-                ctx.lineTo(x, y);
-                ctx.stroke();
-            }
-            this.paintDropBody(ctx, drop, x, y, r, scaleX);
+            this.paintDropBody(ctx, drop, x, y, r, scaleX, this.dynSquash(drop));
         }
     }
 
@@ -599,13 +889,17 @@ export class LyricDrops {
     // 居中对滴心；卫星区由同一张采样图自然延展覆盖）→ 下缘细亮弧 →
     // 偏边高光火花。采样窗出界（贴边滴）或无锐版时跳过采样，只剩
     // 形状＋亮弧＋火花，边缘不消失靠的就是这道下缘弧兜底。
+    // dyn（0.1.145 可选）：下滑滴的动态压扁/拉长（dynSquash 算），
+    // 与 seed 定死的 squash 叠乘；不传即 {1,1}，静态层构建路径的
+    // 调用不传、画面与改前逐像素同口径。
     private paintDropBody(
         ctx: CanvasRenderingContext2D,
         drop: Drop,
         x: number,
         y: number,
         r: number,
-        scaleX: number
+        scaleX: number,
+        dyn?: { sx: number; sy: number }
     ): void {
         const width = this.canvas.width;
         const height = this.canvas.height;
@@ -621,7 +915,7 @@ export class LyricDrops {
             y + win / 2 <= height;
         ctx.save();
         ctx.translate(x, y);
-        ctx.scale(1, drop.squash);
+        ctx.scale(dyn?.sx ?? 1, drop.squash * (dyn?.sy ?? 1));
         ctx.beginPath();
         if (drop.parts) {
             for (const part of drop.parts) {
