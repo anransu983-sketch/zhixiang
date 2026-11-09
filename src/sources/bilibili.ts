@@ -362,9 +362,13 @@ export async function fetchBilibiliChart(zone: BiliChartZone): Promise<Track[]> 
 // ---- 歌单视频与简介拆歌 ----
 // B 站有一类「歌单视频」：单个长视频装十几首歌，简介里按行写时间戳
 // 歌单（如 BV1pyp761E5e，39:45，简介带 0:00 Everyday 起全套）。
-// 本节三件：搜这类长视频、拿简介原文、把简介解析成分段表。
+// 本节做：搜这类长视频、双源拿分段（简介时间戳＋官方章节，合并规则
+// 见 mergeBiliSegmentSources）、把简介解析成分段表。
 
 const VIEW_URL = 'https://api.bilibili.com/x/web-interface/view';
+const SPI_URL = 'https://api.bilibili.com/x/frontend/finger/spi';
+// 章节源走 player/v2 非 WBI 版（与上面字幕用的 wbi/v2 不是一个端点）。
+const PLAYER_V2_WEB_URL = 'https://api.bilibili.com/x/player/v2';
 const PLAYLIST_SEARCH_KEYWORDS = ['Playlist 歌单', '歌单'];
 const PLAYLIST_MIN_DURATION_MS = 10 * 60 * 1000;
 const PLAYLIST_LIMIT = 30;
@@ -393,22 +397,98 @@ export async function fetchBilibiliPlaylistVideos(): Promise<Track[]> {
     return merged;
 }
 
-// 视频简介原文：拆歌的原料。view 接口在部分网络环境会被风控
-//（沙箱 IP 实测 412），拿不到一律回 null 让详情页降级整条播——
-// 拆歌是增值，绝不因它抛错、更不能让详情页打不开。
-export async function fetchBilibiliVideoDesc(bvid: string): Promise<string | null> {
-    try {
-        const parsed = (await fetchJson(
-            `${VIEW_URL}?bvid=${encodeURIComponent(bvid)}`,
-            'B 站视频信息拿不到'
-        )) as { code?: unknown; data?: { desc?: unknown } };
-        if (parsed.code !== 0) {
+// ---- buvid 指纹 ----
+// view 接口裸打会被风控拦（412）：缺 buvid 指纹 cookie。先打官方
+// finger/spi 拿 b_3/b_4、拼成 buvid3/buvid4 带上才放行（2026-11-09
+// 沙箱实测：机房 IP 裸打 412、带 buvid 后 200/code 0、简介原文到手；
+// 沙箱是机房 IP、风控比手机住宅网络更狠，沙箱能通手机基本能通）。
+// 指纹只在内存里缓存一份；失败不缓存，下次调用重试；并发去重仿
+// mixin 缓存的在途写法。拿不到回 null，调用方照旧裸打降级。
+let cachedBuvid: string | null = null;
+let buvidInFlight: Promise<string | null> | null = null;
+
+async function getBuvidCookie(): Promise<string | null> {
+    if (cachedBuvid) {
+        return cachedBuvid;
+    }
+    if (buvidInFlight) {
+        return buvidInFlight;
+    }
+    buvidInFlight = (async (): Promise<string | null> => {
+        try {
+            const res = await httpGet(SPI_URL, BILI_HEADERS);
+            if (res.status !== 200) {
+                console.log(`[Bili] buvid 指纹拿不到（HTTP ${res.status}）`);
+                return null;
+            }
+            const parsed = JSON.parse(res.body) as {
+                code?: unknown;
+                data?: { b_3?: unknown; b_4?: unknown };
+            };
+            const b3 = typeof parsed.data?.b_3 === 'string' ? parsed.data.b_3 : '';
+            const b4 = typeof parsed.data?.b_4 === 'string' ? parsed.data.b_4 : '';
+            if (parsed.code !== 0 || !b3 || !b4) {
+                console.log(`[Bili] buvid 指纹拿不到（code ${String(parsed.code)}）`);
+                return null;
+            }
+            cachedBuvid = `buvid3=${b3}; buvid4=${b4}`;
+            return cachedBuvid;
+        } catch {
+            console.log('[Bili] buvid 指纹拿不到（网络异常）');
             return null;
+        } finally {
+            buvidInFlight = null;
         }
-        return typeof parsed.data?.desc === 'string' ? parsed.data.desc : null;
+    })();
+    return buvidInFlight;
+}
+
+// 视频简介原文：拆歌的原料之一。view 要带 buvid 指纹才放行（见上）；
+// 已登录时调用方把 bilibili-session 的会话 cookie 传进来，与指纹
+// 合并成一条 Cookie 头（拆两个头会互相覆盖）。bilibili.ts 不直接引
+// bilibili-session（那边反向引了本文件，会成循环），故走入参。
+// 拿不到一律回 null 让详情页降级（还有章节源兜底）——拆歌是增值，
+// 绝不因它抛错、更不能让详情页打不开；失败原因记一行 [Bili] 日志
+//（只记状态/code，不记简介原文）。
+export async function fetchBilibiliVideoDesc(
+    bvid: string,
+    sessionCookie?: string
+): Promise<string | null> {
+    const buvid = await getBuvidCookie();
+    const cookieParts = [buvid, sessionCookie].filter(
+        (part): part is string => typeof part === 'string' && part.length > 0
+    );
+    const headers =
+        cookieParts.length > 0
+            ? { ...BILI_HEADERS, Cookie: cookieParts.join('; ') }
+            : BILI_HEADERS;
+    let res: Awaited<ReturnType<typeof httpGet>>;
+    try {
+        res = await httpGet(`${VIEW_URL}?bvid=${encodeURIComponent(bvid)}`, headers);
     } catch {
+        console.log(`[Bili] 简介拿不到 ${bvid}（网络异常）`);
         return null;
     }
+    if (res.status !== 200) {
+        console.log(`[Bili] 简介拿不到 ${bvid}（HTTP ${res.status}）`);
+        return null;
+    }
+    let parsed: { code?: unknown; data?: { desc?: unknown } };
+    try {
+        parsed = JSON.parse(res.body) as { code?: unknown; data?: { desc?: unknown } };
+    } catch {
+        console.log(`[Bili] 简介拿不到 ${bvid}（响应解析失败）`);
+        return null;
+    }
+    if (parsed.code !== 0) {
+        console.log(`[Bili] 简介拿不到 ${bvid}（code ${String(parsed.code)}）`);
+        return null;
+    }
+    if (typeof parsed.data?.desc !== 'string') {
+        console.log(`[Bili] 简介拿不到 ${bvid}（响应无 desc 字段）`);
+        return null;
+    }
+    return parsed.data.desc;
 }
 
 // 视频总时长（秒）：拆歌算最后一段的终点用，取 pagelist 第一 P 的
@@ -504,6 +584,75 @@ export function parseBiliDescSegments(desc: string, totalDurationSec: number): B
         }
     }
     return segments.length >= SEGMENT_MIN_COUNT ? segments : [];
+}
+
+export interface BiliChapterSegment {
+    startSec: number;
+    endSec: number;
+    title: string;
+}
+
+// 官方章节：拆歌的第二数据源（结构化，比简介时间戳稳）。player/v2
+// 的 data.view_points 里 type===2 的条目就是 UP 主标的章节
+// {from,to,content}，自带段尾（2026-11-09 沙箱实测 BV1pyp761E5e
+// 回 10 条）。两源互补：章节稳但 UP 主可能把多首打包成一条（该例
+// 最后一条「剩下三首宝藏！！！」1666→2384 包了简介里的最后三首），
+// 简介则常有全量歌单。取舍在 mergeBiliSegmentSources。
+// 任何失败/不足 3 条回空数组，不抛错。
+export async function fetchBilibiliChapters(bvid: string): Promise<BiliChapterSegment[]> {
+    try {
+        const cid = await getCid(bvid);
+        const parsed = (await fetchJson(
+            `${PLAYER_V2_WEB_URL}?bvid=${encodeURIComponent(bvid)}&cid=${cid}`,
+            'B 站章节拿不到'
+        )) as { code?: unknown; data?: { view_points?: unknown } };
+        if (parsed.code !== 0) {
+            return [];
+        }
+        const points = Array.isArray(parsed.data?.view_points) ? parsed.data.view_points : [];
+        const chapters: BiliChapterSegment[] = [];
+        for (const raw of points as Array<Record<string, unknown>>) {
+            if (raw.type !== 2) {
+                continue;
+            }
+            const from = typeof raw.from === 'number' ? raw.from : NaN;
+            const to = typeof raw.to === 'number' ? raw.to : NaN;
+            const title = typeof raw.content === 'string' ? raw.content.trim() : '';
+            if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from || !title) {
+                continue;
+            }
+            chapters.push({ startSec: from, endSec: to, title });
+        }
+        chapters.sort((a, b) => a.startSec - b.startSec);
+        return chapters.length >= SEGMENT_MIN_COUNT ? chapters : [];
+    } catch {
+        return [];
+    }
+}
+
+// 详情页统一的分段表示：endSec 有值优先用（章节自带），没有时调用方
+// 按「下一条 start／总时长」推（简介源）。
+export interface BiliSegment {
+    startSec: number;
+    endSec?: number;
+    title: string;
+}
+
+// 双源合并（纯函数）：两边都达标时谁条数多用谁——简介赢才用简介；
+// 条数持平或章节更多用章节（自带段尾更准）；只剩一边用那一边；
+// 两边都空回空数组。入参各自已保证 ≥3 条或为空（解析器/章节函数
+// 内部口径），这里不重复过滤。
+export function mergeBiliSegmentSources(
+    descSegs: BiliDescSegment[],
+    chapters: BiliChapterSegment[]
+): BiliSegment[] {
+    if (chapters.length > 0 && descSegs.length <= chapters.length) {
+        return chapters;
+    }
+    if (descSegs.length > 0) {
+        return descSegs;
+    }
+    return chapters;
 }
 
 // 取链内存缓存：直链带签名参数会过期，只短缓存 10 分钟——同一视频
