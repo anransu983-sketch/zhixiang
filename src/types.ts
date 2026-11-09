@@ -19,6 +19,10 @@ export interface Track {
     // 普通曲一律 undefined，行为不变。
     segmentStartMs?: number;
     segmentEndMs?: number;
+    // B 站拆歌的隐含片头段（首段迟开时归一化补的「片头（未标注）」）：
+    // 播放/列表当普通分段，但不是一首歌——bili-segment-match 入口见
+    // 此标记直接跳过，绝不搜网易云、绝不按网易云 id 取词。
+    segmentImplicit?: boolean;
 }
 
 // 海报墙上的一张海报：封面 + 可播曲目列表，点海报即播整个列表。

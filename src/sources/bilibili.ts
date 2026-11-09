@@ -362,8 +362,8 @@ export async function fetchBilibiliChart(zone: BiliChartZone): Promise<Track[]> 
 // ---- 歌单视频与简介拆歌 ----
 // B 站有一类「歌单视频」：单个长视频装十几首歌，简介里按行写时间戳
 // 歌单（如 BV1pyp761E5e，39:45，简介带 0:00 Everyday 起全套）。
-// 本节做：搜这类长视频、双源拿分段（简介时间戳＋官方章节，合并规则
-// 见 mergeBiliSegmentSources）、把简介解析成分段表。
+// 本节做：搜这类长视频、三源拿分段（简介时间戳＋官方章节＋置顶
+// 评论，合并规则见 mergeBiliSegmentSources）、把简介解析成分段表。
 
 const VIEW_URL = 'https://api.bilibili.com/x/web-interface/view';
 const SPI_URL = 'https://api.bilibili.com/x/frontend/finger/spi';
@@ -443,52 +443,80 @@ async function getBuvidCookie(): Promise<string | null> {
     return buvidInFlight;
 }
 
-// 视频简介原文：拆歌的原料之一。view 要带 buvid 指纹才放行（见上）；
-// 已登录时调用方把 bilibili-session 的会话 cookie 传进来，与指纹
-// 合并成一条 Cookie 头（拆两个头会互相覆盖）。bilibili.ts 不直接引
+// 带 buvid 指纹（＋已登录时的会话 cookie）的请求头：view 与评论
+// 接口同口径。会话 cookie 由调用方从 bilibili-session 传进来合并成
+// 一条 Cookie 头（拆两个头会互相覆盖）。bilibili.ts 不直接引
 // bilibili-session（那边反向引了本文件，会成循环），故走入参。
-// 拿不到一律回 null 让详情页降级（还有章节源兜底）——拆歌是增值，
-// 绝不因它抛错、更不能让详情页打不开；失败原因记一行 [Bili] 日志
-//（只记状态/code，不记简介原文）。
-export async function fetchBilibiliVideoDesc(
-    bvid: string,
-    sessionCookie?: string
-): Promise<string | null> {
+async function biliAuthedHeaders(sessionCookie?: string): Promise<Record<string, string>> {
     const buvid = await getBuvidCookie();
     const cookieParts = [buvid, sessionCookie].filter(
         (part): part is string => typeof part === 'string' && part.length > 0
     );
-    const headers =
-        cookieParts.length > 0
-            ? { ...BILI_HEADERS, Cookie: cookieParts.join('; ') }
-            : BILI_HEADERS;
+    return cookieParts.length > 0
+        ? { ...BILI_HEADERS, Cookie: cookieParts.join('; ') }
+        : BILI_HEADERS;
+}
+
+// view 一次拿全的元信息：简介原文（拆歌原料）、aid（置顶评论源按
+// aid 拉，本来就在同一次 view 响应里，别为了它再打一次 view）、
+// 总时长秒（pagelist 时长的同源兜底）。view 要带 buvid 指纹才放行
+//（见上）。拿不到的字段各自回 null 让详情页降级（还有章节源兜底）
+// ——拆歌是增值，绝不因它抛错、更不能让详情页打不开；失败原因记
+// 一行 [Bili] 日志（只记状态/code，不记简介原文）。
+export interface BiliViewInfo {
+    desc: string | null;
+    aid: number | null;
+    durationSec: number | null;
+}
+
+const EMPTY_VIEW_INFO: BiliViewInfo = { desc: null, aid: null, durationSec: null };
+
+export async function fetchBilibiliViewInfo(
+    bvid: string,
+    sessionCookie?: string
+): Promise<BiliViewInfo> {
+    const headers = await biliAuthedHeaders(sessionCookie);
     let res: Awaited<ReturnType<typeof httpGet>>;
     try {
         res = await httpGet(`${VIEW_URL}?bvid=${encodeURIComponent(bvid)}`, headers);
     } catch {
         console.log(`[Bili] 简介拿不到 ${bvid}（网络异常）`);
-        return null;
+        return EMPTY_VIEW_INFO;
     }
     if (res.status !== 200) {
         console.log(`[Bili] 简介拿不到 ${bvid}（HTTP ${res.status}）`);
-        return null;
+        return EMPTY_VIEW_INFO;
     }
-    let parsed: { code?: unknown; data?: { desc?: unknown } };
+    let parsed: { code?: unknown; data?: { desc?: unknown; aid?: unknown; duration?: unknown } };
     try {
-        parsed = JSON.parse(res.body) as { code?: unknown; data?: { desc?: unknown } };
+        parsed = JSON.parse(res.body) as typeof parsed;
     } catch {
         console.log(`[Bili] 简介拿不到 ${bvid}（响应解析失败）`);
-        return null;
+        return EMPTY_VIEW_INFO;
     }
     if (parsed.code !== 0) {
         console.log(`[Bili] 简介拿不到 ${bvid}（code ${String(parsed.code)}）`);
-        return null;
+        return EMPTY_VIEW_INFO;
     }
     if (typeof parsed.data?.desc !== 'string') {
         console.log(`[Bili] 简介拿不到 ${bvid}（响应无 desc 字段）`);
-        return null;
+        return EMPTY_VIEW_INFO;
     }
-    return parsed.data.desc;
+    const aid =
+        typeof parsed.data.aid === 'number' && parsed.data.aid > 0 ? parsed.data.aid : null;
+    const durationSec =
+        typeof parsed.data.duration === 'number' && parsed.data.duration > 0
+            ? parsed.data.duration
+            : null;
+    return { desc: parsed.data.desc, aid, durationSec };
+}
+
+// 视频简介原文（fetchBilibiliViewInfo 的单字段旧入口，保留兼容）。
+export async function fetchBilibiliVideoDesc(
+    bvid: string,
+    sessionCookie?: string
+): Promise<string | null> {
+    return (await fetchBilibiliViewInfo(bvid, sessionCookie)).desc;
 }
 
 // 视频总时长（秒）：拆歌算最后一段的终点用，取 pagelist 第一 P 的
@@ -521,14 +549,31 @@ const SEGMENT_LINE_PATTERN =
     /^\s*(?:(\d{1,2}):)?(\d{1,2}):(\d{1,2})\s*(?:[-—–|·:：、]\s*)?(.+)$/;
 
 const SEGMENT_MIN_COUNT = 3;
-const SEGMENT_FIRST_MAX_START_SEC = 15;
+// 首段起始上限：原为 15 秒——真机案例 BV1rkWH64EZD 简介 8 首齐全、
+// 只因第一首从 03:00（180 秒）才开始被整表毙掉（长视频片头留给 UP
+// 口播/导入很常见）。放宽到 300 秒；迟开头的空档由归一化补隐含
+// 片头段兜住（见 normalizeBiliSegments），连播不会从中间起。
+const FIRST_START_MAX_SEC = 300;
 const SEGMENT_MIN_GAP_SEC = 20;
+
+// 标题清洗（简介/评论两处文本源共用，都在解析器里做）：UP 常在
+// 歌名后用 // 追加批注/引言（如「泪海-许茹芸 //“……”」），那不是
+// 歌名一部分，在第一个 // 处截断；再 trim 首尾空白与残余标点
+// （截断或行尾留下的 、·： 等）。清洗后「泪海-许茹芸」这种连字符
+// 无空格的写法原样保留，匹配侧能处理。
+const SEGMENT_TITLE_EDGE_PUNCT =
+    /^[\s、，。；;：:|·・—–\-"'“”‘’「」『』（）()【】\[\]]+|[\s、，。；;：:|·・—–\-"'“”‘’「」『』（）()【】\[\]]+$/g;
+
+function cleanSegmentTitle(raw: string): string {
+    const cut = raw.split('//')[0] ?? '';
+    return cut.replace(SEGMENT_TITLE_EDGE_PUNCT, '').trim();
+}
 
 // 把简介里的时间戳歌单解析成分段表。口径是宁缺毋滥：解析不可信就
 // 整体回空数组，详情页降级整条播。逐条规则：
-// - 逐行只认行首时间戳；标题 trim 后须含文字（纯数字/纯标点丢弃）；
+// - 逐行只认行首时间戳；标题清洗后须含文字（纯数字/纯标点丢弃）；
 // - 总时长已知（>0）时，起点已越过总时长的行丢弃，尾段校验才启用；
-// - 第一条起点须 ≤15 秒（歌单从视频开头起算，偏了说明不是歌单）；
+// - 第一条起点须 ≤300 秒（FIRST_START_MAX_SEC，依据见常量注释）；
 // - 起点不严格递增、或与上一条间隔 <20 秒的，丢后一条（多半是重复
 //   标注或章节误写）；丢完不足 3 条整体作废；
 // - 最后一条到总时长的尾段 <20 秒时丢最后一条（短尾巴多半是片尾），
@@ -551,7 +596,7 @@ export function parseBiliDescSegments(desc: string, totalDurationSec: number): B
         }
         const hours = match[1] ? Number(match[1]) : 0;
         const startSec = hours * 3600 + Number(match[2]) * 60 + Number(match[3]);
-        const title = (match[4] ?? '').trim();
+        const title = cleanSegmentTitle(match[4] ?? '');
         if (!title || !/\p{L}/u.test(title)) {
             continue;
         }
@@ -563,7 +608,7 @@ export function parseBiliDescSegments(desc: string, totalDurationSec: number): B
     if (candidates.length < SEGMENT_MIN_COUNT) {
         return [];
     }
-    if (candidates[0]!.startSec > SEGMENT_FIRST_MAX_START_SEC) {
+    if (candidates[0]!.startSec > FIRST_START_MAX_SEC) {
         return [];
     }
     const segments: BiliDescSegment[] = [];
@@ -584,6 +629,60 @@ export function parseBiliDescSegments(desc: string, totalDurationSec: number): B
         }
     }
     return segments.length >= SEGMENT_MIN_COUNT ? segments : [];
+}
+
+const REPLY_MAIN_URL = 'https://api.bilibili.com/x/v2/reply/main';
+
+// 置顶评论源（拆歌第三源）：有些 UP 把时间戳歌单写在置顶评论里
+//（如 BV1nU4g6eEqR：简介是闲聊、章节 0 条，置顶评论却是全套歌单）。
+// 只在章节＋简介都不足 3 条时由详情页门控调用（见 home.ts），常见
+// 路径零额外请求。取 data.top_replies 逐条把 content.message 喂同
+// 一个 parseBiliDescSegments（首段上限/标题清洗/间隔口径全共用），
+// 取解析条数最多的那条；解析器内部保证 ≥3 条或整体为空，天然宁缺
+// 毋滥。普通评论区一概不扫——没置顶就没这一源（如 BV1UBWE6aEZH
+// 简介只有歌手名单、无置顶评论，诚实降级整条播）。
+// aid 由 fetchBilibiliViewInfo 同一次 view 响应带出，不重复打 view。
+// 任何失败回空数组，不抛错。
+export async function fetchBilibiliTopCommentSegments(
+    aid: number,
+    totalDurationSec: number,
+    sessionCookie?: string
+): Promise<BiliDescSegment[]> {
+    const headers = await biliAuthedHeaders(sessionCookie);
+    let res: Awaited<ReturnType<typeof httpGet>>;
+    try {
+        res = await httpGet(`${REPLY_MAIN_URL}?type=1&oid=${aid}&mode=3`, headers);
+    } catch {
+        console.log(`[Bili] 置顶评论拿不到 aid=${aid}（网络异常）`);
+        return [];
+    }
+    if (res.status !== 200) {
+        console.log(`[Bili] 置顶评论拿不到 aid=${aid}（HTTP ${res.status}）`);
+        return [];
+    }
+    let parsed: { code?: unknown; data?: { top_replies?: unknown } };
+    try {
+        parsed = JSON.parse(res.body) as typeof parsed;
+    } catch {
+        console.log(`[Bili] 置顶评论拿不到 aid=${aid}（响应解析失败）`);
+        return [];
+    }
+    if (parsed.code !== 0 || !Array.isArray(parsed.data?.top_replies)) {
+        return [];
+    }
+    let best: BiliDescSegment[] = [];
+    for (const raw of parsed.data.top_replies as Array<Record<string, unknown>>) {
+        const content = raw.content as { message?: unknown } | undefined;
+        const message = typeof content?.message === 'string' ? content.message : '';
+        if (!message) {
+            continue;
+        }
+        const segments = parseBiliDescSegments(message, totalDurationSec);
+        if (segments.length > best.length) {
+            best = segments;
+        }
+    }
+    return best;
 }
 
 export interface BiliChapterSegment {
@@ -636,23 +735,56 @@ export interface BiliSegment {
     startSec: number;
     endSec?: number;
     title: string;
+    // 归一化补出的隐含片头段标记（见 normalizeBiliSegments）：在详情
+    // 页列表与播放队列里是普通一段，但绝不进网易云匹配、绝不按网易
+    // 云 id 取词——标记经 home.ts 传到 Track.segmentImplicit，守卫在
+    // bili-segment-match.ts 的 resolveBiliSegmentMatch 入口。
+    implicit?: boolean;
 }
 
-// 双源合并（纯函数）：两边都达标时谁条数多用谁——简介赢才用简介；
-// 条数持平或章节更多用章节（自带段尾更准）；只剩一边用那一边；
-// 两边都空回空数组。入参各自已保证 ≥3 条或为空（解析器/章节函数
-// 内部口径），这里不重复过滤。
+export const IMPLICIT_HEAD_TITLE = '片头（未标注）';
+// 首段起点晚于这个秒数才补隐含片头：≤20 秒的迟开与分段间隔下限同
+// 量级，近似从头开始，不值得单列一段。
+const IMPLICIT_HEAD_MIN_START_SEC = 20;
+
+// 归一化（三源一视同仁，在合并出口做）：首段不从 0 开始且空档
+// >20 秒时，前面补一段隐含片头（0→首段起点、标题「片头（未标注）」、
+// 自带 endSec），让详情页列表与连播队列从 0 起不断档。隐含段不是
+// 一首歌：带 implicit 标记一路传到 Track，匹配/取词侧跳过它；
+// 歌词照常走 B 站 CC 字幕链（本来就按 bvid 取，与段标记无关）。
+function normalizeBiliSegments(segments: BiliSegment[]): BiliSegment[] {
+    const first = segments[0];
+    if (!first || first.startSec <= IMPLICIT_HEAD_MIN_START_SEC) {
+        return segments;
+    }
+    return [
+        {
+            startSec: 0,
+            endSec: first.startSec,
+            title: IMPLICIT_HEAD_TITLE,
+            implicit: true
+        },
+        ...segments
+    ];
+}
+
+// 三源合并（纯函数）：条数多者胜；条数持平按优先级 章节 > 简介 >
+// 评论（章节自带段尾最准，评论是门控兜底源）。入参各自已保证 ≥3 条
+// 或为空（解析器/章节函数内部口径），这里不重复过滤；出口统一过
+// normalizeBiliSegments 补隐含片头。
 export function mergeBiliSegmentSources(
     descSegs: BiliDescSegment[],
-    chapters: BiliChapterSegment[]
+    chapters: BiliChapterSegment[],
+    commentSegs: BiliDescSegment[] = []
 ): BiliSegment[] {
-    if (chapters.length > 0 && descSegs.length <= chapters.length) {
-        return chapters;
+    let winner: BiliSegment[] = commentSegs;
+    if (descSegs.length >= winner.length) {
+        winner = descSegs;
     }
-    if (descSegs.length > 0) {
-        return descSegs;
+    if (chapters.length >= winner.length) {
+        winner = chapters;
     }
-    return chapters;
+    return normalizeBiliSegments(winner);
 }
 
 // 取链内存缓存：直链带签名参数会过期，只短缓存 10 分钟——同一视频
