@@ -2,8 +2,9 @@
 //
 // 五项开关各自独立，互不依赖，存在 localStorage，键 zhixiang.visual.toggles：
 // - rainMode（雨滴三档，默认 2 动态）：0 关（不画水滴）、1 静态水滴
-//   （只画静止圆滴，下滑滴不动，不空转 rAF）、2 动态滑落（静止圆滴＋
-//   下滑拖尾＋大光斑，即旧 rain=true 的行为）。封面模糊底不受档位影响。
+//   （只画静止滴，下滑滴不动，不空转 rAF）、2 动态滑落（静止滴＋
+//   下滑拖尾＋大光斑；大光斑在单层玻璃时不画，见 drawRain）。封面
+//   模糊底不受档位影响。
 // - particles（粒子舞台，默认关）：粒子随频谱能量律动。
 // - pulse（节奏脉动，默认关）：封面随频谱能量缩放发光。
 // - stars（氛围星空，默认关）：星空闪烁漂移。
@@ -29,6 +30,90 @@
 
 import { sampleCoverColor } from './cover-color';
 import { AnimClock } from './anim-rate';
+
+// 团块轮廓噪声（本轮，水滴第二轮专治形状）：每滴 seed 时定死一组
+// 半径系数（锚点 6–9 个、系数 CONTOUR_MIN–CONTOUR_MAX），绘制走锚点
+// 的中点 quadratic 平滑曲线，不再是 arc 正圆——参照《刀马旦》里水珠
+// 是不规则团块，正圆＋粗月牙读作肥皂泡。系数由两个整数频谐波叠加
+// 生成（构造即平滑，不出尖角），采样成锚点数组存进滴数据；静态层
+// 与下滑滴共用 traceOutline 这一条轮廓函数。
+const CONTOUR_MIN = 0.78;
+const CONTOUR_MAX = 1.18;
+
+function makeContour(): number[] {
+    const points = 6 + Math.floor(Math.random() * 4);
+    const f1 = 2 + Math.floor(Math.random() * 2);
+    const f2 = 3 + Math.floor(Math.random() * 3);
+    const a1 = 0.08 + Math.random() * 0.06;
+    const a2 = 0.03 + Math.random() * 0.05;
+    const p1 = Math.random() * Math.PI * 2;
+    const p2 = Math.random() * Math.PI * 2;
+    const contour: number[] = [];
+    for (let i = 0; i < points; i++) {
+        const angle = (i / points) * Math.PI * 2;
+        const value =
+            1 + a1 * Math.sin(angle * f1 + p1) + a2 * Math.sin(angle * f2 + p2);
+        contour.push(Math.min(CONTOUR_MAX, Math.max(CONTOUR_MIN, value)));
+    }
+    return contour;
+}
+
+// 任意角度处的轮廓半径系数（Catmull-Rom 环形插值）：下缘亮弧要沿
+// 轮廓走，靠它取密采样点贴住平滑曲线的实际边。
+function contourRadiusAt(contour: number[], angle: number): number {
+    const n = contour.length;
+    if (n < 3) {
+        return 1;
+    }
+    const pos = (((angle / (Math.PI * 2)) % 1) + 1) % 1 * n;
+    const i = Math.floor(pos);
+    const t = pos - i;
+    const p0 = contour[(i + n - 1) % n] ?? 1;
+    const p1 = contour[i] ?? 1;
+    const p2 = contour[(i + 1) % n] ?? 1;
+    const p3 = contour[(i + 2) % n] ?? 1;
+    return (
+        0.5 *
+        (2 * p1 +
+            (-p0 + p2) * t +
+            (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t +
+            (-p0 + 3 * p1 - 3 * p2 + p3) * t * t * t)
+    );
+}
+
+// 把一颗滴的轮廓作为一条闭合子路径追加到当前 path：锚点间走中点
+// quadratic 平滑（曲线穿锚点间中点、锚点作控制点），团块的卫星圆
+// 同法逐个追加，多子路径 nonzero 填充即视觉并集/黏连，不做逐像素
+// 并集（舞台求形似，性能优先）。坐标为调用方已变换好的局部坐标。
+function traceOutline(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    r: number,
+    contour: number[]
+): void {
+    const n = contour.length;
+    if (n < 3) {
+        ctx.moveTo(cx + r, cy);
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        return;
+    }
+    const pts: Array<[number, number]> = [];
+    for (let i = 0; i < n; i++) {
+        const angle = (i / n) * Math.PI * 2;
+        const rr = r * (contour[i] ?? 1);
+        pts.push([cx + Math.cos(angle) * rr, cy + Math.sin(angle) * rr]);
+    }
+    const midX = (pts[(n - 1) % n]![0] + pts[0]![0]) / 2;
+    const midY = (pts[(n - 1) % n]![1] + pts[0]![1]) / 2;
+    ctx.moveTo(midX, midY);
+    for (let i = 0; i < n; i++) {
+        const next = pts[(i + 1) % n]!;
+        const cur = pts[i]!;
+        ctx.quadraticCurveTo(cur[0], cur[1], (cur[0] + next[0]) / 2, (cur[1] + next[1]) / 2);
+    }
+    ctx.closePath();
+}
 
 // 高光火花种子：主火花在左上偏边处，二号火花（团块才有）在右侧偏上。
 // dx/dy/radius 均为相对主圆半径的比例，seed 时定死、逐帧不变。
@@ -147,9 +232,25 @@ const BG_SATURATE = 1.57;
 const DROP_FLOOR_BRIGHTNESS = 1.22;
 const DROP_FLOOR_CONTRAST = 0.85;
 
+// 下缘月牙亮弧（本轮压薄压淡）：宽度比由旧 0.06 降到 0.04、浓度由
+// 旧 0.5 降到 0.32——参照里的亮边是收敛的细线，旧口径的粗月牙是
+// 「肥皂泡感」的主犯之一。下轮按真机反馈单点调此二值。
+const RIM_WIDTH_RATIO = 0.04;
+const RIM_ALPHA = 0.32;
+
+// 静态雨密度谱（本轮向参照的满铺微点靠）：以 CSS px 面积为口径的
+// 三档除数。细水点旧 area/2200 → area/1200（约 1.83 倍，参照是成
+// 百上千的微点）；中滴旧 area/5500 → area/8000（中号圆泡占比下
+// 调）；团块保持 area/15000（大团块在参照里也只是少量点缀）。
+// 加密只贵在静态层生成时（预渲染一次），逐帧仍只 drawImage。
+const BLOB_AREA_DIV = 15000;
+const MID_AREA_DIV = 8000;
+const SPECKLE_AREA_DIV = 1200;
+
 // 下滑滴（带拖尾，逐帧活绘）；静止滴三类（团块/中滴/细水点）走预渲染
 // 静态层（ensureStaticRain），不进这个数组。
-// 大光斑（bokeh）另起数组，只做柔光深度，不参与下落。
+// 大光斑（bokeh）另起数组，只做柔光深度，不参与下落；单层玻璃时
+// 整组不画（见 drawRain 的门控）。
 interface Drop {
     x: number;
     y: number;
@@ -160,6 +261,8 @@ interface Drop {
     squash: number;
     /** 偏边高光火花（相对主圆半径的比例，seed 时定死）。 */
     sparks: Array<{ dx: number; dy: number; radius: number }>;
+    /** 团块轮廓噪声（半径系数锚点，seed 时定死）：轮廓走不规则团块。 */
+    contour: number[];
 }
 
 // 静态采样滴：团块（satellites 非空）与中滴（satellites 为空）共用此形。
@@ -169,9 +272,11 @@ interface RainBlob {
     y: number;
     radius: number;
     extent: number;
-    satellites: Array<{ dx: number; dy: number; radius: number }>;
+    satellites: Array<{ dx: number; dy: number; radius: number; contour: number[] }>;
     sparks: Array<{ dx: number; dy: number; radius: number }>;
     squash: number;
+    /** 主圆的团块轮廓噪声（半径系数锚点，seed 时定死）。 */
+    contour: number[];
 }
 
 // 细水点：不采样，只画淡芯＋一个白亮点。
@@ -430,20 +535,25 @@ export class VisualStage {
                     speed: 0.2 + Math.random() * 0.4,
                     trail: 20 + Math.random() * 40,
                     squash: 0.92 + Math.random() * 0.08,
-                    sparks: makeSparks(false)
+                    sparks: makeSparks(false),
+                    contour: makeContour()
                 });
             }
         }
-        // 静态水滴三类（照片级密度，CSS px 面积口径，参照《刀马旦》图
-        // 的满铺感）：团块约 area/15000、中滴约 area/5500、细水点约
-        // area/2200。以 390×844 为例约 22 团块＋60 中滴＋150 细点。
-        // 全部只预渲染一次（ensureStaticRain），不进逐帧绘制。
+        // 静态水滴三类（照片级密度，CSS px 面积口径）：团块约
+        // area/BLOB_AREA_DIV、中滴约 area/MID_AREA_DIV、细水点约
+        // area/SPECKLE_AREA_DIV。以 390×844 为例约 22 团块＋41 中滴
+        // ＋274 细点——本轮按参照把谱往微点端压（细点加密、中滴变
+        // 稀，数值依据见 SPECKLE_AREA_DIV 等常量注释）。全部只预渲
+        // 染一次（ensureStaticRain），不进逐帧绘制。
         const area = width * height;
-        const blobCount = Math.max(6, Math.round(area / 15000));
+        const blobCount = Math.max(6, Math.round(area / BLOB_AREA_DIV));
         for (let i = 0; i < blobCount; i++) {
             const radius = 11 + Math.pow(Math.random(), 1.7) * 19;
             const satellites: RainBlob['satellites'] = [];
-            let extent = radius;
+            // 包围半径按轮廓最大系数放大：不规则边最远探到半径×
+            // CONTOUR_MAX，采样窗（按 extent 定）必须罩住它。
+            let extent = radius * CONTOUR_MAX;
             const satCount = 2 + Math.floor(Math.random() * 3);
             for (let s = 0; s < satCount; s++) {
                 const ang = Math.random() * Math.PI * 2;
@@ -451,8 +561,12 @@ export class VisualStage {
                 const sr = radius * (0.38 + Math.random() * 0.3);
                 const dx = Math.cos(ang) * dist;
                 const dy = Math.sin(ang) * dist * (0.8 + Math.random() * 0.2);
-                satellites.push({ dx, dy, radius: sr });
-                extent = Math.max(extent, Math.abs(dx) + sr, Math.abs(dy) + sr);
+                satellites.push({ dx, dy, radius: sr, contour: makeContour() });
+                extent = Math.max(
+                    extent,
+                    Math.abs(dx) + sr * CONTOUR_MAX,
+                    Math.abs(dy) + sr * CONTOUR_MAX
+                );
             }
             this.staticBlobs.push({
                 x: Math.random() * width,
@@ -461,23 +575,25 @@ export class VisualStage {
                 extent,
                 satellites,
                 sparks: makeSparks(true),
-                squash: 0.94 + Math.random() * 0.06
+                squash: 0.94 + Math.random() * 0.06,
+                contour: makeContour()
             });
         }
-        const midCount = Math.max(10, Math.round(area / 5500));
+        const midCount = Math.max(10, Math.round(area / MID_AREA_DIV));
         for (let i = 0; i < midCount; i++) {
             const radius = 3.5 + Math.random() * 6;
             this.staticMids.push({
                 x: Math.random() * width,
                 y: Math.random() * height,
                 radius,
-                extent: radius,
+                extent: radius * CONTOUR_MAX,
                 satellites: [],
                 sparks: makeSparks(false),
-                squash: 0.92 + Math.random() * 0.08
+                squash: 0.92 + Math.random() * 0.08,
+                contour: makeContour()
             });
         }
-        const speckleCount = Math.max(24, Math.round(area / 2200));
+        const speckleCount = Math.max(48, Math.round(area / SPECKLE_AREA_DIV));
         for (let i = 0; i < speckleCount; i++) {
             this.staticSpeckles.push({
                 x: Math.random() * width,
@@ -589,10 +705,10 @@ export class VisualStage {
             this.drawParticles(ctx, width, height, energy, animated);
         }
         if (toggles.rainMode === 2) {
-            this.drawRain(ctx, width, height, animated);
+            this.drawRain(ctx, width, height, animated, glass);
         } else if (toggles.rainMode === 1) {
             // 静态档：水滴单独给 animated=false，下滑滴不动；其余层不受影响。
-            this.drawRain(ctx, width, height, false);
+            this.drawRain(ctx, width, height, false, glass);
         }
         // 剑来画在最上层：剑光斜划＋诗句，静态帧不画。
         if (toggles.sword && animated) {
@@ -771,19 +887,24 @@ export class VisualStage {
         ctx: CanvasRenderingContext2D,
         width: number,
         height: number,
-        animated: boolean
+        animated: boolean,
+        glass: boolean
     ): void {
         const cssWidth = this.canvas.clientWidth || width;
         const cssHeight = this.canvas.clientHeight || height;
         const scaleX = width / cssWidth;
         const scaleY = height / cssHeight;
         ctx.save();
-        // 大光斑：失焦的光点，只做深度，不动（与水滴是两回事，保留）。
-        for (const spot of this.bokeh) {
-            ctx.fillStyle = `rgba(255, 255, 255, ${spot.alpha.toFixed(3)})`;
-            ctx.beginPath();
-            ctx.arc(spot.x * scaleX, spot.y * scaleY, spot.radius * scaleX, 0, Math.PI * 2);
-            ctx.fill();
+        // 大光斑：失焦的柔光点，只做深度。单层玻璃（播放页＋雨开）
+        // 时不画——参照《刀马旦》整屏只有照片＋水珠，这种直径上百 px
+        // 的半透明白圆最抢「一层玻璃」感；非播放页/雨关时保持原样。
+        if (!glass) {
+            for (const spot of this.bokeh) {
+                ctx.fillStyle = `rgba(255, 255, 255, ${spot.alpha.toFixed(3)})`;
+                ctx.beginPath();
+                ctx.arc(spot.x * scaleX, spot.y * scaleY, spot.radius * scaleX, 0, Math.PI * 2);
+                ctx.fill();
+            }
         }
         // 静态水滴：预渲染层整张贴入（团块/中滴/细水点都在里面）。
         const layer = this.ensureStaticRain(width, height, scaleX, scaleY);
@@ -811,8 +932,19 @@ export class VisualStage {
                 ctx.lineTo(x, y);
                 ctx.stroke();
             }
-            // 滴身：照片级折射引擎（团块/采样口径见 paintRefractionDrop）。
-            this.paintRefractionDrop(ctx, x, y, r, r, [], drop.sparks, drop.squash);
+            // 滴身：照片级折射引擎（团块/采样口径见 paintRefractionDrop）；
+            // extent 按轮廓最大系数放大，罩住不规则边（见 seed 同口径）。
+            this.paintRefractionDrop(
+                ctx,
+                x,
+                y,
+                r,
+                r * CONTOUR_MAX,
+                [],
+                drop.contour,
+                drop.sparks,
+                drop.squash
+            );
         }
         ctx.restore();
     }
@@ -848,8 +980,10 @@ export class VisualStage {
                 blob.satellites.map((s) => ({
                     dx: s.dx * scaleX,
                     dy: s.dy * scaleY,
-                    radius: s.radius * scaleX
+                    radius: s.radius * scaleX,
+                    contour: s.contour
                 })),
+                blob.contour,
                 blob.sparks,
                 blob.squash
             );
@@ -862,6 +996,7 @@ export class VisualStage {
                 mid.radius * scaleX,
                 mid.extent * scaleX,
                 [],
+                mid.contour,
                 mid.sparks,
                 mid.squash
             );
@@ -887,12 +1022,14 @@ export class VisualStage {
     }
 
     // 单颗采样滴的画法（照片级折射引擎，与歌词卡 lyric-drops.ts 同口径）：
-    // 形状 = 主圆＋卫星圆的并集 path（satellites 为空即单圆）；采样采
-    // 锐图 sharpCanvas（未模糊原图），以包围圆定窗、上下翻转＋
-    // REFRACTION_ZOOM 放大、REFRACTION_ALPHA 近实绘入 clip——滴里是
-    // 锐的倒像、滴外是糊的正像，照片感来自这组反差。收尾只做下缘
-    // 一段细亮弧＋种子定死的偏边高光火花：无整圈描边、无正中白点
-    // （那是旧画法「珍珠感」的来源，已废除）。
+    // 形状 = 主轮廓＋卫星轮廓的并集 path（轮廓是 seed 定死的半径系数
+    // 噪声走 traceOutline 的不规则团块曲线，本轮起不再是 arc 正圆；
+    // satellites 为空即单团块）；采样采锐图 sharpCanvas（未模糊原
+    // 图），以包围圆定窗、上下翻转＋REFRACTION_ZOOM 放大、
+    // REFRACTION_ALPHA 近实绘入 clip——clip 跟不规则轮廓走，滴里是
+    // 锐的倒像、滴外是糊的正像，照片感来自这组反差。收尾只做沿轮
+    // 廓下半段的细亮弧＋种子定死的偏边高光火花：无整圈描边、无正
+    // 中白点（那是旧画法「珍珠感」的来源，已废除）。
     // cx/cy/r/extent/卫星均为设备 px；调用方（预渲染层/下滑滴）负责换算。
     private paintRefractionDrop(
         ctx: CanvasRenderingContext2D,
@@ -900,7 +1037,8 @@ export class VisualStage {
         cy: number,
         r: number,
         extent: number,
-        satellites: Array<{ dx: number; dy: number; radius: number }>,
+        satellites: Array<{ dx: number; dy: number; radius: number; contour: number[] }>,
+        contour: number[],
         sparks: Array<{ dx: number; dy: number; radius: number }>,
         squash: number
     ): void {
@@ -909,9 +1047,9 @@ export class VisualStage {
         ctx.translate(cx, cy);
         ctx.scale(1, squash);
         ctx.beginPath();
-        ctx.arc(0, 0, r, 0, Math.PI * 2);
+        traceOutline(ctx, 0, 0, r, contour);
         for (const sat of satellites) {
-            ctx.arc(sat.dx, sat.dy, sat.radius, 0, Math.PI * 2);
+            traceOutline(ctx, sat.dx, sat.dy, sat.radius, sat.contour);
         }
         ctx.save();
         ctx.clip();
@@ -950,12 +1088,28 @@ export class VisualStage {
             ctx.fill();
         }
         ctx.restore();
-        // 下缘细亮弧：只压主圆下缘一段，是光从滴底透出的亮边。
-        const rimWidth = Math.max(1, r * 0.06);
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+        // 下缘细亮弧：沿主轮廓的下半段密采样描线（正圆弧会与不规则
+        // 边脱开），是光从滴底透出的亮边；宽度/浓度已降一档
+        // （RIM_WIDTH_RATIO / RIM_ALPHA，旧口径的粗月牙读作肥皂泡）。
+        const rimWidth = Math.max(1, r * RIM_WIDTH_RATIO);
+        ctx.strokeStyle = `rgba(255, 255, 255, ${RIM_ALPHA})`;
         ctx.lineWidth = rimWidth;
+        ctx.lineCap = 'round';
         ctx.beginPath();
-        ctx.arc(0, 0, Math.max(0.5, r - rimWidth / 2), Math.PI * 0.15, Math.PI * 0.85);
+        const rimFrom = Math.PI * 0.15;
+        const rimTo = Math.PI * 0.85;
+        const rimSteps = 16;
+        for (let i = 0; i <= rimSteps; i++) {
+            const angle = rimFrom + ((rimTo - rimFrom) * i) / rimSteps;
+            const rr = Math.max(0.5, contourRadiusAt(contour, angle) * r - rimWidth / 2);
+            const px = Math.cos(angle) * rr;
+            const py = Math.sin(angle) * rr;
+            if (i === 0) {
+                ctx.moveTo(px, py);
+            } else {
+                ctx.lineTo(px, py);
+            }
+        }
         ctx.stroke();
         // 高光火花：种子定死的偏边小亮点（主火花左上、二号在右侧），
         // 位置/大小都是相对主圆半径的比例，不居中、不逐帧变。
