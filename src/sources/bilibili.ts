@@ -5,7 +5,8 @@
 // pagelist 单 P 一项；playurl fnval=4048 只回 DASH，audio 最高码率约 320kbps；
 // Range 0-1023 回 206。实测到的坑都已处理：标题含 <em class="keyword"> 高亮
 // 标签须剥掉；封面是协议相对 URL 须补 https:；搜索时长是 "M:SS" 字符串，
-// pagelist 时长是秒数；音频直链带签名参数会过期，现取现用，不缓存；
+// pagelist 时长是秒数；音频直链带签名参数会过期，只在内存里短缓存
+// 10 分钟供拆歌连播共用（见 resolveStream 旁的 streamUrlCache）；
 // 实际 Content-Type 是 video/mp4，不要拿它做音频校验。
 // 播放层：安卓远程流一律走本机代理（playback.ts），本模块只出直链；
 // 歌词：v1 不接 B 站字幕轨，lyrics.ts 里复用本地那套联网补源。
@@ -358,6 +359,159 @@ export async function fetchBilibiliChart(zone: BiliChartZone): Promise<Track[]> 
     return tracks;
 }
 
+// ---- 歌单视频与简介拆歌 ----
+// B 站有一类「歌单视频」：单个长视频装十几首歌，简介里按行写时间戳
+// 歌单（如 BV1pyp761E5e，39:45，简介带 0:00 Everyday 起全套）。
+// 本节三件：搜这类长视频、拿简介原文、把简介解析成分段表。
+
+const VIEW_URL = 'https://api.bilibili.com/x/web-interface/view';
+const PLAYLIST_SEARCH_KEYWORDS = ['Playlist 歌单', '歌单'];
+const PLAYLIST_MIN_DURATION_MS = 10 * 60 * 1000;
+const PLAYLIST_LIMIT = 30;
+
+// 歌单视频列表：两个关键词各搜一次，合并按 bvid 去重，只留 10 分钟
+// 以上的长视频（短视频装不下歌单），保搜索原序，上限 30 条。
+export async function fetchBilibiliPlaylistVideos(): Promise<Track[]> {
+    const seen = new Set<string>();
+    const merged: Track[] = [];
+    for (const keyword of PLAYLIST_SEARCH_KEYWORDS) {
+        const tracks = await searchBilibiliVideos(keyword);
+        for (const track of tracks) {
+            if (seen.has(track.id)) {
+                continue;
+            }
+            seen.add(track.id);
+            if ((track.durationMs ?? 0) < PLAYLIST_MIN_DURATION_MS) {
+                continue;
+            }
+            merged.push(track);
+            if (merged.length >= PLAYLIST_LIMIT) {
+                return merged;
+            }
+        }
+    }
+    return merged;
+}
+
+// 视频简介原文：拆歌的原料。view 接口在部分网络环境会被风控
+//（沙箱 IP 实测 412），拿不到一律回 null 让详情页降级整条播——
+// 拆歌是增值，绝不因它抛错、更不能让详情页打不开。
+export async function fetchBilibiliVideoDesc(bvid: string): Promise<string | null> {
+    try {
+        const parsed = (await fetchJson(
+            `${VIEW_URL}?bvid=${encodeURIComponent(bvid)}`,
+            'B 站视频信息拿不到'
+        )) as { code?: unknown; data?: { desc?: unknown } };
+        if (parsed.code !== 0) {
+            return null;
+        }
+        return typeof parsed.data?.desc === 'string' ? parsed.data.desc : null;
+    } catch {
+        return null;
+    }
+}
+
+// 视频总时长（秒）：拆歌算最后一段的终点用，取 pagelist 第一 P 的
+// duration（单 P 歌单视频即全长）。拿不到回 null，调用方用搜索结果
+// 自带的 durationMs 兜底。
+export async function fetchBilibiliVideoDurationSec(bvid: string): Promise<number | null> {
+    try {
+        const pages = (await fetchJson(
+            `${PAGELIST_URL}?bvid=${encodeURIComponent(bvid)}&jsonp=jsonp`,
+            'B 站分 P 信息拿不到'
+        )) as { code?: unknown; data?: unknown };
+        if (pages.code !== 0 || !Array.isArray(pages.data) || pages.data.length === 0) {
+            return null;
+        }
+        const duration = (pages.data[0] as { duration?: unknown }).duration;
+        return typeof duration === 'number' && duration > 0 ? duration : null;
+    } catch {
+        return null;
+    }
+}
+
+export interface BiliDescSegment {
+    startSec: number;
+    title: string;
+}
+
+// 行首时间戳：m:ss 或 h:mm:ss（先三段后两段由正则回溯处理），
+// 时间戳与标题之间可有空格或一个分隔符（- — | · 等）。
+const SEGMENT_LINE_PATTERN =
+    /^\s*(?:(\d{1,2}):)?(\d{1,2}):(\d{1,2})\s*(?:[-—–|·:：、]\s*)?(.+)$/;
+
+const SEGMENT_MIN_COUNT = 3;
+const SEGMENT_FIRST_MAX_START_SEC = 15;
+const SEGMENT_MIN_GAP_SEC = 20;
+
+// 把简介里的时间戳歌单解析成分段表。口径是宁缺毋滥：解析不可信就
+// 整体回空数组，详情页降级整条播。逐条规则：
+// - 逐行只认行首时间戳；标题 trim 后须含文字（纯数字/纯标点丢弃）；
+// - 总时长已知（>0）时，起点已越过总时长的行丢弃，尾段校验才启用；
+// - 第一条起点须 ≤15 秒（歌单从视频开头起算，偏了说明不是歌单）；
+// - 起点不严格递增、或与上一条间隔 <20 秒的，丢后一条（多半是重复
+//   标注或章节误写）；丢完不足 3 条整体作废；
+// - 最后一条到总时长的尾段 <20 秒时丢最后一条（短尾巴多半是片尾），
+//   丢完不足 3 条同样整体作废。
+// 验过样例：BV1pyp761E5e 简介 12 行（0:00 Everyday、3:48 I Really
+// Want to Stay at Your House、7:53 Wind、10:57 Self Love x Last Year、
+// 13:36 7 Years、15:25 What Do You Mean?、18:47 Hours、20:45 it's 6pm
+// but I miss u already.、24:03 Young、27:46 Sorry、31:35 Little
+// Stranger、35:58 every-little-part），总长 2385 秒，恰好出 12 条。
+export function parseBiliDescSegments(desc: string, totalDurationSec: number): BiliDescSegment[] {
+    const total =
+        Number.isFinite(totalDurationSec) && totalDurationSec > 0
+            ? Math.floor(totalDurationSec)
+            : 0;
+    const candidates: BiliDescSegment[] = [];
+    for (const line of desc.split(/\r?\n/)) {
+        const match = SEGMENT_LINE_PATTERN.exec(line);
+        if (!match) {
+            continue;
+        }
+        const hours = match[1] ? Number(match[1]) : 0;
+        const startSec = hours * 3600 + Number(match[2]) * 60 + Number(match[3]);
+        const title = (match[4] ?? '').trim();
+        if (!title || !/\p{L}/u.test(title)) {
+            continue;
+        }
+        if (total > 0 && startSec >= total) {
+            continue;
+        }
+        candidates.push({ startSec, title });
+    }
+    if (candidates.length < SEGMENT_MIN_COUNT) {
+        return [];
+    }
+    if (candidates[0]!.startSec > SEGMENT_FIRST_MAX_START_SEC) {
+        return [];
+    }
+    const segments: BiliDescSegment[] = [];
+    for (const candidate of candidates) {
+        const last = segments[segments.length - 1];
+        // 不递增（差 ≤0）与间隔过小同处理：丢后一条。
+        if (last && candidate.startSec - last.startSec < SEGMENT_MIN_GAP_SEC) {
+            continue;
+        }
+        segments.push(candidate);
+    }
+    if (total > 0) {
+        while (
+            segments.length > 0 &&
+            total - segments[segments.length - 1]!.startSec < SEGMENT_MIN_GAP_SEC
+        ) {
+            segments.pop();
+        }
+    }
+    return segments.length >= SEGMENT_MIN_COUNT ? segments : [];
+}
+
+// 取链内存缓存：直链带签名参数会过期，只短缓存 10 分钟——同一视频
+// 的各分段连播、以及整条重播都不再每首重走 pagelist+playurl；
+// 失败不入缓存，下次照旧现取现用。只放本模块，不动播放层的取链路。
+const STREAM_URL_CACHE_TTL_MS = 10 * 60 * 1000;
+const streamUrlCache = new Map<string, { url: string; fetchedAt: number }>();
+
 class BilibiliSource implements AudioSource {
     readonly id = 'bilibili' as const;
     readonly label = 'B站';
@@ -367,11 +521,17 @@ class BilibiliSource implements AudioSource {
     }
 
     async resolveStream(track: Track): Promise<string> {
-        const bvid = track.id.startsWith('bilibili:')
+        // 分段曲 id 形如 bilibili:<bvid>@<startSec>：取 @ 之前的真 bvid。
+        const rawId = track.id.startsWith('bilibili:')
             ? track.id.slice('bilibili:'.length)
             : track.id;
+        const bvid = rawId.split('@')[0] ?? '';
         if (!bvid) {
             throw new Error('B 站视频号不对，请重新搜索再试');
+        }
+        const cached = streamUrlCache.get(bvid);
+        if (cached && Date.now() - cached.fetchedAt < STREAM_URL_CACHE_TTL_MS) {
+            return cached.url;
         }
         const cid = await getCid(bvid);
         const play = (await fetchJson(
@@ -398,7 +558,8 @@ class BilibiliSource implements AudioSource {
         if (!best) {
             throw new Error('B 站音频流拿不到，请稍后重试');
         }
-        // 直链带签名参数会过期，现取现用，不缓存。
+        // 只缓存成功的取链结果（短 TTL，见 streamUrlCache 注释）。
+        streamUrlCache.set(bvid, { url: best.baseUrl, fetchedAt: Date.now() });
         return best.baseUrl;
     }
 }

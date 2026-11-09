@@ -356,9 +356,56 @@ function ensureAudioContext(): AudioContext | null {
     return audioContext;
 }
 
+// ---- B 站拆歌分段曲 ----
+// 分段曲（segmentStartMs 有值）的时间口径与普通曲不同：状态里的时间
+// 一律相对段首、时长只报段长，audio 元素的绝对时间只在本节换算。
+// 普通曲不进本节任何分支，行为与改前逐行等价。
+function segmentRangeOf(track: Track | null): { startSec: number; endSec: number } | null {
+    if (!track || typeof track.segmentStartMs !== 'number') {
+        return null;
+    }
+    const startSec = track.segmentStartMs / 1000;
+    const endSec =
+        typeof track.segmentEndMs === 'number'
+            ? track.segmentEndMs / 1000
+            : startSec + (track.durationMs ?? 0) / 1000;
+    return endSec > startSec ? { startSec, endSec } : null;
+}
+
+// 分段结束推进已为哪首曲触发过（仿 AutoMix 的 automixFiredLoad）：
+// timeupdate 会反复命中段尾、ended 兜底也可能随后到，两路都靠它
+// 防双重推进；新曲在 startTrack 接管时清零（含单曲循环重播同一首）。
+let segmentAdvanceFiredFor: Track | null = null;
+
 function bindAudioEvents(slot: PlayerSlot, audio: HTMLAudioElement): void {
     audio.addEventListener('timeupdate', () => {
         if (activeSlot !== slot || !currentTrack) {
+            return;
+        }
+        const segment = segmentRangeOf(currentTrack);
+        if (segment) {
+            const segLenSec = segment.endSec - segment.startSec;
+            currentTime = Math.min(
+                Math.max(audio.currentTime - segment.startSec, 0),
+                segLenSec
+            );
+            currentDuration = Math.round(segLenSec * 1000);
+            emitTimeUpdate();
+            // 到段尾按自然播完推进：守卫同 ended 分支（在播、AutoMix
+            // 在途不抢），且每首只触发一次——推进会换 load，旧曲后续
+            // 的 timeupdate 不得再触发第二次。
+            if (
+                audio.currentTime >= segment.endSec &&
+                playing &&
+                !automixInFlight &&
+                segmentAdvanceFiredFor !== currentTrack
+            ) {
+                segmentAdvanceFiredFor = currentTrack;
+                console.log(
+                    `[Playback] 分段播完：${currentTrack.title}（${segment.startSec}s–${segment.endSec}s）`
+                );
+                void advanceAfterEnded();
+            }
             return;
         }
         currentTime = audio.currentTime;
@@ -378,6 +425,12 @@ function bindAudioEvents(slot: PlayerSlot, audio: HTMLAudioElement): void {
         // 不能再推进一次（双重推进会把新歌的 load 杀掉）。
         if (automixInFlight) {
             console.log('[Playback] AutoMix 推进在途，ended 兜底忽略');
+            return;
+        }
+        // 分段推进已先行触发（段尾即流尾时 ended 紧随其后）同理忽略；
+        // 流在段中提前结束时标记未触发，ended 照旧兜底推进。
+        if (segmentAdvanceFiredFor !== null && segmentAdvanceFiredFor === currentTrack) {
+            console.log('[Playback] 分段推进已触发，ended 兜底忽略');
             return;
         }
         void advanceAfterEnded();
@@ -890,10 +943,24 @@ async function startTrack(track: Track, crossfade: boolean): Promise<'ok' | 'sta
         console.log(`[Playback] 起歌已过时 lid=${loadId}（play 成功后被新起歌取代）`);
         return 'stale';
     }
+    // 分段曲：赶在淡入开始前把落点跳到段首；状态时间保持相对量
+    //（初值 0，见下方 currentTime 重置），由 timeupdate 按段换算回写。
+    // 流不支持跳转时静默从头播，不抛错打断起播。
+    const segment = segmentRangeOf(track);
+    if (segment) {
+        try {
+            audio.currentTime = segment.startSec;
+        } catch {
+            // 保持原位。
+        }
+    }
     const previousTrack = currentTrack;
     const wasPlaying = playing;
     activeSlot = newSlot;
     currentTrack = track;
+    // 新曲接管：上一首的分段推进标记作废（含单曲循环重播同一首，
+    // 否则重播到段尾时标记挡住第二次推进）。
+    segmentAdvanceFiredFor = null;
     playing = true;
     lastError = null;
     currentTime = 0;
@@ -1498,13 +1565,19 @@ export function pause(): void {
 // 跳转（0.1.101 歌单架高潮试听用）：只动当前发声槽的 audio.currentTime，
 // 进度状态由已有的 timeupdate 回写，不另维护。无正在播的槽、
 // 秒数非法或流不支持跳转时静默（保持原位播，不抛错打断试听）。
+// 入参一律是相对当前曲的秒数：分段曲先加段首偏移再钳进本段范围，
+// 普通曲行为不变。
 export function seekTo(seconds: number): void {
     const audio = activeSlot?.audio;
     if (!audio || !Number.isFinite(seconds) || seconds < 0) {
         return;
     }
+    const segment = segmentRangeOf(currentTrack);
+    const target = segment
+        ? Math.min(Math.max(segment.startSec + seconds, segment.startSec), segment.endSec)
+        : seconds;
     try {
-        audio.currentTime = seconds;
+        audio.currentTime = target;
     } catch {
         // 流不支持跳转时保持原位。
     }

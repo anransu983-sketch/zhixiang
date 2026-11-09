@@ -14,6 +14,11 @@ export interface Track {
     // 未知时留空，角标隐藏，不猜。
     format?: string;
     streamUrl?: string;
+    // B 站拆歌分段曲专用：原视频流内的起止偏移（毫秒）。只有按简介
+    // 时间戳拆出来的分段曲才有值，播放层据此做相对时间与到点推进；
+    // 普通曲一律 undefined，行为不变。
+    segmentStartMs?: number;
+    segmentEndMs?: number;
 }
 
 // 海报墙上的一张海报：封面 + 可播曲目列表，点海报即播整个列表。
