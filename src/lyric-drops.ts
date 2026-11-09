@@ -55,12 +55,22 @@
 // px 留一颗，1.2–2 秒内缩小淡出，全卡上限 120 颗）。滴身画法、
 // 折射采样、静态层机制全部不动，动态滴仍复用 paintDropBody。
 //
+// 本轮（对《刀马旦》参照靠拢，两处）：
+// - 滴内亮度下限：锐版采样源在生成处过一道 brightness＋
+//   contrast<1 的暗部提亮（DROP_FLOOR_*，与 visuals.ts 同值同
+//   法），暗封面上的滴是透灰亮的水、不再实心黑圆；亮封面高光被
+//   contrast 钳住、不过曝成白盘。提亮落在 rebuildBackground 的
+//   生成路径上，静态层随 bgKey 同步重建，逐帧不重算。
+// - 卡面虚化底同步提亮：.lyric-card-bg 与本文件暗版离屏的滤镜同
+//   步改 saturate(1.4) brightness(0.85)（相对旧 1.25/0.72 为饱和
+//   ×1.12、亮度 ×1.18，与舞台糊底同档，靠拢参照的「糊但亮」）。
+//
 // 静态滴（团块＋中滴＋细点）在种子/底图变化时先预渲染到一层离屏
 // （staticLayer），每帧只 drawImage 这层＋活画下滑滴，禁止逐帧重算
 // 团块采样（性能红线）；动态档同理，静态层打底、下滑滴活绘。
 //
 // 透镜底图：自维护与卡同尺寸（设备像素）的离屏画布——暗版与卡面
-// .lyric-card-bg 同滤镜（blur＋saturate＋brightness 0.72，保留作口径
+// .lyric-card-bg 同滤镜（blur＋saturate＋brightness 0.85，保留作口径
 // 对照，不再被采样）；锐版是同一封面原图不加 blur、按卡面尺寸 cover
 // 绘制，与暗版同键同批重建/清理，是新引擎唯一的采样源。采样坐标与
 // 卡面底图共用同一 cover 映射，翻转只翻滴内图、不挪位置。无封面时
@@ -83,6 +93,14 @@ const REFRACT_ZOOM = 1.55;
 const REFRACT_ALPHA_BLOB = 0.9;
 // 中滴个头小、采样窗更小，略透一点免得成色块。
 const REFRACT_ALPHA_MID = 0.85;
+
+// 滴内亮度下限（本轮，与 visuals.ts 的 DROP_FLOOR_* 同值同法）：
+// 采样锐图在生成处过一道 brightness＋contrast<1——contrast 把暗部
+// 抬离纯黑、同时压住高光上限：暗封面上的滴是透灰亮的水，不再是
+// 实心黑圆；亮封面高光被钳住、不过曝成白盘（0.1.140 教训）。
+// 数值保守，下轮按真机反馈单点调（两处必须同步改）。
+const DROP_FLOOR_BRIGHTNESS = 1.22;
+const DROP_FLOOR_CONTRAST = 0.85;
 
 type DropKind = 'blob' | 'mid' | 'speck' | 'slider';
 
@@ -173,6 +191,37 @@ export interface LyricDropsOptions {
     isPresented: () => boolean;
 }
 
+// 滴内亮度下限（本轮，与 visuals.ts 的 applyDropFloor 同法同值）：
+// 经中转画布以 DROP_FLOOR_* 重绘一次再写回——brightness 抬中暗
+// 部、contrast<1 把暗部下限抬离纯黑、同时压高光上限。只在底图
+// 生成处跑，静态层与逐帧采样都不再付代价；滤镜不可用/抛错时静
+// 默保留原图（旧观感）。
+function liftDropSampleFloor(target: HTMLCanvasElement): void {
+    const tctx = target.getContext('2d');
+    if (!tctx || target.width <= 1 || target.height <= 1) {
+        return;
+    }
+    const scratch = document.createElement('canvas');
+    scratch.width = target.width;
+    scratch.height = target.height;
+    const sctx = scratch.getContext('2d');
+    if (!sctx) {
+        return;
+    }
+    try {
+        sctx.filter = `brightness(${DROP_FLOOR_BRIGHTNESS}) contrast(${DROP_FLOOR_CONTRAST})`;
+        sctx.drawImage(target, 0, 0);
+    } catch {
+        return;
+    } finally {
+        sctx.filter = 'none';
+    }
+    tctx.save();
+    tctx.clearRect(0, 0, target.width, target.height);
+    tctx.drawImage(scratch, 0, 0);
+    tctx.restore();
+}
+
 export class LyricDrops {
     private canvas: HTMLCanvasElement;
     private context: CanvasRenderingContext2D | null;
@@ -195,7 +244,9 @@ export class LyricDrops {
     private seededHeight = 0;
     private bgCanvas: HTMLCanvasElement | null = null;
     // 锐版采样源（0.1.143）：同一封面原图不加 blur、cover 绘满卡面，
-    // 与 bgCanvas 同步重建；团块/中滴/下滑滴的折射只采这一份。
+    // 与 bgCanvas 同步重建；建好后过一道滴内亮度下限
+    // （liftDropSampleFloor）再存这里，团块/中滴/下滑滴的折射与细
+    // 点底色都采这一份。
     private bgSharpCanvas: HTMLCanvasElement | null = null;
     private bgKey = '';
     // 静态滴预渲染层（0.1.143）：种子或底图一变就置脏，下一帧重建；
@@ -522,10 +573,19 @@ export class LyricDrops {
                 tctx.restore();
             }
         };
-        this.bgCanvas = paint(`blur(${blurPx}px) saturate(1.25) brightness(0.72)`);
-        // 锐版（0.1.143）：不加任何滤镜——滴里要的就是未模糊的原图，
-        // 与暗版同批重建。旧提亮/清透版离屏随半透画法一并废除。
+        // 暗版滤镜与卡面 .lyric-card-bg 的 CSS 滤镜保持同值（本轮同
+        // 步提亮：saturate 1.25→1.4、brightness 0.72→0.85，相对旧值
+        // 饱和 ×1.12、亮度 ×1.18，与舞台糊底同档）。
+        this.bgCanvas = paint(`blur(${blurPx}px) saturate(1.4) brightness(0.85)`);
+        // 锐版（0.1.143）：绘入时不加任何滤镜——滴里要的就是未模糊
+        // 的原图，与暗版同批重建；建好后过一道滴内亮度下限（见下
+        // liftDropSampleFloor 调用）——那是采样源的下限处理、非糊
+        // 化，折射结构（翻转×1.55）不动。旧提亮/清透版离屏随半透
+        // 画法一并废除。
         this.bgSharpCanvas = paint('');
+        if (this.bgSharpCanvas) {
+            liftDropSampleFloor(this.bgSharpCanvas);
+        }
     }
 
     // —— 滴答循环状态机（0.1.145，只管 kind 'slider' 的滴） ——
