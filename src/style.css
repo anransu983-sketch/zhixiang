@@ -4354,6 +4354,16 @@ body.perf-mode * {
 .player-preset-btn:disabled {
     opacity: 0.45;
 }
+/* 无级滑杆（模糊强度／动画速率／AutoMix 等播放页设置共用）：
+   吃满行内剩余宽，主题色滑块；禁用时压淡，与开关状态对齐。 */
+.player-range {
+    flex: 1;
+    min-width: 90px;
+    accent-color: var(--accent, #e8a0bf);
+}
+.player-range:disabled {
+    opacity: 0.45;
+}
 .player-sheet {
     position: fixed;
     inset: 0;

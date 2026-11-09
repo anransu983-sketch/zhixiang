@@ -42,23 +42,21 @@ import { LyricDrops } from './lyric-drops';
 import type { VisualToggles } from './visuals';
 import { deleteManualLyrics, getManualLyrics, saveManualLyrics } from './manual-lyrics';
 import {
-    BLUR_STRENGTH_OFFSETS,
-    computeBlurRadii,
+    computeBlurRadiiByIntensity,
     loadLyricBlurEnabled,
     lyricOpacityForOffset,
-    loadLyricBlurStrength,
+    loadLyricBlurIntensity,
     loadLyricBounce,
     loadLyricGlow,
     loadShowTranslation,
     saveLyricBlurEnabled,
-    saveLyricBlurStrength,
+    saveLyricBlurIntensity,
     saveLyricBounce,
     saveLyricGlow,
     saveShowTranslation
 } from './lyric-blur';
 import { isTtmlText, parseTtml } from './ttml';
 import { linesToLrc } from './batch-writeback';
-import type { LyricBlurStrength } from './lyric-blur';
 import { clearLyricFont, getLyricFontName, importLyricFont, LYRIC_FONT_CSS, restoreLyricFont } from './lyric-font';
 import { checkAllFilesAccess, getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalPath, getLocalSidecarCoverDataUrl, requestAllFilesAccess, writeSidecar } from './sources/local';
 import { posterFallbackBackground, posterHue } from './posters';
@@ -861,7 +859,7 @@ function buildPlayerPage(): HTMLElement {
     // 歌词设置状态（模糊/译文/字体，与视觉开关同面板）：声明在设置 UI
     // 构建之前，后面的 applyLyricBlur 等函数只在构建完成后被调用。
     let lyricBlurEnabled = loadLyricBlurEnabled();
-    let lyricBlurStrength: LyricBlurStrength = loadLyricBlurStrength();
+    let lyricBlurIntensity = loadLyricBlurIntensity();
     let showTranslation = loadShowTranslation();
     let lyricGlowEnabled = loadLyricGlow();
     // 歌词跳动（0.1.134）：动画全在 CSS，这里只按开关给歌词盒切类，
@@ -933,7 +931,7 @@ function buildPlayerPage(): HTMLElement {
     }
 
     // 歌词设置（跟视觉开关同面板、同 .player-toggle 样式）：模糊开关、
-    // 译文开关、模糊强度三档、歌词字体导入/恢复。
+    // 译文开关、模糊强度无级滑杆、歌词字体导入/恢复。
     const blurLabel = document.createElement('label');
     blurLabel.className = 'player-toggle';
     const blurBox = document.createElement('input');
@@ -942,43 +940,37 @@ function buildPlayerPage(): HTMLElement {
     blurBox.addEventListener('change', () => {
         lyricBlurEnabled = blurBox.checked;
         saveLyricBlurEnabled(lyricBlurEnabled);
+        blurIntensityRange.disabled = !lyricBlurEnabled;
         applyLyricBlur();
     });
     blurLabel.append(blurBox, document.createTextNode('歌词模糊'));
     visualPad.appendChild(blurLabel);
 
+    // 模糊强度无级滑杆（0–100%）：50 是旧「标准」档的观感、0 无模糊、
+    // 100 约两倍；拖动即存即生效。模糊关着时滑杆禁用，免得调了没反应。
     const blurStrengthRow = document.createElement('div');
     blurStrengthRow.className = 'player-preset-row';
     const blurStrengthLabel = document.createElement('span');
     blurStrengthLabel.className = 'player-preset-label';
     blurStrengthLabel.textContent = '模糊强度';
-    blurStrengthRow.appendChild(blurStrengthLabel);
-    const strengthDefs: Array<{ key: LyricBlurStrength; label: string }> = [
-        { key: 'weak', label: '弱' },
-        { key: 'standard', label: '标准' },
-        { key: 'strong', label: '强' }
-    ];
-    const strengthButtons = new Map<LyricBlurStrength, HTMLButtonElement>();
-    const updateStrengthButtons = (): void => {
-        for (const [key, button] of strengthButtons) {
-            button.classList.toggle('is-active', key === lyricBlurStrength);
-        }
-    };
-    for (const def of strengthDefs) {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'player-preset-btn';
-        button.textContent = def.label;
-        strengthButtons.set(def.key, button);
-        button.addEventListener('click', () => {
-            lyricBlurStrength = def.key;
-            saveLyricBlurStrength(lyricBlurStrength);
-            updateStrengthButtons();
-            applyLyricBlur();
-        });
-        blurStrengthRow.appendChild(button);
-    }
-    updateStrengthButtons();
+    const blurIntensityRange = document.createElement('input');
+    blurIntensityRange.type = 'range';
+    blurIntensityRange.className = 'player-range';
+    blurIntensityRange.min = '0';
+    blurIntensityRange.max = '100';
+    blurIntensityRange.step = '1';
+    blurIntensityRange.value = String(lyricBlurIntensity);
+    blurIntensityRange.disabled = !lyricBlurEnabled;
+    const blurIntensityValue = document.createElement('span');
+    blurIntensityValue.className = 'player-preset-label';
+    blurIntensityValue.textContent = `${lyricBlurIntensity}%`;
+    blurIntensityRange.addEventListener('input', () => {
+        lyricBlurIntensity = Number(blurIntensityRange.value);
+        blurIntensityValue.textContent = `${lyricBlurIntensity}%`;
+        saveLyricBlurIntensity(lyricBlurIntensity);
+        applyLyricBlur();
+    });
+    blurStrengthRow.append(blurStrengthLabel, blurIntensityRange, blurIntensityValue);
     visualPad.appendChild(blurStrengthRow);
 
     const translationLabel = document.createElement('label');
@@ -1399,10 +1391,10 @@ function buildPlayerPage(): HTMLElement {
             // 前奏尚无当前行：以首行为焦点（首行清晰、其余走待唱曲线）；
             // 播完末行后当前行就是末行，分布自然保留，不会全糊。
             const highlighted = new Set<number>([currentLineIndex >= 0 ? currentLineIndex : 0]);
-            radii = computeBlurRadii(
+            radii = computeBlurRadiiByIntensity(
                 lyricLines.length,
                 highlighted,
-                BLUR_STRENGTH_OFFSETS[lyricBlurStrength]
+                lyricBlurIntensity
             );
         }
         // 透明度梯度的焦点与模糊同一行（前奏无当前行时同样以首行为焦点）。
