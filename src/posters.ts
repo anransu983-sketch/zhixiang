@@ -47,23 +47,59 @@ const LOCAL_ALBUM_LIMIT = 3;
 // 海报数据共享缓存：海报墙与 3D 歌单架用同一批海报数据，
 // 两处调用同一路的 load 时只发一次请求，成功结果共用。
 // 失败不缓存（删掉失败的占位），之后再调用可以重新尝试。
-const posterCache = new Map<string, Promise<Poster[]>>();
+// 0.1.146：成功结果不再永久有效——条目带拉取时间，超过 6 小时后
+// 下一次调用逐出重拉（用户反馈 YTM／网易云榜单像冻住不刷新，根因
+// 就是这里只进不出）；手动刷新走 invalidatePosterCache 直接失效。
+export const POSTER_TTL_MS = 6 * 3600 * 1000;
+
+interface PosterCacheEntry {
+    promise: Promise<Poster[]>;
+    fetchedAt: number;
+}
+
+const posterCache = new Map<string, PosterCacheEntry>();
+
+function isPosterEntryStale(entry: PosterCacheEntry): boolean {
+    return Date.now() - entry.fetchedAt >= POSTER_TTL_MS;
+}
+
+function startPosterLoad(
+    key: string,
+    load: () => Promise<Poster[]>
+): Promise<Poster[]> {
+    const promise = load();
+    const entry: PosterCacheEntry = { promise, fetchedAt: Date.now() };
+    posterCache.set(key, entry);
+    promise.catch(() => {
+        // 失败逐出仍按「存的条目还是这一条」守卫：过期重拉／手动刷新
+        // 可能已换上新条目，旧 promise 的失败不许误删新条目。
+        if (posterCache.get(key) === entry) {
+            posterCache.delete(key);
+        }
+    });
+    return promise;
+}
 
 function withPosterCache(key: string, load: () => Promise<Poster[]>): () => Promise<Poster[]> {
     return () => {
         const cached = posterCache.get(key);
-        if (cached) {
-            return cached;
+        if (cached && !isPosterEntryStale(cached)) {
+            return cached.promise;
         }
-        const promise = load();
-        posterCache.set(key, promise);
-        promise.catch(() => {
-            if (posterCache.get(key) === promise) {
-                posterCache.delete(key);
-            }
-        });
-        return promise;
+        return startPosterLoad(key, load);
     };
+}
+
+// 手动刷新用：把一路的缓存条目直接作废，下一次 load 必然重拉。
+export function invalidatePosterCache(key: string): void {
+    posterCache.delete(key);
+}
+
+// 切页复查用：这一路的缓存是否已过期（从没拉过不算过期，首次加载
+// 自会走 load；拉取中的条目按其开始时间计，同 TTL 口径）。
+export function isPosterCacheExpired(key: string): boolean {
+    const cached = posterCache.get(key);
+    return cached !== undefined && isPosterEntryStale(cached);
 }
 
 export async function loadLocalAlbumPosters(): Promise<Poster[]> {

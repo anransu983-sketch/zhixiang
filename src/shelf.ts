@@ -23,6 +23,19 @@ function friendlyPlayError(error: unknown): string {
     return '播放失败，请确认文件仍在且已授予读取音频文件的权限。';
 }
 
+// 层的清理登记：层订阅了 onTrackChange（全局监听），海报模块刷新时
+// 整体换层，旧层必须退订免得监听越堆越多。用 WeakMap 按元素登记，
+// 调用方换层后调 destroyShelfLayer(旧层) 即可。
+const shelfLayerCleanups = new WeakMap<HTMLElement, () => void>();
+
+export function destroyShelfLayer(layer: HTMLElement): void {
+    const cleanup = shelfLayerCleanups.get(layer);
+    if (cleanup) {
+        cleanup();
+        shelfLayerCleanups.delete(layer);
+    }
+}
+
 // 单层 3D 架：只渲染一路歌单（本地专辑／网易云榜单／YTM 热门专辑之一），
 // 供首页海报模块的 3D 架形态复用；数据仍走 posters.ts 的共享缓存，
 // 与海报墙形态调用同一路时只发一次请求。withLabel 为 false 时不画层标题，
@@ -175,7 +188,8 @@ export function renderShelfLayer(
             record.classList.toggle('is-playing', playing);
         }
     };
-    onTrackChange(refreshHighlight);
+    const offTrackChange = onTrackChange(refreshHighlight);
+    shelfLayerCleanups.set(layer, offTrackChange);
     refreshHighlight(getCurrentState());
 
     void (async () => {

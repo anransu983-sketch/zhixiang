@@ -548,6 +548,31 @@ body {
     font-weight: 600;
 }
 
+/* 0.1.146：海报模块头右侧动作组（版式开关＋刷新钮并排）。 */
+.poster-module-head-actions {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 8px;
+}
+
+.poster-refresh-btn {
+    height: 36px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 10px;
+    background: var(--surface-3);
+    color: var(--text-2);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.poster-refresh-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+
 .poster-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
