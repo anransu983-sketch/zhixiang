@@ -34,7 +34,7 @@ import {
 import { loadVisualToggles, saveVisualToggles } from './visuals';
 import { nearestTraditionalColor } from './traditional-colors';
 import { SOURCES } from './sources/index';
-import { BILI_CHART_ZONES, fetchBilibiliChart } from './sources/bilibili';
+import { BILI_CHART_ZONES, fetchBilibiliChart, fetchBilibiliPlaylistVideos, fetchBilibiliVideoDesc, fetchBilibiliVideoDurationSec, parseBiliDescSegments } from './sources/bilibili';
 import type { BiliChartZone } from './sources/bilibili';
 import { checkAllFilesAccess, getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalNotice, getLocalSidecarCoverDataUrl, localSource, requestAllFilesAccess } from './sources/local';
 import { addMyImportIds, loadMyImportIds, removeMyImportId } from './my-imports';
@@ -457,6 +457,7 @@ export function renderHome(): HTMLElement {
             // B 站推荐不依赖登录（未登录走榜单轮换），故不设登录门。
             page.appendChild(renderBiliDailySection());
             page.appendChild(renderBilibiliDiscoverySection(status));
+            page.appendChild(renderBiliPlaylistSection(status));
             page.appendChild(renderBiliFavSection());
         }
 
@@ -5413,6 +5414,286 @@ function openBiliChartPage(zone: BiliChartZone, tracks: Track[]): void {
     page.appendChild(trackList);
     renderTracks(trackList, tracks, pageNotice);
     document.body.appendChild(page);
+}
+
+// 歌单视频模块：收「一个长视频装一整张歌单」的视频，点开进详情页
+// 按简介时间戳拆歌。列表缓存口径同 0.1.146：条目带 fetchedAt、共用
+// posters.ts 的 POSTER_TTL_MS（6 小时），带手动刷新、切页复查，
+// 刷新失败保留旧列表只报错，绝不再造永久缓存。
+function renderBiliPlaylistSection(status: HTMLElement): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'daily-section';
+
+    const head = document.createElement('div');
+    head.className = 'daily-head';
+    const heading = document.createElement('h2');
+    heading.textContent = '歌单视频';
+    head.appendChild(heading);
+    const sub = document.createElement('span');
+    sub.className = 'daily-sub';
+    sub.textContent = '一个视频一整张歌单，点开按时间戳拆歌';
+    head.appendChild(sub);
+    section.appendChild(head);
+
+    const refreshButton = document.createElement('button');
+    refreshButton.type = 'button';
+    refreshButton.className = 'login-btn';
+    refreshButton.textContent = '刷新列表';
+    section.appendChild(refreshButton);
+
+    const notice = document.createElement('p');
+    notice.className = 'source-notice';
+    notice.textContent = '加载中…';
+    section.appendChild(notice);
+
+    const list = document.createElement('ul');
+    list.className = 'track-list';
+    section.appendChild(list);
+
+    let cacheEntry: { tracks: Track[]; fetchedAt: number } | null = null;
+    let loading = false;
+
+    const renderList = (tracks: Track[]): void => {
+        list.replaceChildren();
+        for (const track of tracks) {
+            const item = document.createElement('li');
+            item.className = 'track-row';
+            item.style.setProperty('--hue', String(posterHue(track.id)));
+            if (track.coverUrl) {
+                const cover = document.createElement('img');
+                cover.className = 'track-cover';
+                cover.referrerPolicy = 'no-referrer';
+                cover.src = track.coverUrl;
+                cover.alt = '';
+                cover.onerror = () => {
+                    cover.remove();
+                };
+                item.appendChild(cover);
+            } else {
+                const glyph = document.createElement('span');
+                glyph.className = 'track-glyph';
+                glyph.textContent = '♪';
+                item.appendChild(glyph);
+            }
+            const info = document.createElement('div');
+            info.className = 'track-info';
+            const name = document.createElement('div');
+            name.className = 'track-title';
+            name.textContent = track.title;
+            info.appendChild(name);
+            const meta = document.createElement('div');
+            meta.className = 'track-meta';
+            meta.textContent = track.artist;
+            info.appendChild(meta);
+            item.appendChild(info);
+            const duration = document.createElement('span');
+            duration.className = 'track-duration';
+            duration.textContent = formatDuration(track.durationMs);
+            item.appendChild(duration);
+            // 点行进详情页拆歌，不在模块里直接起播。
+            item.addEventListener('click', () => {
+                openBiliPlaylistPage(track, status);
+            });
+            list.appendChild(item);
+        }
+    };
+
+    const loadList = async (force = false): Promise<void> => {
+        if (loading) {
+            return;
+        }
+        if (!force && cacheEntry && Date.now() - cacheEntry.fetchedAt < POSTER_TTL_MS) {
+            renderList(cacheEntry.tracks);
+            notice.textContent = `共 ${cacheEntry.tracks.length} 条`;
+            notice.classList.remove('is-error');
+            return;
+        }
+        loading = true;
+        refreshButton.disabled = true;
+        refreshButton.textContent = '刷新中…';
+        // 有旧列表时先顶着显示：过期重拉/强刷都不打回加载态、不清列表。
+        const hasOld = cacheEntry !== null && cacheEntry.tracks.length > 0;
+        if (!hasOld) {
+            notice.textContent = '加载中…';
+            notice.classList.remove('is-error');
+        }
+        try {
+            const tracks = await fetchBilibiliPlaylistVideos();
+            cacheEntry = { tracks, fetchedAt: Date.now() };
+            renderList(tracks);
+            notice.textContent =
+                tracks.length > 0 ? `共 ${tracks.length} 条` : '没找到歌单视频，稍后再来看看';
+            notice.classList.remove('is-error');
+        } catch (error) {
+            // 失败保留旧列表：只在 notice 报错，不动已显示的行。
+            notice.textContent = friendlySearchError(error);
+            notice.classList.add('is-error');
+        } finally {
+            loading = false;
+            refreshButton.disabled = false;
+            refreshButton.textContent = '刷新列表';
+        }
+    };
+
+    refreshButton.addEventListener('click', () => {
+        void loadList(true);
+    });
+
+    // 切页复查：切回 B站页时列表已过期才静默重拉，没过期什么都不做。
+    registerTabRecheck('bilibili', () => {
+        if (cacheEntry && Date.now() - cacheEntry.fetchedAt >= POSTER_TTL_MS) {
+            void loadList();
+        }
+    });
+
+    void loadList();
+    return section;
+}
+
+// 歌单视频详情页：与榜单详情页同款整页机制（浮层＋返回钮摘页）。
+// 进页异步拉简介拆歌；解析不出（简介拿不到或时间戳不足 3 条）就明说
+// 没解析到、只留整条播放，不假装有分段。
+function openBiliPlaylistPage(video: Track, status: HTMLElement): void {
+    const page = document.createElement('div');
+    page.className = 'daily-page';
+    const pageHead = document.createElement('div');
+    pageHead.className = 'daily-page-head';
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'daily-page-back';
+    back.textContent = '返回';
+    back.addEventListener('click', () => {
+        page.remove();
+    });
+    pageHead.appendChild(back);
+    const pageTitle = document.createElement('h2');
+    pageTitle.textContent = '歌单视频';
+    pageHead.appendChild(pageTitle);
+    page.appendChild(pageHead);
+
+    // 头图区复用发现区今日推荐的 bili-featured 形制（封面＋标题＋UP 主）。
+    const featured = document.createElement('div');
+    featured.className = 'bili-featured';
+    if (video.coverUrl) {
+        const cover = document.createElement('img');
+        cover.className = 'bili-featured-cover';
+        cover.alt = '';
+        cover.referrerPolicy = 'no-referrer';
+        cover.src = video.coverUrl;
+        cover.onerror = () => {
+            cover.hidden = true;
+        };
+        featured.appendChild(cover);
+    }
+    const info = document.createElement('div');
+    info.className = 'bili-featured-info';
+    const title = document.createElement('div');
+    title.className = 'bili-featured-title';
+    title.textContent = video.title;
+    const artist = document.createElement('div');
+    artist.className = 'bili-featured-artist';
+    artist.textContent = video.artist;
+    info.append(title, artist);
+    featured.appendChild(info);
+    page.appendChild(featured);
+
+    const pageSub = document.createElement('p');
+    pageSub.className = 'daily-page-sub';
+    pageSub.textContent = `全长 ${formatDuration(video.durationMs)} · 点分段从那一首开始连播`;
+    page.appendChild(pageSub);
+
+    const reportPlayError = (error: unknown): void => {
+        status.textContent = friendlyPlayError(error);
+    };
+
+    const playWhole = document.createElement('button');
+    playWhole.type = 'button';
+    playWhole.className = 'login-btn';
+    playWhole.textContent = '▶ 整条播放';
+    playWhole.addEventListener('click', () => {
+        void playQueue([video], 0).catch(reportPlayError);
+    });
+    page.appendChild(playWhole);
+
+    const playSplit = document.createElement('button');
+    playSplit.type = 'button';
+    playSplit.className = 'login-btn';
+    playSplit.textContent = '▶ 拆歌播放全部';
+    playSplit.disabled = true;
+    page.appendChild(playSplit);
+
+    const notice = document.createElement('p');
+    notice.className = 'source-notice';
+    notice.textContent = '正在解析简介里的时间戳歌单…';
+    page.appendChild(notice);
+
+    const segmentList = document.createElement('ul');
+    segmentList.className = 'track-list';
+    page.appendChild(segmentList);
+
+    document.body.appendChild(page);
+
+    void (async () => {
+        const bvid = video.id.startsWith('bilibili:')
+            ? video.id.slice('bilibili:'.length)
+            : video.id;
+        const [desc, durationSec] = await Promise.all([
+            fetchBilibiliVideoDesc(bvid),
+            fetchBilibiliVideoDurationSec(bvid)
+        ]);
+        // 总时长优先 pagelist 的权威秒数，拿不到用搜索自带的 durationMs。
+        const totalSec =
+            durationSec ?? (video.durationMs ? Math.round(video.durationMs / 1000) : 0);
+        const parsed = desc ? parseBiliDescSegments(desc, totalSec) : [];
+        if (parsed.length === 0 || totalSec <= 0) {
+            notice.textContent = '这条没解析到时间戳歌单，只能整条播放';
+            return;
+        }
+        // 分段曲：id 带 @startSec 后缀（取链时剥掉），时长与起止偏移
+        // 都按段算，最后一段的终点是视频总时长。
+        const segments: Track[] = parsed.map((seg, index) => {
+            const endSec = index + 1 < parsed.length ? parsed[index + 1]!.startSec : totalSec;
+            return {
+                id: `bilibili:${bvid}@${seg.startSec}`,
+                title: seg.title,
+                artist: video.artist,
+                durationMs: (endSec - seg.startSec) * 1000,
+                coverUrl: video.coverUrl,
+                source: 'bilibili',
+                segmentStartMs: seg.startSec * 1000,
+                segmentEndMs: endSec * 1000
+            };
+        });
+        playSplit.disabled = false;
+        playSplit.addEventListener('click', () => {
+            void playQueue(segments, 0).catch(reportPlayError);
+        });
+        notice.textContent = `拆出 ${segments.length} 首 · 点一首从那首起连播`;
+        for (const [index, segTrack] of segments.entries()) {
+            const item = document.createElement('li');
+            item.className = 'track-row';
+            item.style.setProperty('--hue', String(posterHue(segTrack.id)));
+            const segInfo = document.createElement('div');
+            segInfo.className = 'track-info';
+            const name = document.createElement('div');
+            name.className = 'track-title';
+            name.textContent = `${index + 1}. ${segTrack.title}`;
+            segInfo.appendChild(name);
+            const meta = document.createElement('div');
+            meta.className = 'track-meta';
+            meta.textContent = `从 ${formatDuration(segTrack.segmentStartMs)} 起`;
+            segInfo.appendChild(meta);
+            item.appendChild(segInfo);
+            const duration = document.createElement('span');
+            duration.className = 'track-duration';
+            duration.textContent = formatDuration(segTrack.durationMs);
+            item.appendChild(duration);
+            item.addEventListener('click', () => {
+                void playQueue(segments, index).catch(reportPlayError);
+            });
+            segmentList.appendChild(item);
+        }
+    })();
 }
 
 function renderYtmDailySection(): HTMLElement {
