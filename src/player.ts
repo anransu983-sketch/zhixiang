@@ -23,9 +23,11 @@ import {
     onTimeUpdate,
     pause,
     previous,
+    refreshAutoMix,
     setRepeatMode,
     togglePlay
 } from './playback';
+import { loadAutoMixEnabled, saveAutoMixEnabled } from './automix';
 import type { PlaybackState, RepeatMode } from './playback';
 import {
     approximateWords,
@@ -1043,6 +1045,21 @@ function buildPlayerPage(): HTMLElement {
     });
     filterCreditsLabel.append(filterCreditsBox, document.createTextNode('过滤制作信息'));
     visualPad.appendChild(filterCreditsLabel);
+
+    // AutoMix 节拍过渡：默认关。开后自然播完时按估出的节拍提前
+    // 重叠混音（机制在 playback.ts/automix.ts），手动切歌不受影响；
+    // 切换即存，refreshAutoMix 让当前在播曲立即起/停采样。
+    const automixLabel = document.createElement('label');
+    automixLabel.className = 'player-toggle';
+    const automixBox = document.createElement('input');
+    automixBox.type = 'checkbox';
+    automixBox.checked = loadAutoMixEnabled();
+    automixBox.addEventListener('change', () => {
+        saveAutoMixEnabled(automixBox.checked);
+        refreshAutoMix();
+    });
+    automixLabel.append(automixBox, document.createTextNode('AutoMix 节拍过渡'));
+    visualPad.appendChild(automixLabel);
 
     // 歌词字体行：当前字体名 + 导入 + 恢复默认；导入失败只提示，
     // 旧字体保留可用（事务口径在 lyric-font.ts）。

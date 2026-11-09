@@ -62,6 +62,14 @@ import {
     stopPlaybackService,
     stopStreamProxy
 } from './native/playback-plugin';
+import {
+    AUTOMIX_SAMPLE_MS,
+    automixGainTarget,
+    automixWindowMs,
+    BeatTracker,
+    loadAutoMixEnabled,
+    measureRms
+} from './automix';
 import type { Track } from './types';
 
 // ---- 淡入淡出常量（集中一处，见文件头注释） ----
@@ -364,6 +372,12 @@ function bindAudioEvents(slot: PlayerSlot, audio: HTMLAudioElement): void {
     audio.addEventListener('ended', () => {
         // 只有当前槽的自然播完才续播；切歌时被淡出的旧槽不在此列。
         if (activeSlot !== slot || !playing) {
+            return;
+        }
+        // AutoMix 已提前推进且还在途时，本 ended 是同一首的兜底信号，
+        // 不能再推进一次（双重推进会把新歌的 load 杀掉）。
+        if (automixInFlight) {
+            console.log('[Playback] AutoMix 推进在途，ended 兜底忽略');
             return;
         }
         void advanceAfterEnded();
@@ -707,6 +721,91 @@ async function waitPrebuffer(
     );
 }
 
+// ---- AutoMix 节拍过渡 ----
+// 开关开时（默认关，持久化在 automix.ts）只作用于自然播完推进：
+// 播放中用 analyser 的低频通量采样估节拍（BeatTracker），当前曲
+// 剩余时间进入混合窗（估出节拍的整数倍拍长、钳 4–8 秒；节拍未知
+// 固定 6 秒）时提前触发一次推进，推进带 crossfade 把新旧两首叠上；
+// 触发前先测当前 RMS，给新槽一个 0.7–1.0 的起始增益目标（响度
+// 匹配，走既有 fade 机制，不另起音量体系）。手动 next/prev 不经
+// 此路；'ended' 保留作兜底——提前触发没赶上（或估计/推进失败）时
+// 原逻辑照走，且靠 automixInFlight + 每曲一次的 fired 标记防双重
+// 推进。选哪首仍归推进逻辑（顺序/随机/循环），AutoMix 只管何时
+// 触发与怎么混。无 analyser（浏览器降级）时不采样、不触发，
+// ended 兜底就是全部。
+const beatTracker = new BeatTracker();
+let automixTimer: ReturnType<typeof setInterval> | null = null;
+let automixFiredLoad = 0;
+let automixInFlight = false;
+// 下一首起播要用的淡入目标（AutoMix 触发时按 RMS 设，起播成功即消费）。
+let pendingFadeTarget = 1;
+
+function stopAutoMixSampler(): void {
+    if (automixTimer !== null) {
+        clearInterval(automixTimer);
+        automixTimer = null;
+    }
+}
+
+function startAutoMixSampler(loadId: number): void {
+    stopAutoMixSampler();
+    beatTracker.reset();
+    if (!loadAutoMixEnabled() || !analyser) {
+        return;
+    }
+    let freqBuf: Uint8Array<ArrayBuffer> | null = null;
+    automixTimer = setInterval(() => {
+        if (loadId !== loadCounter || !playing || !activeSlot) {
+            stopAutoMixSampler();
+            return;
+        }
+        const currentAnalyser = analyser;
+        if (!currentAnalyser) {
+            stopAutoMixSampler();
+            return;
+        }
+        if (!freqBuf || freqBuf.length !== currentAnalyser.frequencyBinCount) {
+            freqBuf = new Uint8Array(currentAnalyser.frequencyBinCount);
+        }
+        currentAnalyser.getByteFrequencyData(freqBuf);
+        beatTracker.sample(freqBuf);
+        // 单曲循环不提前混自己，ended 原路重播。
+        if (getRepeatMode() === 'one' || automixFiredLoad === loadId) {
+            return;
+        }
+        const audio = activeSlot.audio;
+        const duration = audio.duration;
+        if (!Number.isFinite(duration) || duration <= 0) {
+            return;
+        }
+        const remaining = duration - audio.currentTime;
+        const estimate = beatTracker.estimate();
+        const windowMs = automixWindowMs(estimate);
+        if (remaining > 0.5 && remaining * 1000 <= windowMs) {
+            automixFiredLoad = loadId;
+            stopAutoMixSampler();
+            const rms = measureRms(currentAnalyser);
+            pendingFadeTarget = automixGainTarget(rms);
+            automixInFlight = true;
+            console.log(
+                `[Playback] AutoMix 触发：剩余=${remaining.toFixed(1)}s 窗=${windowMs}ms ` +
+                    `节拍=${estimate ? `${estimate.bpm}BPM` : '未知'} 增益目标=${pendingFadeTarget.toFixed(2)}`
+            );
+            void advanceAfterEnded({ crossfade: true, automix: true });
+        }
+    }, AUTOMIX_SAMPLE_MS);
+}
+
+// 播放页切 AutoMix 开关时调用：开则对当前在播曲立即起采样，
+// 关则停采样（已触发在途的推进不撤）。
+export function refreshAutoMix(): void {
+    if (loadAutoMixEnabled() && playing && activeSlot && currentTrack) {
+        startAutoMixSampler(loadCounter);
+    } else {
+        stopAutoMixSampler();
+    }
+}
+
 // 起歌结果：'ok'＝已接管当前槽；'stale'＝取链／播放期间已有更新的起歌，
 // 本尝试已过时——调用方不得把它当失败跳歌，也不得动播放状态。
 async function startTrack(track: Track, crossfade: boolean): Promise<'ok' | 'stale'> {
@@ -806,18 +905,23 @@ async function startTrack(track: Track, crossfade: boolean): Promise<'ok' | 'sta
     } catch {
         // 忽略：继续播，只是后台保活可能失效。
     }
+    // AutoMix 的响度增益目标只对紧接着的这一次起播生效，消费即复原。
+    const fadeTarget = pendingFadeTarget;
+    pendingFadeTarget = 1;
     if (oldSlot && oldSlot !== newSlot) {
         if (crossfade && wasPlaying && previousTrack) {
             // 重叠淡入淡出：旧首 3 秒淡出，新首同时 3 秒淡入。
             fadeOutAndPause(oldSlot, CROSSFADE_MS);
-            fadeSlotTo(newSlot, 1, CROSSFADE_MS);
+            fadeSlotTo(newSlot, fadeTarget, CROSSFADE_MS);
         } else {
             oldSlot.audio.pause();
-            fadeSlotTo(newSlot, 1, crossfade ? CROSSFADE_MS : FADE_IN_MS);
+            fadeSlotTo(newSlot, fadeTarget, crossfade ? CROSSFADE_MS : FADE_IN_MS);
         }
     } else {
-        fadeSlotTo(newSlot, 1, FADE_IN_MS);
+        fadeSlotTo(newSlot, fadeTarget, FADE_IN_MS);
     }
+    // 新曲接管：AutoMix 采样按本 load 重新起（开关关或无图时内部空转退出）。
+    startAutoMixSampler(loadId);
     return 'ok';
 }
 
@@ -976,7 +1080,22 @@ function skipAllMessage(failed: number): string {
     return `跳过了 ${failed} 首，还是播不了，请换一首试试`;
 }
 
-async function advanceAfterEnded(): Promise<void> {
+// 自然播完推进。opts.crossfade 由 AutoMix 提前触发时带上（新旧重叠
+// 混音）；ended 兜底调用不带 opts、维持旧口径（无重叠、短淡入）。
+// automix 标记用于收尾清在途旗与未消费的增益目标，防双重推进。
+async function advanceAfterEnded(opts?: { crossfade?: boolean; automix?: boolean }): Promise<void> {
+    try {
+        await advanceAfterEndedInner(opts);
+    } finally {
+        if (opts?.automix) {
+            automixInFlight = false;
+            pendingFadeTarget = 1;
+        }
+    }
+}
+
+async function advanceAfterEndedInner(opts?: { crossfade?: boolean; automix?: boolean }): Promise<void> {
+    const mixCrossfade = opts?.crossfade ?? false;
     ++playIntent;
     const mode = getRepeatMode();
     // 单曲循环：重播当前这首（自然播完，无重叠，短淡入）；重播失败直接停，不往后跳。
@@ -1006,7 +1125,7 @@ async function advanceAfterEnded(): Promise<void> {
     }
     // 随机模式：与队列位置无关，沿历史 redo 或掷随机；全失败按播完停。
     if (mode === 'shuffle' && queue.length > 0) {
-        const shuffleResult = await playNextShuffle(false);
+        const shuffleResult = await playNextShuffle(mixCrossfade);
         if (shuffleResult.stale) {
             return;
         }
@@ -1031,7 +1150,7 @@ async function advanceAfterEnded(): Promise<void> {
     if (queueIndex >= queue.length - 1) {
         // 列表循环：队尾播完回到队首；队首起全播不了时按播完处理并提示。
         if (mode === 'queue' && queue.length > 0) {
-            const result = await tryPlayFrom(0, false, 1);
+            const result = await tryPlayFrom(0, mixCrossfade, 1);
             if (result.stale) {
                 return;
             }
@@ -1055,8 +1174,10 @@ async function advanceAfterEnded(): Promise<void> {
         }
         return;
     }
-    // 旧首已自然播完，无重叠可言，新首用短淡入；中途失败自动往后跳。
-    const result = await tryPlayFrom(queueIndex + 1, false, 1);
+    // ended 兜底：旧首已自然播完，无重叠可言，新首用短淡入；
+    // AutoMix 提前触发时带 crossfade，新首与旧首尾巴重叠混音。
+    // 中途失败自动往后跳。
+    const result = await tryPlayFrom(queueIndex + 1, mixCrossfade, 1);
     if (result.stale) {
         return;
     }
@@ -1367,6 +1488,7 @@ export function pause(): void {
     if (!activeSlot || !playing) {
         return;
     }
+    stopAutoMixSampler();
     // 暂停不断前台服务：恢复时不用重起，后台切回也能继续。
     fadeOutAndPause(activeSlot, FADE_OUT_MS);
     playing = false;
@@ -1446,6 +1568,8 @@ export async function resume(): Promise<void> {
         // 忽略，继续播。
     }
     fadeSlotTo(activeSlot, 1, FADE_RESUME_MS);
+    // 恢复播放后 AutoMix 采样跟着回来（当前曲的 load 不变）。
+    startAutoMixSampler(loadCounter);
 }
 
 export async function togglePlay(): Promise<void> {
@@ -1478,6 +1602,7 @@ export async function togglePlay(): Promise<void> {
 export async function stop(): Promise<void> {
     // 停止也是新意图：在途的起歌与跳歌循环凭它过时退出，不再起新 load。
     ++playIntent;
+    stopAutoMixSampler();
     if (activeSlot) {
         fadeOutAndPause(activeSlot, FADE_OUT_MS);
     }
