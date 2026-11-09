@@ -525,6 +525,78 @@ let lastSignedNeteaseTrack: Track | null = null;
 // 前一次待决的 play()，而前一次的失败又触发跳歌再起新 load，循环打断。
 let playIntent = 0;
 
+// ---- 预缓冲起播 ----
+// 远程流在 play() 之前先攒一段缓冲：audio 元素刚设 src 就 play()，
+// 浏览器会边下边播，网络头几秒抖动就直接反映成开头顿挫。先靠
+// preload='auto' 的自然缓冲等到前方缓冲 ≥10 秒（或已缓冲到结尾、
+// 或 canplaythrough），起播点就有一段余量垫着。硬超时 5000ms：
+// 到点不等了，照常 play()，不许把起播拖成无限等待。本地曲（同源
+// 直读、无网络抖动）跳过等待；等待期间 loadId 过时立即放弃，
+// 走既有 stale 路径；audio 出 error 也不死等，退出等待交给
+// play() 失败路径统一处理（错误细节在那边记）。
+const PREBUFFER_TARGET_SECONDS = 10;
+const PREBUFFER_TIMEOUT_MS = 5000;
+const PREBUFFER_POLL_MS = 100;
+
+async function waitPrebuffer(
+    audio: HTMLAudioElement,
+    loadId: number,
+    isLocal: boolean
+): Promise<void> {
+    if (isLocal) {
+        console.log(`[Playback] 预缓冲 lid=${loadId} 跳过（本地曲）`);
+        return;
+    }
+    const startedAt = Date.now();
+    let ahead = 0;
+    let reason = '超时照常起播';
+    for (;;) {
+        if (loadId !== loadCounter) {
+            console.log(`[Playback] 预缓冲 lid=${loadId} 放弃（已被新起歌取代）`);
+            return;
+        }
+        if (audio.error) {
+            reason = '等待中出错误，交给起播失败路径';
+            break;
+        }
+        try {
+            if (audio.buffered.length > 0) {
+                // 取包含当前播放点（起播点恒为 0）的那段缓冲算前方量；
+                // 没有包含 0 的段时退到最后一段的末端。
+                let end = 0;
+                for (let i = 0; i < audio.buffered.length; i++) {
+                    const rangeEnd = audio.buffered.end(i);
+                    if (audio.buffered.start(i) <= audio.currentTime) {
+                        end = Math.max(end, rangeEnd);
+                    }
+                }
+                if (end === 0) {
+                    end = audio.buffered.end(audio.buffered.length - 1);
+                }
+                ahead = Math.max(0, end - audio.currentTime);
+                const duration = audio.duration;
+                if (Number.isFinite(duration) && duration > 0 && end >= duration - 0.5) {
+                    reason = '已缓冲到结尾';
+                    break;
+                }
+            }
+        } catch {
+            // buffered 读取异常不拦起播，按已攒量继续判断。
+        }
+        if (ahead >= PREBUFFER_TARGET_SECONDS || audio.readyState >= 4) {
+            reason = ahead >= PREBUFFER_TARGET_SECONDS ? '攒够目标缓冲' : 'canplaythrough';
+            break;
+        }
+        if (Date.now() - startedAt >= PREBUFFER_TIMEOUT_MS) {
+            break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, PREBUFFER_POLL_MS));
+    }
+    console.log(
+        `[Playback] 预缓冲 lid=${loadId} 前方=${ahead.toFixed(1)}s 用时=${Date.now() - startedAt}ms（${reason}）`
+    );
+}
+
 // 起歌结果：'ok'＝已接管当前槽；'stale'＝取链／播放期间已有更新的起歌，
 // 本尝试已过时——调用方不得把它当失败跳歌，也不得动播放状态。
 async function startTrack(track: Track, crossfade: boolean): Promise<'ok' | 'stale'> {
@@ -553,6 +625,13 @@ async function startTrack(track: Track, crossfade: boolean): Promise<'ok' | 'sta
     }
     audio.src = resolved.url;
     setSlotSilent(newSlot);
+    // 预缓冲：远程流先攒一段再起播（见 waitPrebuffer）；等完再核一次
+    // loadId，过时就按 stale 退出，不抢新 load 的槽。
+    await waitPrebuffer(audio, loadId, track.source === 'local');
+    if (loadId !== loadCounter) {
+        console.log(`[Playback] 起歌已过时 lid=${loadId}（预缓冲期间被新起歌取代）`);
+        return 'stale';
+    }
     try {
         await audio.play();
     } catch (error) {
