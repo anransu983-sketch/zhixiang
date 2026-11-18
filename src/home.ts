@@ -57,6 +57,7 @@ import {
 } from './roaming';
 import type { RoamScene } from './roaming';
 import { fetchNeteaseDailySongs } from './sources/netease';
+import { fetchNeteaseListeningRank, type NeteaseRankRange } from './sources/netease-rank';
 import { fetchYtmDailyTracks, probeYtmHome } from './sources/ytm';
 import {
     checkQr,
@@ -4261,7 +4262,160 @@ function renderWritebackSection(): HTMLElement {
     return section;
 }
 
-// 「我的」页瓷砖网格（0.1.135）：六块瓷砖把原来一条长滚的模块按组
+// 网易云听歌排行（Folia listeningRank 口径，网易云适配按公开
+// /api/v1/play/record 实现）：「我的」页子页里的一块，周/全部两档，
+// 点歌即播本榜。未登录给登录提示；接口拿不到给明确原因，不编数据。
+// 子页内容按 key 缓存只建一次，重开时由瓷砖 onClick 调刷新函数
+// 重进（有缓存直接显旧榜，点刷新才重拉）。
+let refreshNeteaseRank: (() => void) | null = null;
+
+function renderNeteaseRankSection(): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'daily-section';
+    const head = document.createElement('div');
+    head.className = 'daily-head';
+    const heading = document.createElement('h2');
+    heading.textContent = '网易云听歌排行';
+    head.appendChild(heading);
+    const sub = document.createElement('span');
+    sub.className = 'daily-sub';
+    sub.textContent = '按网易云账号的播放次数排';
+    head.appendChild(sub);
+    section.appendChild(head);
+
+    const rangeRow = document.createElement('div');
+    rangeRow.className = 'pl-footer';
+    const weekButton = document.createElement('button');
+    weekButton.type = 'button';
+    weekButton.className = 'login-btn';
+    weekButton.textContent = '本周';
+    weekButton.disabled = true;
+    const allButton = document.createElement('button');
+    allButton.type = 'button';
+    allButton.className = 'login-btn';
+    allButton.textContent = '全部';
+    const refreshButton = document.createElement('button');
+    refreshButton.type = 'button';
+    refreshButton.className = 'login-btn';
+    refreshButton.textContent = '刷新';
+    rangeRow.append(weekButton, allButton, refreshButton);
+    section.appendChild(rangeRow);
+
+    const notice = document.createElement('p');
+    notice.className = 'source-notice';
+    section.appendChild(notice);
+    const list = document.createElement('ul');
+    list.className = 'track-list';
+    section.appendChild(list);
+
+    let range: NeteaseRankRange = 'week';
+    let loading = false;
+    let currentTracks: Track[] = [];
+    const cache = new Map<NeteaseRankRange, { track: Track; playCount: number }[]>();
+    const renderList = (
+        entries: { track: Track; playCount: number }[]
+    ): void => {
+        currentTracks = entries.map((entry) => entry.track);
+        list.replaceChildren();
+        entries.forEach((entry, index) => {
+            const row = document.createElement('li');
+            row.className = 'track-row';
+            const rank = document.createElement('span');
+            rank.className = 'rank-num';
+            rank.textContent = String(index + 1);
+            row.appendChild(rank);
+            if (entry.track.coverUrl) {
+                const cover = document.createElement('img');
+                cover.className = 'track-cover';
+                cover.referrerPolicy = 'no-referrer';
+                cover.src = entry.track.coverUrl;
+                cover.alt = '';
+                cover.onerror = () => {
+                    cover.remove();
+                };
+                row.appendChild(cover);
+            } else {
+                const glyph = document.createElement('span');
+                glyph.className = 'track-glyph';
+                glyph.textContent = '♪';
+                row.appendChild(glyph);
+            }
+            const info = document.createElement('div');
+            info.className = 'track-info';
+            const name = document.createElement('div');
+            name.className = 'track-title';
+            name.textContent = entry.track.title;
+            info.appendChild(name);
+            const meta = document.createElement('div');
+            meta.className = 'track-meta';
+            meta.textContent = `${entry.track.artist} · 播 ${entry.playCount} 次`;
+            info.appendChild(meta);
+            row.appendChild(info);
+            row.addEventListener('click', () => {
+                void playQueue(currentTracks, index);
+            });
+            list.appendChild(row);
+        });
+    };
+    const load = async (force = false): Promise<void> => {
+        if (loading) {
+            return;
+        }
+        if (!loadNeteaseSession()) {
+            notice.textContent = '还没登录网易云，去「我的」页听歌钥匙扫码登录后，再来看排行';
+            notice.hidden = false;
+            list.replaceChildren();
+            return;
+        }
+        const cached = cache.get(range);
+        if (!force && cached) {
+            notice.hidden = true;
+            renderList(cached);
+            return;
+        }
+        loading = true;
+        notice.textContent = '正在拉排行…';
+        notice.hidden = false;
+        try {
+            const entries = await fetchNeteaseListeningRank(range);
+            cache.set(range, entries);
+            if (entries.length === 0) {
+                notice.textContent = '这段时间还没有听歌记录';
+            } else {
+                notice.hidden = true;
+            }
+            renderList(entries);
+        } catch (error) {
+            notice.textContent =
+                error instanceof Error ? error.message : '网易云听歌排行暂时拿不到，请稍后重试';
+            notice.hidden = false;
+        } finally {
+            loading = false;
+        }
+    };
+    const setRange = (next: NeteaseRankRange): void => {
+        if (range === next) {
+            return;
+        }
+        range = next;
+        weekButton.disabled = range === 'week';
+        allButton.disabled = range === 'all';
+        void load();
+    };
+    weekButton.addEventListener('click', () => setRange('week'));
+    allButton.addEventListener('click', () => setRange('all'));
+    refreshButton.addEventListener('click', () => {
+        cache.delete(range);
+        void load(true);
+    });
+    refreshNeteaseRank = () => {
+        void load();
+    };
+    void load();
+    return section;
+}
+
+// 「我的」页瓷砖网格（0.1.135）：七块瓷砖把原来一条长滚的模块按组
 // 收进子页，主页一屏看完。每块＝字形＋标题＋一行副标题，整块可点；
 // 副标题里歌单数与更新状态是动态的，进子页改了数据回来会刷。
 function renderMineTileGrid(): HTMLElement {
@@ -4360,6 +4514,21 @@ function renderMineTileGrid(): HTMLElement {
     });
     playlistSub = playlists.sub;
     grid.appendChild(playlists.tile);
+
+    const rank = makeTile('★', '听歌排行', '网易云本周／全部', () => {
+        openMineSubPage(
+            'netease-rank',
+            '网易云听歌排行',
+            (box) => {
+                box.appendChild(renderNeteaseRankSection());
+            },
+            refreshDynamicSubs,
+        );
+        // 子页内容有缓存：重开时不重建，调刷新函数重进
+        // （有缓存直接显旧榜；登录状态变了会重新拉）。
+        refreshNeteaseRank?.();
+    });
+    grid.appendChild(rank.tile);
 
     const stash = makeTile('✎', '速记簿', '随手收的歌', () => {
         // 速记簿有自己的独立页（openStashPage，每次打开重渲染列表），

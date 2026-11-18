@@ -4404,6 +4404,18 @@ body.perf-mode * {
     opacity: 0.3;
     cursor: default;
 }
+/* 听歌排行名次：行首固定宽序号，前三名加粗标出。 */
+.rank-num {
+    flex: none;
+    width: 28px;
+    text-align: center;
+    font-size: 15px;
+    color: var(--text-3);
+}
+.track-row:nth-child(-n + 3) .rank-num {
+    font-weight: 700;
+    color: inherit;
+}
 /* 性能自检横条：只在首次开页实测卡顿时出现一次，压在播放页之上、弹层之下。 */
 .perf-check-banner {
     position: fixed;
