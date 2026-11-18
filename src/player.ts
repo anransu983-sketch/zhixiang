@@ -65,6 +65,7 @@ import { checkAllFilesAccess, getLocalCoverDataUrl, getLocalCoverFromNetease, ge
 import { sampleCoverColor } from './cover-color';
 import { posterFallbackBackground, posterHue } from './posters';
 import { neteaseOriginalCover } from './sources/netease';
+import { runFirstOpenPerfCheck } from './perf-check';
 import { getLastYtmStreamMeta } from './sources/ytm';
 import type { Track } from './types';
 import { pushBackHandler } from './back-stack';
@@ -328,6 +329,8 @@ export function openPlayerPage(): void {
     // 雨滴档可能在我的页雨窗里改过：开页时现读存储同步给卡面水滴
     //（setMode 内部带 poke，呈现中会立刻按新档位画/动起来）。
     lyricDrops?.setMode(loadVisualToggles().rainMode);
+    // 性能自检：只在首次开页实测一次帧率，卡才自动开轻装并弹条告知。
+    runFirstOpenPerfCheck();
     if (!unregisterPlayerBack) {
         unregisterPlayerBack = pushBackHandler(hidePlayerPage);
     }

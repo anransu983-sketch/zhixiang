@@ -4404,6 +4404,26 @@ body.perf-mode * {
     opacity: 0.3;
     cursor: default;
 }
+/* 性能自检横条：只在首次开页实测卡顿时出现一次，压在播放页之上、弹层之下。 */
+.perf-check-banner {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
+    z-index: 25;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 10px 12px;
+    border: 1px solid var(--hairline);
+    border-radius: 12px;
+    background: rgba(20, 20, 30, 0.97);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+.perf-check-text {
+    flex: 1;
+    font-size: 14px;
+}
 .pl-sheet-list {
     display: grid;
     gap: 8px;
