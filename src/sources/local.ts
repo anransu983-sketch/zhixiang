@@ -14,6 +14,8 @@ interface LocalRawTrack {
     durationMs?: number;
     coverUri?: string;
     path: string;
+    // MediaStore TRACK：碟号×1000＋曲号；机型不给时为 0 或缺失。
+    trackNo?: number;
 }
 
 interface LocalMusicPlugin {
@@ -111,6 +113,29 @@ class LocalMusicSource implements AudioSource {
         try {
             const result = await LocalMusic.scan();
             const tracks = (result.tracks ?? []).map((raw) => this.toTrack(raw));
+            // 多碟排序：原生已按标题 ASC 排好，这里只在同专辑内按
+            // 碟号→曲号重排（TRACK＝碟号×1000＋曲号）；TRACK 取不到
+            // 或为 0 的曲目不参与重排，保留原标题序。全库不按专辑
+            // 重分组，平铺列表的标题序整体不变。
+            const discOf = (trackNo?: number): number =>
+                trackNo && trackNo >= 1000 ? Math.floor(trackNo / 1000) : 0;
+            const numberOf = (trackNo?: number): number =>
+                trackNo && trackNo > 0 ? trackNo % 1000 : 0;
+            tracks.sort((a, b) => {
+                const albumA = (a.album ?? '').trim().toLowerCase();
+                const albumB = (b.album ?? '').trim().toLowerCase();
+                if (!albumA || albumA !== albumB) {
+                    return 0;
+                }
+                if (!a.trackNo || !b.trackNo) {
+                    return 0;
+                }
+                const discDiff = discOf(a.trackNo) - discOf(b.trackNo);
+                if (discDiff !== 0) {
+                    return discDiff;
+                }
+                return numberOf(a.trackNo) - numberOf(b.trackNo);
+            });
             this.cached = tracks;
             this.lastScanFailed = false;
             this.notice = null;
@@ -141,7 +166,8 @@ class LocalMusicSource implements AudioSource {
             durationMs: raw.durationMs,
             coverUrl: raw.coverUri,
             source: 'local',
-            format: /^[A-Z0-9]{2,5}$/.test(ext) ? ext : undefined
+            format: /^[A-Z0-9]{2,5}$/.test(ext) ? ext : undefined,
+            trackNo: typeof raw.trackNo === 'number' && raw.trackNo > 0 ? raw.trackNo : undefined
         };
     }
 }

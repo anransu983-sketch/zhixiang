@@ -97,7 +97,10 @@ public class LocalMusicPlugin extends Plugin {
             MediaStore.Audio.Media.ALBUM,
             MediaStore.Audio.Media.ALBUM_ID,
             MediaStore.Audio.Media.DURATION,
-            MediaStore.Audio.Media.DATA
+            MediaStore.Audio.Media.DATA,
+            // 多碟排序用：TRACK 编码为 碟号×1000＋曲号（如 2003＝第 2 碟第 3 首），
+            // 有些机型只给曲号（<1000）或 0，Web 层按有无处理，取不到回落标题序。
+            MediaStore.Audio.Media.TRACK
         };
         String selection = MediaStore.Audio.Media.IS_MUSIC + " != 0";
         String sortOrder = MediaStore.Audio.Media.TITLE + " ASC";
@@ -120,6 +123,7 @@ public class LocalMusicPlugin extends Plugin {
             int albumIdIndex = cursor.getColumnIndex(MediaStore.Audio.Media.ALBUM_ID);
             int durationIndex = cursor.getColumnIndex(MediaStore.Audio.Media.DURATION);
             int dataIndex = cursor.getColumnIndex(MediaStore.Audio.Media.DATA);
+            int trackIndex = cursor.getColumnIndex(MediaStore.Audio.Media.TRACK);
 
             JSArray tracks = new JSArray();
             while (cursor.moveToNext()) {
@@ -140,6 +144,9 @@ public class LocalMusicPlugin extends Plugin {
                 }
                 if (durationIndex >= 0) {
                     track.put("durationMs", cursor.getLong(durationIndex));
+                }
+                if (trackIndex >= 0) {
+                    track.put("trackNo", cursor.getLong(trackIndex));
                 }
                 long albumId = albumIdIndex >= 0 ? cursor.getLong(albumIdIndex) : -1;
                 if (albumId > 0) {
