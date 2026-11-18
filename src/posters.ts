@@ -7,7 +7,7 @@
 // 本模块不发任何新接口请求，只做分组与分路组装；各路请求逻辑归各自音源文件。
 
 import { getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalSidecarCoverDataUrl, localSource } from './sources/local';
-import { fetchNeteaseChartPosters } from './sources/netease';
+import { fetchNeteaseChartPosters, neteasePosterCover } from './sources/netease';
 import { fetchYtmChartPosters } from './sources/ytm';
 import type { Poster, Track } from './types';
 
@@ -169,7 +169,9 @@ export async function loadLocalAlbumPosters(): Promise<Poster[]> {
                 id: `local-album:${album}`,
                 title: album,
                 subtitle: albumTracks[0]?.artist,
-                coverUrl,
+                // 海报墙/3D 架要大档：网易云补来的封面改 1200 档，
+                // 本地 dataUrl 与 content 图不受影响（helper 只认 126 图床）。
+                coverUrl: neteasePosterCover(coverUrl),
                 source: 'local' as const,
                 tracks: albumTracks
             };

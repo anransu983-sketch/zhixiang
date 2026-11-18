@@ -64,6 +64,7 @@ import { clearLyricFont, getLyricFontName, importLyricFont, LYRIC_FONT_CSS, rest
 import { checkAllFilesAccess, getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalPath, getLocalSidecarCoverDataUrl, requestAllFilesAccess, saveFileToDownloads, writeSidecar } from './sources/local';
 import { sampleCoverColor } from './cover-color';
 import { posterFallbackBackground, posterHue } from './posters';
+import { neteaseOriginalCover } from './sources/netease';
 import { getLastYtmStreamMeta } from './sources/ytm';
 import type { Track } from './types';
 import { pushBackHandler } from './back-stack';
@@ -1527,16 +1528,19 @@ function buildPlayerPage(): HTMLElement {
         }
     });
     const setCoverSrc = (url: string): void => {
-        if (cover.src !== url) {
+        // 播放页大封面与莫奈背景用原图：网易云封面去掉 ?param= 后再设，
+        // 本地 dataUrl/content 图与 YTM 图原样通过（helper 只认 126 图床）。
+        const originalUrl = neteaseOriginalCover(url) ?? url;
+        if (cover.src !== originalUrl) {
             coverLoaded = false;
-            cover.src = url;
+            cover.src = originalUrl;
         }
-        coverExpected = url;
+        coverExpected = originalUrl;
         // 歌词卡虚化底与封面 img 同源（含本地歌的 dataURL）；JSON 串化
         // 给 url() 加引号并转义，URL 里带括号/引号也不会把 CSS 写坏。
-        lyricCardBg.style.backgroundImage = `url(${JSON.stringify(url)})`;
+        lyricCardBg.style.backgroundImage = `url(${JSON.stringify(originalUrl)})`;
         // 卡面水滴的透镜底图同源同步（LyricDrops 自维护离屏重模糊版）。
-        lyricDrops?.setCover(url);
+        lyricDrops?.setCover(originalUrl);
         updateCoverVisibility();
     };
     const hideCover = (): void => {

@@ -39,6 +39,34 @@ function toHttpsCover(url: string | undefined): string | undefined {
     return url.replace(/^http:/, 'https:');
 }
 
+// 封面尺寸归一化（Folia 97bcb89f/cf53277f 口径）：同一张网易云封面
+// 按用途取尺寸——海报墙/3D 架要大档（?param=1200y1200），背景与
+// 播放页大封面用原图（去掉 param）。只认网易云图床
+// （*.music.126.net），其余源原样返回；不在 toTrack 里统一改，
+// 尺寸在用处落点（海报组装处／播放页设图处）各取所需。
+function isNeteaseCoverHost(url: string): boolean {
+    try {
+        return new URL(url).hostname.endsWith('music.126.net');
+    } catch {
+        return false;
+    }
+}
+
+export function neteasePosterCover(url: string | undefined): string | undefined {
+    if (!url || !isNeteaseCoverHost(url)) {
+        return url;
+    }
+    const clean = url.replace(/[?&]param=[^&]*/g, '').replace(/[?&]$/, '');
+    return `${clean}${clean.includes('?') ? '&' : '?'}param=1200y1200`;
+}
+
+export function neteaseOriginalCover(url: string | undefined): string | undefined {
+    if (!url || !isNeteaseCoverHost(url)) {
+        return url;
+    }
+    return url.replace(/[?&]param=[^&]*/g, '').replace(/[?&]$/, '');
+}
+
 // 有会话时补 Cookie、无会话时原样返回；URL 与参数一律不动。
 function requestHeaders(): Record<string, string> {
     return withSessionCookie(HEADERS);
@@ -401,13 +429,14 @@ export async function fetchNeteaseChartPosters(): Promise<Poster[]> {
                     typeof result?.name === 'string' && result.name
                         ? result.name
                         : '网易云榜单',
-                coverUrl:
+                coverUrl: neteasePosterCover(
                     trackCover ??
-                    toHttpsCover(
-                        typeof result?.coverImgUrl === 'string' && result.coverImgUrl
-                            ? result.coverImgUrl
-                            : undefined
-                    ),
+                        toHttpsCover(
+                            typeof result?.coverImgUrl === 'string' && result.coverImgUrl
+                                ? result.coverImgUrl
+                                : undefined
+                        )
+                ),
                 source: 'netease',
                 tracks
             });
