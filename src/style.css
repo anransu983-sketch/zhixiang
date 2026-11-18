@@ -298,6 +298,36 @@ body {
     font-size: 15px;
     pointer-events: none;
 }
+/* 搜索历史下拉：贴在搜索框下，按源存、最新在前，点选重搜。 */
+.search-history {
+    position: absolute;
+    left: 16px;
+    right: 16px;
+    top: calc(100% - 4px);
+    z-index: 6;
+    max-height: 240px;
+    overflow-y: auto;
+    border: 1px solid var(--hairline);
+    border-radius: 12px;
+    background: rgba(20, 20, 30, 0.97);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+.search-history-item {
+    display: block;
+    width: 100%;
+    padding: 11px 14px;
+    border: none;
+    border-bottom: 1px solid var(--hairline);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 15px;
+    text-align: left;
+    cursor: pointer;
+}
+.search-history-item:last-child {
+    border-bottom: none;
+}
 
 .source-notice {
     margin: 12px 0 0;

@@ -41,6 +41,7 @@ import { addMyImportIds, loadMyImportIds, removeMyImportId } from './my-imports'
 import { biliQrImageUrl, checkBiliQr, clearBiliSession, fetchBiliDailyTracks, fetchBiliFavFolders, fetchBiliFavTracks, fetchBiliQrKey, loadBiliSession, validateBiliSession, type BiliFavFolder } from './sources/bilibili-session';
 import { addTrackToPlaylist, createPlaylist, deletePlaylist, loadPlaylists, removeTrackFromPlaylist, renamePlaylist, savePlaylistOrder, trackKey } from './playlists';
 import { addToStash, clearStash, groupStashBySource, isInStash, loadStash, removeFromStash, sourceLabel } from './stash';
+import { loadSearchHistory, recordSearchHistory } from './search-history';
 import { checkForUpdate, type UpdateCheckResult } from './update';
 import { downloadUpdateApk, installUpdateApk, openInstallPermissionSettings } from './native/update-plugin';
 import { runBatchWriteback } from './batch-writeback';
@@ -5857,6 +5858,54 @@ function renderSourceSection(
     searchIcon.className = 'source-search-icon';
     searchIcon.textContent = '⌕';
     searchWrap.appendChild(searchIcon);
+    // 搜索历史下拉：聚焦时按当前输入过滤展示，点选即重搜；
+    // mousedown 里直接应用（先于 blur 触发，不会被失焦隐藏抢掉）。
+    const historyBox = document.createElement('div');
+    historyBox.className = 'search-history';
+    historyBox.hidden = true;
+    searchWrap.appendChild(historyBox);
+    const renderHistory = (): void => {
+        const query = search.value.trim().toLowerCase();
+        const items = loadSearchHistory(source.id).filter(
+            (item) => !query || item.toLowerCase().includes(query)
+        );
+        historyBox.replaceChildren();
+        if (items.length === 0 || document.activeElement !== search) {
+            historyBox.hidden = true;
+            return;
+        }
+        for (const item of items) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'search-history-item';
+            button.textContent = item;
+            button.addEventListener('mousedown', (event) => {
+                event.preventDefault();
+                search.value = item;
+                historyBox.hidden = true;
+                recordSearchHistory(source.id, item);
+                onQuery(item);
+                void refresh(item);
+            });
+            historyBox.appendChild(button);
+        }
+        historyBox.hidden = false;
+    };
+    search.addEventListener('focus', renderHistory);
+    search.addEventListener('blur', () => {
+        window.setTimeout(() => {
+            historyBox.hidden = true;
+            if (search.value.trim()) {
+                recordSearchHistory(source.id, search.value);
+            }
+        }, 120);
+    });
+    search.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && search.value.trim()) {
+            recordSearchHistory(source.id, search.value);
+            historyBox.hidden = true;
+        }
+    });
     block.appendChild(searchWrap);
 
     // 本地页歌曲列表默认隐藏（Folia 墙面模式：墙上只放海报，歌曲在海报里和搜索里）；
@@ -5973,6 +6022,7 @@ function renderSourceSection(
     search.addEventListener('input', () => {
         onQuery(search.value);
         void refresh(search.value);
+        renderHistory();
     });
     void refresh('');
 
