@@ -4355,6 +4355,25 @@ body.perf-mode * {
     margin-top: 16px;
     flex-wrap: wrap;
 }
+/* 歌单调序确认条：草稿期才出现，确认保存／取消放弃。 */
+.pl-order-bar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin: 12px 0;
+    padding: 10px 12px;
+    border: 1px solid var(--hairline);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.06);
+}
+.pl-order-hint {
+    flex: 1;
+    font-size: 14px;
+}
+.pl-move-btn:disabled {
+    opacity: 0.3;
+    cursor: default;
+}
 .pl-sheet-list {
     display: grid;
     gap: 8px;

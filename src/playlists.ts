@@ -162,3 +162,26 @@ export function removeTrackFromPlaylist(id: string, key: string): boolean {
     savePlaylists(lists);
     return true;
 }
+
+// 歌单调序（Folia local-playlist-order 草稿口径）：上移/下移只改
+// 内存里的草稿顺序，点确认才落盘；取消或离开页面即放弃草稿。
+// savePlaylistOrder 是草稿确认的整单保存，校验曲目集合一致
+// （同一批 key、不多不少）才写，防止旧草稿丢歌。
+export function savePlaylistOrder(id: string, tracks: Track[]): boolean {
+    const lists = loadPlaylists();
+    const target = lists.find((item) => item.id === id);
+    if (!target) {
+        return false;
+    }
+    const savedKeys = target.tracks.map(trackKey).sort();
+    const draftKeys = tracks.map(trackKey).sort();
+    if (
+        savedKeys.length !== draftKeys.length ||
+        savedKeys.some((key, index) => key !== draftKeys[index])
+    ) {
+        return false;
+    }
+    target.tracks = tracks.map((track) => ({ ...track, streamUrl: undefined }));
+    savePlaylists(lists);
+    return true;
+}

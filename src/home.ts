@@ -39,7 +39,7 @@ import type { BiliChartZone } from './sources/bilibili';
 import { checkAllFilesAccess, getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalNotice, getLocalSidecarCoverDataUrl, localSource, requestAllFilesAccess } from './sources/local';
 import { addMyImportIds, loadMyImportIds, removeMyImportId } from './my-imports';
 import { biliQrImageUrl, checkBiliQr, clearBiliSession, fetchBiliDailyTracks, fetchBiliFavFolders, fetchBiliFavTracks, fetchBiliQrKey, loadBiliSession, validateBiliSession, type BiliFavFolder } from './sources/bilibili-session';
-import { addTrackToPlaylist, createPlaylist, deletePlaylist, loadPlaylists, removeTrackFromPlaylist, renamePlaylist, trackKey } from './playlists';
+import { addTrackToPlaylist, createPlaylist, deletePlaylist, loadPlaylists, removeTrackFromPlaylist, renamePlaylist, savePlaylistOrder, trackKey } from './playlists';
 import { addToStash, clearStash, groupStashBySource, isInStash, loadStash, removeFromStash, sourceLabel } from './stash';
 import { checkForUpdate, type UpdateCheckResult } from './update';
 import { downloadUpdateApk, installUpdateApk, openInstallPermissionSettings } from './native/update-plugin';
@@ -3424,9 +3424,44 @@ function openPlaylistPage(id: string, onChanged: () => void): void {
     const pageSub = document.createElement('p');
     pageSub.className = 'daily-page-sub';
     page.appendChild(pageSub);
+    // 歌单调序确认条（Folia 草稿口径）：上移/下移只改内存草稿，
+    // 这里点「确认保存」才落盘，「取消」或离开页面即放弃草稿。
+    const orderBar = document.createElement('div');
+    orderBar.className = 'pl-order-bar';
+    orderBar.hidden = true;
+    const orderHint = document.createElement('span');
+    orderHint.className = 'pl-order-hint';
+    orderHint.textContent = '顺序已改，还没保存';
+    const orderConfirm = document.createElement('button');
+    orderConfirm.type = 'button';
+    orderConfirm.className = 'login-btn';
+    orderConfirm.textContent = '确认保存';
+    const orderCancel = document.createElement('button');
+    orderCancel.type = 'button';
+    orderCancel.className = 'login-btn';
+    orderCancel.textContent = '取消';
+    orderBar.append(orderHint, orderConfirm, orderCancel);
+    page.appendChild(orderBar);
     const trackList = document.createElement('ul');
     trackList.className = 'track-list';
     page.appendChild(trackList);
+
+    // 调序草稿：null 表示没改过，改过后即为当前展示的顺序；
+    // 只存在内存里，确认才经 savePlaylistOrder 落盘。
+    let draft: Track[] | null = null;
+    orderConfirm.addEventListener('click', () => {
+        if (!draft) {
+            return;
+        }
+        if (savePlaylistOrder(id, draft)) {
+            draft = null;
+            renderList();
+        }
+    });
+    orderCancel.addEventListener('click', () => {
+        draft = null;
+        renderList();
+    });
 
     const renderList = (): void => {
         const current = loadPlaylists().find((item) => item.id === id);
@@ -3436,9 +3471,11 @@ function openPlaylistPage(id: string, onChanged: () => void): void {
             return;
         }
         pageTitle.textContent = current.name;
-        pageSub.textContent = `共 ${current.tracks.length} 首 · 点歌播本单，✕ 只从歌单里删`;
+        pageSub.textContent = `共 ${current.tracks.length} 首 · 点歌播本单，✕ 只从歌单里删，↑↓ 调顺序（确认后才保存）`;
+        orderBar.hidden = draft === null;
+        const tracks = draft ?? current.tracks;
         trackList.replaceChildren();
-        current.tracks.forEach((track, index) => {
+        tracks.forEach((track, index) => {
             const row = document.createElement('li');
             row.className = 'track-row';
             if (track.coverUrl) {
@@ -3468,6 +3505,49 @@ function openPlaylistPage(id: string, onChanged: () => void): void {
             meta.textContent = track.artist;
             info.appendChild(meta);
             row.appendChild(info);
+            // 调序：↑↓ 只改内存草稿（首次点按从当前保存顺序复制一份），
+            // 不直接落盘；确认条出现后点「确认保存」才写，取消即放弃。
+            const moveUp = document.createElement('button');
+            moveUp.type = 'button';
+            moveUp.className = 'track-add-btn pl-move-btn';
+            moveUp.textContent = '↑';
+            moveUp.setAttribute('aria-label', '上移');
+            moveUp.disabled = index === 0;
+            moveUp.addEventListener('click', (event) => {
+                event.stopPropagation();
+                if (index === 0) {
+                    return;
+                }
+                if (!draft) {
+                    draft = [...current.tracks];
+                }
+                const [moved] = draft.splice(index, 1);
+                if (moved) {
+                    draft.splice(index - 1, 0, moved);
+                }
+                renderList();
+            });
+            const moveDown = document.createElement('button');
+            moveDown.type = 'button';
+            moveDown.className = 'track-add-btn pl-move-btn';
+            moveDown.textContent = '↓';
+            moveDown.setAttribute('aria-label', '下移');
+            moveDown.disabled = index === tracks.length - 1;
+            moveDown.addEventListener('click', (event) => {
+                event.stopPropagation();
+                if (index >= tracks.length - 1) {
+                    return;
+                }
+                if (!draft) {
+                    draft = [...current.tracks];
+                }
+                const [moved] = draft.splice(index, 1);
+                if (moved) {
+                    draft.splice(index + 1, 0, moved);
+                }
+                renderList();
+            });
+            row.append(moveUp, moveDown);
             const remove = document.createElement('button');
             remove.type = 'button';
             remove.className = 'track-add-btn';
@@ -3475,12 +3555,17 @@ function openPlaylistPage(id: string, onChanged: () => void): void {
             remove.setAttribute('aria-label', '从歌单里删除');
             remove.addEventListener('click', (event) => {
                 event.stopPropagation();
-                removeTrackFromPlaylist(id, trackKey(track));
+                if (draft) {
+                    // 草稿期删歌只改草稿，确认时整单校验后一起落盘。
+                    draft = draft.filter((item) => trackKey(item) !== trackKey(track));
+                } else {
+                    removeTrackFromPlaylist(id, trackKey(track));
+                }
                 renderList();
             });
             row.appendChild(remove);
             row.addEventListener('click', () => {
-                void playQueue(current.tracks, index);
+                void playQueue(tracks, index);
             });
             trackList.appendChild(row);
         });
