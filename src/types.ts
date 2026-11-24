@@ -44,4 +44,14 @@ export interface AudioSource {
     label: string;
     search(query: string): Promise<Track[]>;
     resolveStream(track: Track): Promise<string>;
+    // 搜索分页（可选，只有真能翻页的源才实现）：offset 从 0 起按页大小累加，
+    // hasMore 由该源按接口给的总数判断；没有分页能力的源不实现，调用方
+    // 只显示首屏、不出“加载更多”按钮。
+    searchMore?(query: string, offset: number): Promise<SearchPage>;
+}
+
+// 一页搜索结果：本页曲目＋是否还有下一页。
+export interface SearchPage {
+    tracks: Track[];
+    hasMore: boolean;
 }

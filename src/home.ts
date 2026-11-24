@@ -6415,12 +6415,93 @@ function renderSourceSection(
     trackList.className = 'track-list';
     block.appendChild(trackList);
 
+    // 3. 搜索加载更多（只有实现 searchMore 的源才有按钮，目前仅网易云）：
+    // 首屏与翻页走同一接口，offset＝已加载条数；新搜词时 refresh 重置状态。
+    // 点按式翻页，不做无限滚动；点“加载更多”不记搜索历史（历史只在
+    // 输入回车／失焦／点选下拉时记，这里不碰输入框）。
+    const canPage = typeof source.searchMore === 'function';
+    let loadedTracks: Track[] = [];
+    let activeQuery = '';
+    let hasMore = false;
+    let loadingMore = false;
+    const moreButton = document.createElement('button');
+    moreButton.type = 'button';
+    moreButton.className = 'search-more';
+    moreButton.hidden = true;
+    block.appendChild(moreButton);
+    const updateMoreButton = (): void => {
+        if (!canPage || !activeQuery.trim() || loadedTracks.length === 0) {
+            moreButton.hidden = true;
+            return;
+        }
+        moreButton.hidden = false;
+        if (loadingMore) {
+            moreButton.textContent = '加载中…';
+            moreButton.disabled = true;
+        } else if (hasMore) {
+            moreButton.textContent = '加载更多';
+            moreButton.disabled = false;
+        } else {
+            // 到底了：按钮留成“没有更多了”置灰，不直接消失，让用户
+            // 看得出已经翻到底，而不是以为按钮丢了。
+            moreButton.textContent = '没有更多了';
+            moreButton.disabled = true;
+        }
+    };
+    moreButton.addEventListener('click', () => {
+        if (loadingMore || !hasMore || !canPage) {
+            return;
+        }
+        loadingMore = true;
+        updateMoreButton();
+        const token = requestToken;
+        const query = activeQuery;
+        const offset = loadedTracks.length;
+        void (async () => {
+            try {
+                const page = await source.searchMore!(query, offset);
+                if (token !== requestToken) {
+                    return;
+                }
+                // songCount 在页间会抖动，去重防重叠。
+                const seen = new Set(loadedTracks.map((track) => track.id));
+                loadedTracks = [
+                    ...loadedTracks,
+                    ...page.tracks.filter((track) => !seen.has(track.id))
+                ];
+                hasMore = page.hasMore;
+                renderTracks(trackList, loadedTracks, status);
+            } catch (error) {
+                if (token !== requestToken) {
+                    return;
+                }
+                // 翻页失败只提示原因，已有结果保留在列表里，不清空。
+                notice.textContent = friendlySearchError(error);
+                notice.classList.add('is-error');
+                notice.hidden = false;
+            } finally {
+                loadingMore = false;
+                if (token === requestToken) {
+                    updateMoreButton();
+                }
+            }
+        })();
+    });
+
     let requestToken = 0;
     const refresh = async (query: string): Promise<void> => {
         const token = ++requestToken;
         let tracks: Track[];
+        let pageHasMore = false;
         try {
-            tracks = await source.search(query);
+            if (canPage) {
+                // 可翻页的源：首屏也走 searchMore(offset 0)，拿到 hasMore。
+                const page = await source.searchMore!(query, 0);
+                tracks = page.tracks;
+                pageHasMore = page.hasMore;
+            } else {
+                tracks = await source.search(query);
+            }
         } catch (error) {
             // 网络音源搜索可能失败（断网、接口限流等）：不让异常悬空，
             // 用通用提示区展示中文原因，列表保持上一次的内容。
@@ -6438,6 +6519,11 @@ function renderSourceSection(
             return;
         }
         notice.classList.remove('is-error');
+        // 新搜一个词即新一页：offset 归零、结果清空重载，按钮状态跟着走。
+        activeQuery = query;
+        loadedTracks = tracks;
+        hasMore = pageHasMore;
+        updateMoreButton();
         renderTracks(trackList, tracks, status);
         // 本地默认藏歌：无查询且开关开时列表与空态提示都不出；有查询时结果照常。
         const hideLocalList = isLocalPage && query.trim() === '' && tracksHidden();

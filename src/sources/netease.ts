@@ -21,7 +21,7 @@
 import { httpGet } from '../native/http';
 import { eapiRequest } from './netease-eapi';
 import { withSessionCookie } from './netease-session';
-import type { AudioSource, Poster, SourceId, Track } from '../types';
+import type { AudioSource, Poster, SearchPage, SourceId, Track } from '../types';
 
 const SEARCH_URL = 'https://music.163.com/api/cloudsearch/pc';
 const STREAM_URL = 'https://music.163.com/api/song/enhance/player/url';
@@ -108,16 +108,29 @@ class NeteaseSource implements AudioSource {
     readonly label = '网易云';
 
     async search(query: string): Promise<Track[]> {
+        return (await this.searchPage(query, 0)).tracks;
+    }
+
+    // 3. 搜索加载更多：首屏与翻页走同一接口，offset 按页大小累加。
+    // hasMore 按接口给的 result.songCount 判（offset＋本页条数＜总数）；
+    // 总数缺失时回落“本页满 20 条即可能还有”，不满 20 条即没有更多。
+    // songCount 在不同页之间会轻微抖动（如 272→271），每次都按当次
+    // 返回重算，不缓存总数；追加时调用方再按 id 去重，防抖动致重叠。
+    async searchMore(query: string, offset: number): Promise<SearchPage> {
+        return this.searchPage(query, offset);
+    }
+
+    private async searchPage(query: string, offset: number): Promise<SearchPage> {
         const keyword = query.trim();
         if (!keyword) {
             // 网易云没有“全部歌曲”可列，空查询直接返回空列表，不发请求。
-            return [];
+            return { tracks: [], hasMore: false };
         }
         const params = new URLSearchParams({
             s: keyword,
             type: '1',
             limit: String(SEARCH_LIMIT),
-            offset: '0'
+            offset: String(Math.max(0, Math.floor(offset)))
         });
         const response = await httpGet(`${SEARCH_URL}?${params.toString()}`, requestHeaders());
         if (response.status !== 200) {
@@ -129,11 +142,19 @@ class NeteaseSource implements AudioSource {
         } catch {
             throw new Error('网易云搜索失败，请稍后重试');
         }
-        const songs = (parsed as { result?: { songs?: unknown } } | null)?.result?.songs;
+        const result = (parsed as { result?: { songs?: unknown; songCount?: unknown } } | null)
+            ?.result;
+        const songs = result?.songs;
         if (!Array.isArray(songs)) {
             throw new Error('网易云搜索失败，请稍后重试');
         }
-        return songs.map((raw) => this.toTrack(raw as NeteaseRawSong));
+        const tracks = songs.map((raw) => this.toTrack(raw as NeteaseRawSong));
+        const total = typeof result?.songCount === 'number' ? result.songCount : undefined;
+        const hasMore =
+            total !== undefined
+                ? Math.max(0, Math.floor(offset)) + tracks.length < total
+                : tracks.length === SEARCH_LIMIT;
+        return { tracks, hasMore };
     }
 
     // 0.1.85 本地补源：按“歌名＋歌手”搜网易云，给本地歌匹配封面与歌词。
