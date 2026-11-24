@@ -1516,6 +1516,46 @@ body {
     z-index: 1;
 }
 
+/* 时刻标记（第 4 项）：进度条上的小圆点。副歌是 4px 宽黄色竖条
+   （.player-chorus-marker，z-index 1），时刻是 10px 粉色圆点带白圈
+   （z-index 2，形状＋颜色都不同），两者撞位时圆点盖在竖条上。
+   圆点高 10px＝进度条高，不会被 .player-progress-bar 的 overflow 截掉。 */
+.player-moment-dot {
+    position: absolute;
+    top: 0;
+    width: 10px;
+    height: 10px;
+    margin-left: -5px;
+    padding: 0;
+    border: 1px solid #fff;
+    border-radius: 50%;
+    background: var(--theme-accent, #f9a8d4);
+    box-shadow: 0 0 6px rgba(249, 168, 212, 0.9);
+    cursor: pointer;
+    z-index: 2;
+}
+
+/* 时刻清单弹层里的行：时间占满剩余宽，跳转/删除用文字片。 */
+.player-moments-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.player-moment-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.player-moment-time {
+    flex: 1;
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text-1);
+}
+
 .player-progress-fill {
     height: 100%;
     width: 0%;

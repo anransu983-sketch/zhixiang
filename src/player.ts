@@ -42,6 +42,8 @@ import {
     saveFilterCreditsEnabled
 } from './lyrics';
 import type { ChorusRange, LyricLine } from './lyrics';
+import { addMoment, listMoments, removeMoment } from './moments';
+import { trackKey } from './playlists';
 import { openLiveWallpaperPicker, setWallpaperState } from './native/wallpaper-plugin';
 import { loadVisualToggles, saveVisualToggles, VISUAL_PRESETS, VisualStage } from './visuals';
 import { LyricDrops } from './lyric-drops';
@@ -120,6 +122,10 @@ let chorusMarkerEnabled = loadChorusMarkerEnabled();
 let currentChorusStartSec: number | null = null;
 let lastChorusFraction: number | null = null;
 let updateChorusMarkerPage: ((state: PlaybackState) => void) | null = null;
+
+// 时刻标记（第 4 项）：进度条小点的重绘钩子，buildPlayerPage 内赋值；
+// 打点/删点按钮在页内多处调用它（与副歌刻度的 updateChorusMarkerPage 同款）。
+let syncMomentDotsPage: ((state: PlaybackState) => void) | null = null;
 
 function setCurrentChorus(result: { chorusRanges?: ChorusRange[] }): void {
     const first = result.chorusRanges?.[0];
@@ -1009,10 +1015,111 @@ function buildPlayerPage(): HTMLElement {
     selectButton.type = 'button';
     selectButton.className = 'player-text-chip';
     selectButton.textContent = '选词';
-    bottomRow2.append(pasteButton, coverButton, selectButton, qualityBadge);
+    // 时刻标记（第 4 项）：「打点」在当前整秒记一个时刻（本地存、跟歌走），
+    // 「时刻·n」开清单：每条可点按跳转（seekTo）或单条删除。进度条上的
+    // 小点另见 syncMomentDots（点按同样跳转）。
+    const momentButton = document.createElement('button');
+    momentButton.type = 'button';
+    momentButton.className = 'player-text-chip';
+    momentButton.textContent = '打点';
+    const momentsListButton = document.createElement('button');
+    momentsListButton.type = 'button';
+    momentsListButton.className = 'player-text-chip';
+    momentsListButton.textContent = '时刻';
+    momentButton.addEventListener('click', () => {
+        const state = getCurrentState();
+        const track = state.track;
+        if (!track) {
+            flashButton(momentButton, '先放一首歌');
+            return;
+        }
+        const result = addMoment(track, state.currentTime);
+        if (result.status === 'added' && result.moment) {
+            flashButton(momentButton, `已记 ${formatTime(result.moment.sec)}`);
+        } else if (result.status === 'exists') {
+            flashButton(momentButton, '这一秒已有时刻');
+        } else if (result.status === 'full') {
+            flashButton(momentButton, '这首歌打点满了');
+        } else {
+            flashButton(momentButton, '播几秒再打点');
+        }
+        syncMomentDotsPage?.(getCurrentState());
+    });
+    bottomRow2.append(pasteButton, coverButton, selectButton, momentButton, momentsListButton, qualityBadge);
     content.appendChild(bottomRow);
     content.appendChild(bottomRow2);
     content.appendChild(sleepPicker);
+
+    // 时刻清单弹层（第 4 项，与手动贴词 sheet 同款 fixed 遮罩＋卡片）：
+    // 列当前曲的全部时刻，每行「时间 跳转 删除」；空态写明怎么打点。
+    const momentSheet = document.createElement('div');
+    momentSheet.className = 'player-sheet';
+    momentSheet.hidden = true;
+    const momentSheetCard = document.createElement('div');
+    momentSheetCard.className = 'player-sheet-card';
+    const momentSheetTitle = document.createElement('div');
+    momentSheetTitle.className = 'player-sheet-title';
+    momentSheetTitle.textContent = '时刻标记';
+    const momentSheetSong = document.createElement('div');
+    momentSheetSong.className = 'player-sheet-song';
+    const momentSheetList = document.createElement('div');
+    momentSheetList.className = 'player-moments-list';
+    const momentSheetEmpty = document.createElement('p');
+    momentSheetEmpty.className = 'player-note';
+    momentSheetEmpty.textContent = '还没打点：播到想记的地方点「打点」，就记在当前那一秒。';
+    const momentSheetClose = document.createElement('button');
+    momentSheetClose.type = 'button';
+    momentSheetClose.className = 'login-btn';
+    momentSheetClose.textContent = '关闭';
+    momentSheetClose.addEventListener('click', () => {
+        momentSheet.hidden = true;
+    });
+    momentSheetCard.append(momentSheetTitle, momentSheetSong, momentSheetList, momentSheetEmpty, momentSheetClose);
+    momentSheet.appendChild(momentSheetCard);
+    content.appendChild(momentSheet);
+    const renderMomentSheet = (): void => {
+        const track = getCurrentState().track;
+        momentSheetList.replaceChildren();
+        if (!track) {
+            momentSheetSong.textContent = '';
+            momentSheetEmpty.hidden = false;
+            return;
+        }
+        const key = trackKey(track);
+        momentSheetSong.textContent = `${track.title} · ${track.artist}`;
+        const moments = listMoments(track);
+        momentSheetEmpty.hidden = moments.length > 0;
+        for (const moment of moments) {
+            const row = document.createElement('div');
+            row.className = 'player-moment-row';
+            const time = document.createElement('span');
+            time.className = 'player-moment-time';
+            time.textContent = formatTime(moment.sec);
+            const jumpButton = document.createElement('button');
+            jumpButton.type = 'button';
+            jumpButton.className = 'player-text-chip';
+            jumpButton.textContent = '跳转';
+            jumpButton.addEventListener('click', () => {
+                seekTo(moment.sec);
+                momentSheet.hidden = true;
+            });
+            const deleteButton = document.createElement('button');
+            deleteButton.type = 'button';
+            deleteButton.className = 'player-text-chip';
+            deleteButton.textContent = '删除';
+            deleteButton.addEventListener('click', () => {
+                removeMoment(key, moment.id);
+                renderMomentSheet();
+                syncMomentDotsPage?.(getCurrentState());
+            });
+            row.append(time, jumpButton, deleteButton);
+            momentSheetList.appendChild(row);
+        }
+    };
+    momentsListButton.addEventListener('click', () => {
+        renderMomentSheet();
+        momentSheet.hidden = false;
+    });
 
     // ---- 选词模式：点歌词行切换选中，工具条负责复制/导出/完成 ----
     // 选中只存行下标集合；复制拼原文行（译文副行不带），日志只记行数
@@ -1738,12 +1845,59 @@ function buildPlayerPage(): HTMLElement {
     };
     updateChorusMarkerPage = updateChorusMarker;
 
+    // 时刻小点（第 4 项）：按当前曲的时刻列表在进度条上画圆点，点按
+    // seekTo 跳过去。只在「曲＋总时长＋时刻列表」签名变了才重建 DOM，
+    // timeupdate 每拍调用也不抖。签名里带总时长：切歌后 duration 先到、
+    // 时刻后到也能对上；无歌/无时长时清点、按钮文案回「时刻」。
+    // 与副歌刻度共存：副歌是 4px 宽黄色竖条（z-index 1），时刻是 10px
+    // 粉色圆点带白圈（z-index 2，形状＋颜色都不同）；两者位置撞上时
+    // 圆点盖在竖条上、点按仍跳到几乎同一秒，不另做避让。
+    const momentDots: HTMLButtonElement[] = [];
+    let lastMomentSignature = '';
+    const syncMomentDots = (state: PlaybackState): void => {
+        const track = state.track;
+        const moments = track ? listMoments(track) : [];
+        const signature = track
+            ? `${trackKey(track)}|${state.duration}|${moments.map((m) => `${m.id}:${m.sec}`).join(',')}`
+            : 'none';
+        momentsListButton.textContent = moments.length > 0 ? `时刻·${moments.length}` : '时刻';
+        if (signature === lastMomentSignature) {
+            return;
+        }
+        lastMomentSignature = signature;
+        for (const dot of momentDots) {
+            dot.remove();
+        }
+        momentDots.length = 0;
+        if (!track || state.duration <= 0) {
+            return;
+        }
+        for (const moment of moments) {
+            const fraction = (moment.sec * 1000) / state.duration;
+            if (!(fraction > 0.005 && fraction < 0.995)) {
+                continue;
+            }
+            const dot = document.createElement('button');
+            dot.type = 'button';
+            dot.className = 'player-moment-dot';
+            dot.style.left = `${(fraction * 100).toFixed(1)}%`;
+            dot.setAttribute('aria-label', `跳到时刻 ${formatTime(moment.sec)}`);
+            dot.addEventListener('click', () => {
+                seekTo(moment.sec);
+            });
+            progressBar.appendChild(dot);
+            momentDots.push(dot);
+        }
+    };
+    syncMomentDotsPage = syncMomentDots;
+
     const updateProgress = (state: PlaybackState): void => {
         if (!state.track) {
             progressFill.style.width = '0%';
             timeCurrent.textContent = '0:00';
             timeTotal.textContent = '0:00';
             updateChorusMarker(state);
+            syncMomentDots(state);
             return;
         }
         const totalMs = state.duration;
@@ -1753,6 +1907,7 @@ function buildPlayerPage(): HTMLElement {
         timeCurrent.textContent = formatTime(state.currentTime);
         timeTotal.textContent = totalMs > 0 ? formatTime(totalMs / 1000) : '0:00';
         updateChorusMarker(state);
+        syncMomentDots(state);
     };
 
     const refresh = (state: PlaybackState): void => {
