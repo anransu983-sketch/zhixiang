@@ -26,8 +26,18 @@
 //   格式只在读取时判。逐字行在解析后统一做末词补偿（见
 //   compensateLastWordDurations）。
 //
+// - 副歌区间（2026-11-25 实测）：只网易云一家有。Folia 的口径是两路
+//   可信源——网易云 /song/chorus 原生区间与 TTML songPart='chorus'，
+//   重复行猜的不算（进度条刻度只认可信源）。芷湘三路核过：LRCLIB 只回
+//   plainLyrics/syncedLyrics、无副歌字段；TTML 只接手动贴词、解析器不读
+//   songPart；网易云 /api/song/chorus 经 eapi 实测回 code 200、
+//   chorus:[{startTime,endTime}]（毫秒），与 Folia 的
+//   parseNeteaseChorusRanges 同字段同口径。本地歌的副歌随网易云补源
+//   一起进本地缓存（键升 v3）。
+//
 // 歌词行只展示、不做点击跳转：本模块不提供 seek 口子，播放页也不给
 // 歌词行绑任何点击处理。
+import { eapiRequest } from './sources/netease-eapi';
 
 import { isBiliSegmentTrack, resolveBiliSegmentMatch } from './bili-segment-match';
 import { getManualLyrics } from './manual-lyrics';
@@ -62,6 +72,17 @@ export interface LyricResult {
     lines: LyricLine[];
     // 有歌词时为 null；无歌词时是一句中文说明，播放页原样展示。
     note: string | null;
+    // 副歌区间（秒，只网易云 /song/chorus 实测接口给，见
+    // fetchNeteaseChorusRanges）：没有就不带，不估算。播放页进度条
+    // 只画第一段的起点刻度。
+    chorusRanges?: ChorusRange[];
+}
+
+// 副歌区间（秒）：与 Folia 的 ChorusRange 同口径（startTime/endTime，
+// Folia 侧是秒，网易云接口回的是毫秒，本模块换算后存秒）。
+export interface ChorusRange {
+    startSec: number;
+    endSec: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -250,6 +271,26 @@ export function loadFilterCreditsEnabled(): boolean {
 export function saveFilterCreditsEnabled(enabled: boolean): void {
     try {
         localStorage.setItem(FILTER_CREDITS_KEY, enabled ? '1' : '0');
+    } catch {
+        // 存不进只影响下次打开的默认值。
+    }
+}
+
+const CHORUS_MARKER_KEY = 'zx.player.chorusMarker.v1';
+
+// 进度条副歌标记开关：默认关（只有存过明确的 '1' 才开）。与
+// loadAutoMixEnabled 同口径。
+export function loadChorusMarkerEnabled(): boolean {
+    try {
+        return localStorage.getItem(CHORUS_MARKER_KEY) === '1';
+    } catch {
+        return false;
+    }
+}
+
+export function saveChorusMarkerEnabled(enabled: boolean): void {
+    try {
+        localStorage.setItem(CHORUS_MARKER_KEY, enabled ? '1' : '0');
     } catch {
         // 存不进只影响下次打开的默认值。
     }
@@ -774,11 +815,24 @@ interface LocalLyricCacheEntry {
     // 译文与 texts/times 同序，没有译文的行存空串；整字段可缺（旧存档
     // 与无译文来源都不带），恢复时空串不挂。
     translations?: string[];
+    // 副歌区间（秒）：网易云补源命中时随歌词一起存（只有网易云给，
+    // LRCLIB 路不带）；恢复时原样回给播放页画刻度。
+    chorusRanges?: ChorusRange[];
+}
+
+// 本地缓存键：歌名（cleanLocalTitle 剥后缀后）＋歌手＋时长秒。
+function localLyricCacheKey(
+    title: string,
+    artist: string,
+    durationSec: number | null
+): string {
+    return `${artist}|${title}|${durationSec ?? ''}`;
 }
 
 // 0.1.89：v1 键下的旧 miss 会挡住 0.1.85 后加的网易云补源（缓存查在补源之前，
 // 7 天 TTL 内直接回空），升 v2 让旧 miss 全作废、重新走网易云匹配。
-const LOCAL_LYRIC_CACHE_KEY = 'zx_lrclib_local_v2';
+// 本项：LocalLyricCacheEntry 加副歌字段，旧条目无该字段，升 v3 全作废重建。
+const LOCAL_LYRIC_CACHE_KEY = 'zx_lrclib_local_v3';
 const LOCAL_LYRIC_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const LOCAL_LYRIC_CACHE_MAX = 200;
 
@@ -846,7 +900,7 @@ export async function fetchLocalLyrics(track: Track): Promise<LyricResult | null
         track.artist === '未知歌手' || track.artist === '<unknown>' ? '' : track.artist;
     const durationSec =
         track.durationMs && track.durationMs > 0 ? Math.round(track.durationMs / 1000) : null;
-    const key = `${artist}|${title}|${durationSec ?? ''}`;
+    const key = localLyricCacheKey(title, artist, durationSec);
     const cache = loadLocalLyricCache();
     const cached = cache[key];
     if (cached && Date.now() - cached.at < LOCAL_LYRIC_CACHE_TTL_MS) {
@@ -875,7 +929,16 @@ export async function fetchLocalLyrics(track: Track): Promise<LyricResult | null
                 return line;
             })
             .filter((line) => line.text.length > 0);
-        return lines.length > 0 ? { lines, note: null } : null;
+        if (lines.length === 0) {
+            return null;
+        }
+        return {
+            lines,
+            note: null,
+            ...(cached.chorusRanges && cached.chorusRanges.length > 0
+                ? { chorusRanges: cached.chorusRanges }
+                : {})
+        };
     }
     // 0.1.85 网易云补源（在 LRCLIB 之前）：按歌名＋歌手搜网易云，挑标题
     // 歌手对得上且时长最接近的一条。时长差超 10 秒时不用它的同步词
@@ -905,10 +968,20 @@ export async function fetchLocalLyrics(track: Track): Promise<LyricResult | null
                         texts: neteaseLyric.lines.map((line) => line.text),
                         times: neteaseLyric.lines.map((line) => line.timeMs),
                         // 译文一并进缓存，否则本地补源第二遍播放就丢译文。
-                        translations: neteaseLyric.lines.map((line) => line.translation ?? '')
+                        translations: neteaseLyric.lines.map((line) => line.translation ?? ''),
+                        // 副歌一并进缓存，否则本地补源第二遍播放就没刻度。
+                        ...(neteaseLyric.chorusRanges && neteaseLyric.chorusRanges.length > 0
+                            ? { chorusRanges: neteaseLyric.chorusRanges }
+                            : {})
                     };
                     saveLocalLyricCache(cache);
-                    return { lines: neteaseLyric.lines, note: null };
+                    return {
+                        lines: neteaseLyric.lines,
+                        note: null,
+                        ...(neteaseLyric.chorusRanges && neteaseLyric.chorusRanges.length > 0
+                            ? { chorusRanges: neteaseLyric.chorusRanges }
+                            : {})
+                    };
                 }
             }
         } else {
@@ -1001,10 +1074,101 @@ export async function fetchLocalLyrics(track: Track): Promise<LyricResult | null
     return null;
 }
 
+// 网易云副歌区间（2026-11-25 沙箱实测，无登录、无 cookie）：
+// eapi POST https://interface.music.163.com/eapi/song/chorus，
+// 业务参数 {ids:'[<歌曲 id>]'}，回 {code:200, chorus:[{id,
+// startTime,endTime,ugcLocked}], data:[...]}，时间是毫秒。
+// 与 Folia 的 parseNeteaseChorusRanges 同字段同口径（读 chorus||data，
+// 毫秒转秒、只留 end>start 的段）。weapi 同路径回 {"msg":"参数错误",
+// "code":400}，不用。失败、非 200、无区间一律回 []，调用方按无副歌处理。
+async function fetchNeteaseChorusRanges(songId: string): Promise<ChorusRange[]> {
+    const id = Number(songId);
+    if (!Number.isFinite(id) || id <= 0) {
+        return [];
+    }
+    try {
+        const response = await eapiRequest('/api/song/chorus', {
+            ids: JSON.stringify([id])
+        });
+        if (response.status !== 200) {
+            return [];
+        }
+        const parsed = JSON.parse(response.body) as {
+            code?: unknown;
+            chorus?: unknown;
+            data?: unknown;
+        };
+        if (parsed.code !== 200) {
+            return [];
+        }
+        const ranges = parsed.chorus ?? parsed.data;
+        if (!Array.isArray(ranges)) {
+            return [];
+        }
+        return ranges
+            .map((range) => {
+                const item = range as { startTime?: unknown; endTime?: unknown };
+                return {
+                    startSec: typeof item.startTime === 'number' ? item.startTime / 1000 : NaN,
+                    endSec: typeof item.endTime === 'number' ? item.endTime / 1000 : NaN
+                };
+            })
+            .filter(
+                (range) =>
+                    Number.isFinite(range.startSec) &&
+                    Number.isFinite(range.endSec) &&
+                    range.endSec > range.startSec
+            );
+    } catch {
+        return [];
+    }
+}
+
+// 某首歌的第一段副歌起点（秒）：网易云曲直查 /song/chorus；其余源
+// 只读本地缓存（网易云补源时随歌词一起存过才有），不另发请求。
+// 拿不到回 null，调用方按无副歌处理（从头播、不估算）。
+export async function fetchChorusStartSec(track: Track): Promise<number | null> {
+    const prefix = 'netease:';
+    if (track.id.startsWith(prefix) && track.id.length > prefix.length) {
+        const ranges = await fetchNeteaseChorusRanges(track.id.slice(prefix.length));
+        const first = ranges[0];
+        return first && Number.isFinite(first.startSec) && first.startSec > 0
+            ? first.startSec
+            : null;
+    }
+    const cached = getLocalCachedChorusRanges(track);
+    const first = cached?.[0];
+    return first && Number.isFinite(first.startSec) && first.startSec > 0
+        ? first.startSec
+        : null;
+}
+
+// 本地缓存里的副歌区间（只读，不联网）：本地歌走网易云补源时随歌词
+// 一起存；TTL 内有效才回，过期/无缓存回 null。
+export function getLocalCachedChorusRanges(track: Track): ChorusRange[] | null {
+    const title = cleanLocalTitle(track.title);
+    if (!title) {
+        return null;
+    }
+    const artist =
+        track.artist === '未知歌手' || track.artist === '<unknown>' ? '' : track.artist;
+    const durationSec =
+        track.durationMs && track.durationMs > 0 ? Math.round(track.durationMs / 1000) : null;
+    const cached = loadLocalLyricCache()[localLyricCacheKey(title, artist, durationSec)];
+    if (!cached || Date.now() - cached.at >= LOCAL_LYRIC_CACHE_TTL_MS) {
+        return null;
+    }
+    return cached.chorusRanges && cached.chorusRanges.length > 0
+        ? cached.chorusRanges
+        : null;
+}
+
 // 网易云歌词直取（按歌曲 id）：网易云源与本地网易云补源共用。
 // 成功回 { lines, note: null }；无词或失败回带说明的空结果，调用方按需处理。
 async function fetchNeteaseLyricById(songId: string): Promise<LyricResult> {
     try {
+        // 副歌与歌词并行取：eapi 一次往返，失败回 [] 不拖慢歌词。
+        const chorusPromise = fetchNeteaseChorusRanges(songId);
         const params = new URLSearchParams({
             id: songId,
             lv: '-1',
@@ -1044,7 +1208,12 @@ async function fetchNeteaseLyricById(songId: string): Promise<LyricResult> {
                     console.log(`[Lyrics] 网易云译文 ${attachedTrans}/${yrcLines.length} 行`);
                 }
             }
-            return { lines: yrcLines, note: null };
+            const chorusRanges = await chorusPromise;
+            return {
+                lines: yrcLines,
+                note: null,
+                ...(chorusRanges.length > 0 ? { chorusRanges } : {})
+            };
         }
         let attached = 0;
         const plain = (text: string): string => text.replace(/\s+/g, '');
@@ -1068,7 +1237,12 @@ async function fetchNeteaseLyricById(songId: string): Promise<LyricResult> {
                 console.log(`[Lyrics] 网易云译文 ${attachedTrans}/${lines.length} 行`);
             }
         }
-        return { lines, note: null };
+        const chorusRanges = await chorusPromise;
+        return {
+            lines,
+            note: null,
+            ...(chorusRanges.length > 0 ? { chorusRanges } : {})
+        };
     } catch {
         return { lines: [], note: '歌词暂时拿不到，只显示歌名与歌手。' };
     }

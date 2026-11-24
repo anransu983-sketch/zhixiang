@@ -1472,10 +1472,28 @@ body {
 }
 
 .player-progress-bar {
+    position: relative;
     height: 10px;
     border-radius: 5px;
     background: rgba(0, 0, 0, 0.45);
     overflow: hidden;
+}
+
+/* 副歌刻度（本项）：第一段副歌起点的可点刻度，4px 宽、居中于起点， */
+/* 开关默认关、无副歌数据时隐藏（hidden 属性控制）。 */
+.player-chorus-marker {
+    position: absolute;
+    top: 0;
+    width: 4px;
+    height: 100%;
+    margin-left: -2px;
+    padding: 0;
+    border: none;
+    border-radius: 2px;
+    background: #ffd54a;
+    box-shadow: 0 0 6px rgba(255, 213, 74, 0.9);
+    cursor: pointer;
+    z-index: 1;
 }
 
 .player-progress-fill {

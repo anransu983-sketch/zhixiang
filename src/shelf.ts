@@ -11,6 +11,7 @@
 
 import { getCurrentState, onTrackChange, playQueue, seekTo } from './playback';
 import type { PlaybackState } from './playback';
+import { fetchChorusStartSec } from './lyrics';
 import { friendlyPosterError, posterFallbackBackground, posterHue } from './posters';
 import type { PosterSectionDefinition } from './posters';
 import type { Poster } from './types';
@@ -155,10 +156,15 @@ export function renderShelfLayer(
             try {
                 await playQueue(picked.poster.tracks, picked.index);
                 if (chorus) {
-                    // 高潮点按 45% 估算（无副歌检测）；流不支持跳转时从头播。
+                    // 有副歌数据跳副歌起点（网易云 /song/chorus 实测
+                    // 接口；本地曲只读已缓存的补源副歌），拿不到就
+                    // 不跳转、从头播，不再按 45% 估算。
                     const track = picked.poster.tracks[picked.index];
-                    if (track && track.durationMs && track.durationMs > 0) {
-                        seekTo((track.durationMs * 0.45) / 1000);
+                    if (track) {
+                        const startSec = await fetchChorusStartSec(track);
+                        if (startSec !== null) {
+                            seekTo(startSec);
+                        }
                     }
                 }
                 playNotice.hidden = true;

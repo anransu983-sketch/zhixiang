@@ -24,6 +24,7 @@ import {
     pause,
     previous,
     refreshAutoMix,
+    seekTo,
     setRepeatMode,
     togglePlay
 } from './playback';
@@ -35,10 +36,12 @@ import {
     fetchLyrics,
     filterCreditLines,
     findCurrentLineIndex,
+    loadChorusMarkerEnabled,
     loadFilterCreditsEnabled,
+    saveChorusMarkerEnabled,
     saveFilterCreditsEnabled
 } from './lyrics';
-import type { LyricLine } from './lyrics';
+import type { ChorusRange, LyricLine } from './lyrics';
 import { openLiveWallpaperPicker, setWallpaperState } from './native/wallpaper-plugin';
 import { loadVisualToggles, saveVisualToggles, VISUAL_PRESETS, VisualStage } from './visuals';
 import { LyricDrops } from './lyric-drops';
@@ -108,6 +111,23 @@ function reapplyLyricFilter(): void {
 let currentLineIndex = -1;
 let currentSungWord = -1;
 let lyricGeneration = 0;
+
+// 副歌刻度（本项）：当前曲第一段副歌起点（秒），没有为 null；开关
+// 默认关。起点只按 fetchLyrics 回的 chorusRanges 置（网易云直取或
+// 本地缓存补源），不另发请求、不估算。updateChorusMarkerPage 由
+// buildPlayerPage 在建页时挂上刻度定位函数。
+let chorusMarkerEnabled = loadChorusMarkerEnabled();
+let currentChorusStartSec: number | null = null;
+let lastChorusFraction: number | null = null;
+let updateChorusMarkerPage: ((state: PlaybackState) => void) | null = null;
+
+function setCurrentChorus(result: { chorusRanges?: ChorusRange[] }): void {
+    const first = result.chorusRanges?.[0];
+    currentChorusStartSec =
+        first && Number.isFinite(first.startSec) && first.startSec > 0 ? first.startSec : null;
+    lastChorusFraction = null;
+    updateChorusMarkerPage?.(getCurrentState());
+}
 
 const FAVORITES_KEY = 'zx_favorites_v1';
 
@@ -474,6 +494,19 @@ function buildPlayerPage(): HTMLElement {
     const progressFill = document.createElement('div');
     progressFill.className = 'player-progress-fill';
     progressBar.appendChild(progressFill);
+    // 副歌刻度（本项）：第一段副歌起点的可点刻度，开关默认关、无副歌
+    // 数据时隐藏；点按跳到副歌起点（seekTo，流不支持跳转时静默不动）。
+    const chorusMarker = document.createElement('button');
+    chorusMarker.type = 'button';
+    chorusMarker.className = 'player-chorus-marker';
+    chorusMarker.setAttribute('aria-label', '跳到副歌');
+    chorusMarker.hidden = true;
+    chorusMarker.addEventListener('click', () => {
+        if (currentChorusStartSec !== null) {
+            seekTo(currentChorusStartSec);
+        }
+    });
+    progressBar.appendChild(chorusMarker);
     const progressTimes = document.createElement('div');
     progressTimes.className = 'player-progress-times';
     const timeCurrent = document.createElement('span');
@@ -734,6 +767,7 @@ function buildPlayerPage(): HTMLElement {
                 return;
             }
             setLyricLinesFromSource(result.lines);
+            setCurrentChorus(result);
             renderLyrics(result.note);
         });
     };
@@ -1341,6 +1375,23 @@ function buildPlayerPage(): HTMLElement {
     automixLabel.append(automixBox, document.createTextNode('AutoMix 节拍过渡'));
     visualPad.appendChild(automixLabel);
 
+    // 进度条副歌标记（本项）：默认关。开后进度条上出现第一段副歌起点
+    // 的刻度，点按跳过去；只有网易云副歌数据（直取或本地缓存补源）
+    // 的曲才有刻度，其余曲没有、不估算。
+    const chorusMarkerLabel = document.createElement('label');
+    chorusMarkerLabel.className = 'player-toggle';
+    const chorusMarkerBox = document.createElement('input');
+    chorusMarkerBox.type = 'checkbox';
+    chorusMarkerBox.checked = chorusMarkerEnabled;
+    chorusMarkerBox.addEventListener('change', () => {
+        chorusMarkerEnabled = chorusMarkerBox.checked;
+        saveChorusMarkerEnabled(chorusMarkerEnabled);
+        lastChorusFraction = null;
+        updateChorusMarker(getCurrentState());
+    });
+    chorusMarkerLabel.append(chorusMarkerBox, document.createTextNode('进度条副歌标记'));
+    visualPad.appendChild(chorusMarkerLabel);
+
     // 动画速率（0.5×–2.0×，步进 0.1）：CSS 转场/歌词动画走时长
     // 变量、两块画布走 AnimClock 缩放（anim-rate.ts）；系统减动效
     // 优先于本设置（生效速率钳 ≤1.0，在 anim-rate.ts 内处理）。
@@ -1661,11 +1712,38 @@ function buildPlayerPage(): HTMLElement {
     };
     updateDegradedNotePage = updateDegradedNote;
 
+    // 副歌刻度定位（本项）：只在开关开且当前曲有副歌起点时画，位置
+    // 按 duration 算；太靠两端等于没信息，不画（与 Folia 的
+    // EDGE_MARGIN 同口径）。fraction 不变时不重写样式，timeupdate
+    // 每拍调用也不抖。由模块层的 setCurrentChorus 经
+    // updateChorusMarkerPage 驱动，updateProgress 每拍也跟一次
+    // （切歌后 duration 先到、副歌后到也能对上）。
+    const updateChorusMarker = (state: PlaybackState): void => {
+        const totalMs = state.track ? state.duration : 0;
+        const fraction =
+            chorusMarkerEnabled && currentChorusStartSec !== null && totalMs > 0
+                ? (currentChorusStartSec * 1000) / totalMs
+                : null;
+        const valid = fraction !== null && fraction > 0.01 && fraction < 0.99 ? fraction : null;
+        if (valid === lastChorusFraction) {
+            return;
+        }
+        lastChorusFraction = valid;
+        if (valid === null) {
+            chorusMarker.hidden = true;
+            return;
+        }
+        chorusMarker.hidden = false;
+        chorusMarker.style.left = `${(valid * 100).toFixed(1)}%`;
+    };
+    updateChorusMarkerPage = updateChorusMarker;
+
     const updateProgress = (state: PlaybackState): void => {
         if (!state.track) {
             progressFill.style.width = '0%';
             timeCurrent.textContent = '0:00';
             timeTotal.textContent = '0:00';
+            updateChorusMarker(state);
             return;
         }
         const totalMs = state.duration;
@@ -1674,6 +1752,7 @@ function buildPlayerPage(): HTMLElement {
         progressFill.style.width = `${percent.toFixed(1)}%`;
         timeCurrent.textContent = formatTime(state.currentTime);
         timeTotal.textContent = totalMs > 0 ? formatTime(totalMs / 1000) : '0:00';
+        updateChorusMarker(state);
     };
 
     const refresh = (state: PlaybackState): void => {
@@ -2048,17 +2127,21 @@ function buildPlayerPage(): HTMLElement {
         const track = state.track;
         if (!track) {
             clearLyricLines();
+            setCurrentChorus({});
             if (visible) {
                 renderLyrics('还没播放任何歌曲，点一首歌开始播放。');
             }
             void pushWallpaperState();
             return;
         }
+        // 先清掉上一首的副歌刻度，歌词回来了再按新曲置。
+        setCurrentChorus({});
         void fetchLyrics(track).then((result) => {
             if (generation !== lyricGeneration) {
                 return;
             }
             setLyricLinesFromSource(result.lines);
+            setCurrentChorus(result);
             if (overlay !== null && !overlay.hidden) {
                 renderLyrics(result.note);
             }
@@ -2165,6 +2248,7 @@ function refreshFromState(state: PlaybackState): void {
     const track = state.track;
     if (!track || !renderLyrics) {
         clearLyricLines();
+        setCurrentChorus({});
         renderLyrics?.('还没播放任何歌曲，点一首歌开始播放。');
         return;
     }
@@ -2173,6 +2257,7 @@ function refreshFromState(state: PlaybackState): void {
             return;
         }
         setLyricLinesFromSource(result.lines);
+        setCurrentChorus(result);
         renderLyrics(result.note);
         const index = findCurrentLineIndex(lyricLines, getCurrentState().currentTime * 1000);
         currentLineIndex = index;
