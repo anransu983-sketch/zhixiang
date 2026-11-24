@@ -40,6 +40,7 @@ import { checkAllFilesAccess, getLocalCoverDataUrl, getLocalCoverFromNetease, ge
 import { addMyImportIds, loadMyImportIds, removeMyImportId } from './my-imports';
 import { biliQrImageUrl, checkBiliQr, clearBiliSession, fetchBiliDailyTracks, fetchBiliFavFolders, fetchBiliFavTracks, fetchBiliQrKey, loadBiliSession, validateBiliSession, type BiliFavFolder } from './sources/bilibili-session';
 import { addTrackToPlaylist, createPlaylist, deletePlaylist, loadPlaylists, removeTrackFromPlaylist, renamePlaylist, savePlaylistOrder, trackKey } from './playlists';
+import { applyPlaylistImport, exportPlaylistsToDownloads, parsePlaylistExportFile, playlistSourceLabel, type PlaylistImportPreview } from './playlist-export';
 import { addToStash, clearStash, groupStashBySource, isInStash, loadStash, removeFromStash, sourceLabel } from './stash';
 import { loadSearchHistory, recordSearchHistory } from './search-history';
 import { checkForUpdate, type UpdateCheckResult } from './update';
@@ -3352,6 +3353,171 @@ function renderPlaylistsSection(): HTMLElement {
     createCancel.textContent = '✕';
     createRow.append(createInput, createOk, createCancel);
     section.appendChild(createRow);
+
+    // 第 5 项：自建歌单 JSON 导出／导入——导出全部歌单到下载目录；
+    // 导入先解析校验、逐条标出问题再确认，确认前什么都不写。
+    // 选文件走歌词备份同款隐藏 <input type=file>，不新要权限。
+    const ioRow = document.createElement('div');
+    ioRow.className = 'pl-io-row';
+    const exportJsonButton = document.createElement('button');
+    exportJsonButton.type = 'button';
+    exportJsonButton.className = 'login-btn';
+    exportJsonButton.textContent = '导出 JSON';
+    const importJsonButton = document.createElement('button');
+    importJsonButton.type = 'button';
+    importJsonButton.className = 'login-btn';
+    importJsonButton.textContent = '导入 JSON';
+    ioRow.append(exportJsonButton, importJsonButton);
+    section.appendChild(ioRow);
+
+    const playlistFileInput = document.createElement('input');
+    playlistFileInput.type = 'file';
+    playlistFileInput.accept = '.json,application/json';
+    playlistFileInput.hidden = true;
+    section.appendChild(playlistFileInput);
+
+    const ioNotice = document.createElement('p');
+    ioNotice.className = 'source-notice';
+    ioNotice.hidden = true;
+    section.appendChild(ioNotice);
+
+    const previewBox = document.createElement('div');
+    previewBox.className = 'pl-import-preview';
+    previewBox.hidden = true;
+    section.appendChild(previewBox);
+
+    let pendingImport: PlaylistImportPreview | null = null;
+    const setIoBusy = (busy: boolean): void => {
+        exportJsonButton.disabled = busy;
+        importJsonButton.disabled = busy;
+    };
+    const closePreview = (): void => {
+        pendingImport = null;
+        previewBox.hidden = true;
+    };
+    const showIoNotice = (text: string): void => {
+        ioNotice.textContent = text;
+        ioNotice.hidden = false;
+    };
+    const renderImportPreview = (preview: PlaylistImportPreview): void => {
+        previewBox.replaceChildren();
+        const summary = document.createElement('p');
+        summary.className = 'source-notice';
+        const sourceParts = (Object.keys(preview.sourceCounts) as Array<keyof typeof preview.sourceCounts>)
+            .filter((source) => preview.sourceCounts[source] > 0)
+            .map((source) => `${playlistSourceLabel(source)} ${preview.sourceCounts[source]} 首`);
+        summary.textContent =
+            `文件里有 ${preview.filePlaylists} 个歌单、共 ${preview.totalTracks} 首：` +
+            `可导入 ${preview.validTracks} 首` +
+            (sourceParts.length > 0 ? `（${sourceParts.join(' · ')}）` : '') +
+            `，${preview.invalid.length} 首有问题、${preview.duplicates.length} 首重复` +
+            (preview.skippedPlaylists.length > 0 ? `，${preview.skippedPlaylists.length} 个歌单整单跳过` : '') +
+            '。确认后按下面名字新建歌单导入。';
+        previewBox.appendChild(summary);
+        const targetLine = document.createElement('p');
+        targetLine.className = 'source-notice';
+        targetLine.textContent =
+            '新建歌单：' +
+            preview.targets
+                .map((target) =>
+                    target.targetName === target.sourceName
+                        ? `「${target.targetName}」（${target.tracks.length} 首）`
+                        : `「${target.sourceName}」→「${target.targetName}」（${target.tracks.length} 首，已有同名）`
+                )
+                .join('、');
+        previewBox.appendChild(targetLine);
+        const issueLines: string[] = [
+            ...preview.invalid.map(
+                (issue) => `「${issue.playlistName}」${issue.title}：${issue.reason}`
+            ),
+            ...preview.duplicates.map(
+                (issue) => `「${issue.playlistName}」${issue.title}：${issue.reason}`
+            ),
+            ...preview.skippedPlaylists.map(
+                (skipped) => `歌单「${skipped.name}」：${skipped.reason}`
+            )
+        ];
+        if (issueLines.length > 0) {
+            const issueList = document.createElement('ul');
+            issueList.className = 'pl-import-list';
+            for (const line of issueLines) {
+                const item = document.createElement('li');
+                item.textContent = line;
+                issueList.appendChild(item);
+            }
+            previewBox.appendChild(issueList);
+        }
+        const actions = document.createElement('div');
+        actions.className = 'pl-import-actions';
+        const confirmButton = document.createElement('button');
+        confirmButton.type = 'button';
+        confirmButton.className = 'login-btn';
+        confirmButton.textContent = '确认导入';
+        confirmButton.disabled = preview.validTracks === 0;
+        const cancelButton = document.createElement('button');
+        cancelButton.type = 'button';
+        cancelButton.className = 'login-btn login-btn-ghost';
+        cancelButton.textContent = '取消';
+        actions.append(confirmButton, cancelButton);
+        previewBox.appendChild(actions);
+        confirmButton.addEventListener('click', () => {
+            if (!pendingImport) {
+                return;
+            }
+            const result = applyPlaylistImport(pendingImport);
+            closePreview();
+            showIoNotice(
+                `已导入 ${result.created} 个歌单，新加 ${result.added} 首` +
+                    (result.exists > 0 ? `，${result.exists} 首已在里面` : '')
+            );
+            refresh();
+        });
+        cancelButton.addEventListener('click', () => {
+            closePreview();
+            showIoNotice('已取消导入，什么都没改');
+        });
+        previewBox.hidden = false;
+    };
+
+    exportJsonButton.addEventListener('click', () => {
+        void (async () => {
+            setIoBusy(true);
+            try {
+                const result = await exportPlaylistsToDownloads();
+                showIoNotice(
+                    `已导出 ${result.playlists} 个歌单、${result.tracks} 首到下载目录：${result.filename}`
+                );
+            } catch (error) {
+                showIoNotice(error instanceof Error ? error.message : '导出失败，请稍后再试');
+            } finally {
+                setIoBusy(false);
+            }
+        })();
+    });
+    importJsonButton.addEventListener('click', () => {
+        playlistFileInput.click();
+    });
+    playlistFileInput.addEventListener('change', () => {
+        const file = playlistFileInput.files?.[0];
+        playlistFileInput.value = '';
+        if (!file) {
+            return;
+        }
+        void (async () => {
+            setIoBusy(true);
+            try {
+                const preview = await parsePlaylistExportFile(file);
+                pendingImport = preview;
+                ioNotice.hidden = true;
+                renderImportPreview(preview);
+            } catch (error) {
+                closePreview();
+                showIoNotice(error instanceof Error ? error.message : '歌单文件读不出来，换个文件再试');
+            } finally {
+                setIoBusy(false);
+            }
+        })();
+    });
 
     const notice = document.createElement('p');
     notice.className = 'source-notice';

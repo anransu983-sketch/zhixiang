@@ -4537,6 +4537,38 @@ body.perf-mode * {
     opacity: 0.55;
     cursor: default;
 }
+/* 第 5 项：自建歌单 JSON 导出／导入行与导入预览。 */
+.pl-io-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+    flex-wrap: wrap;
+}
+.pl-import-preview {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--hairline);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.06);
+}
+.pl-import-preview[hidden] {
+    display: none;
+}
+.pl-import-list {
+    margin: 8px 0 0;
+    padding-left: 18px;
+    font-size: 13px;
+    color: var(--text-3);
+}
+.pl-import-list li {
+    margin-top: 2px;
+}
+.pl-import-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+    flex-wrap: wrap;
+}
 
 /* 0.1.111 B 站扫码二维码 */
 .pl-qr-wrap {
