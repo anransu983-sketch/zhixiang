@@ -56,7 +56,7 @@ import {
     startRoaming
 } from './roaming';
 import type { RoamScene } from './roaming';
-import { fetchNeteaseDailySongs } from './sources/netease';
+import { fetchNeteaseDailySongs, fetchNeteasePlaylistTracks } from './sources/netease';
 import { fetchNeteaseListeningRank, type NeteaseRankRange } from './sources/netease-rank';
 import { fetchYtmDailyTracks, probeYtmHome } from './sources/ytm';
 import {
@@ -2878,6 +2878,52 @@ function renderPosterCard(poster: Poster, playNotice: HTMLElement): HTMLElement 
     tape.append(reelLeft, tapeBar, reelRight);
     card.appendChild(tape);
 
+    // 第 2 项：网易云榜单转存——海报卡片右上角“存为歌单”，点后调歌单
+    // 详情取全量曲目（海报本身只带前 20 首），再进整组加入歌单 sheet。
+    // 只有网易云榜单海报（id 形如 netease-chart:<歌单 id>）才挂；卡片
+    // 本身就是 <button>，这里用 span 做控件、点按阻止冒泡，免得触发播放。
+    const chartId = poster.id.startsWith('netease-chart:')
+        ? Number(poster.id.slice('netease-chart:'.length))
+        : NaN;
+    if (Number.isFinite(chartId) && chartId > 0) {
+        const save = document.createElement('span');
+        save.className = 'poster-save';
+        save.setAttribute('role', 'button');
+        save.textContent = '存为歌单';
+        let saving = false;
+        save.addEventListener('click', (event) => {
+            event.stopPropagation();
+            event.preventDefault();
+            if (saving) {
+                return;
+            }
+            saving = true;
+            save.classList.add('is-busy');
+            save.textContent = '转存中…';
+            void (async () => {
+                try {
+                    const tracks = await fetchNeteasePlaylistTracks(chartId);
+                    if (tracks.length === 0) {
+                        playNotice.textContent = '这个榜单是空的';
+                        playNotice.hidden = false;
+                        return;
+                    }
+                    playNotice.hidden = true;
+                    openPickPlaylistForTracks(tracks);
+                } catch (error) {
+                    playNotice.textContent =
+                        error instanceof Error ? error.message : '网易云歌单暂时拿不到，请稍后重试';
+                    playNotice.hidden = false;
+                } finally {
+                    saving = false;
+                    save.classList.remove('is-busy');
+                    save.textContent = '存为歌单';
+                }
+            })();
+        });
+        card.appendChild(save);
+    }
+
     card.addEventListener('click', () => {
         void (async () => {
             try {
@@ -3800,13 +3846,35 @@ function openAddToPlaylistSheet(track: Track): void {
     renderSheetList();
 }
 
+// 第 2 项：转存可播源分流——自建歌单只收本机能播的四源；其它源的
+// 曲目不静默丢弃，由调用方逐首列出。当前四源全覆盖，skipped 正常
+// 为空；以后新源进来先走这里分流。
+const PLAYABLE_SOURCES: ReadonlySet<Track['source']> = new Set([
+    'local',
+    'netease',
+    'ytm',
+    'bilibili'
+]);
+
+function partitionPlayableTracks(tracks: Track[]): { playable: Track[]; skipped: Track[] } {
+    const playable: Track[] = [];
+    const skipped: Track[] = [];
+    for (const track of tracks) {
+        (PLAYABLE_SOURCES.has(track.source) ? playable : skipped).push(track);
+    }
+    return { playable, skipped };
+}
+
 // 0.1.132 整组加入歌单 sheet：速记簿某一组（或全部）整组加进选定歌单。
 // 已在歌单里的逐个跳过（addTrackToPlaylist 回 exists），结果写在
 // sheet 内 status 里，不关 sheet 也看得见；底部可新建歌单并整组加入。
+// 第 2 项：进 sheet 前先按可播源分流，只转 playable；skipped 逐首列在
+// sheet 里，不静默丢。
 function openPickPlaylistForTracks(tracks: Track[]): void {
     if (tracks.length === 0) {
         return;
     }
+    const { playable, skipped } = partitionPlayableTracks(tracks);
     const backdrop = document.createElement('div');
     backdrop.className = 'zx-color-sheet-backdrop';
     const sheet = document.createElement('div');
@@ -3829,17 +3897,30 @@ function openPickPlaylistForTracks(tracks: Track[]): void {
     top.appendChild(cancel);
     const title = document.createElement('span');
     title.className = 'zx-color-sheet-title';
-    title.textContent = `整组加入歌单（${tracks.length} 首）`;
+    title.textContent = `整组加入歌单（${playable.length} 首）`;
     top.appendChild(title);
     sheet.appendChild(top);
     const status = document.createElement('p');
     status.className = 'source-notice stash-sheet-status';
     status.hidden = true;
     sheet.appendChild(status);
+    if (skipped.length > 0) {
+        const skippedNotice = document.createElement('p');
+        skippedNotice.className = 'source-notice stash-sheet-status';
+        skippedNotice.textContent =
+            `以下 ${skipped.length} 首本机播不了，未转入：` +
+            skipped.map((track) => `${track.title}（${track.artist}）`).join('、');
+        sheet.appendChild(skippedNotice);
+    }
     const addAllTo = (playlistId: string, playlistName: string): void => {
+        if (playable.length === 0) {
+            status.textContent = '这组里没有能转存的歌';
+            status.hidden = false;
+            return;
+        }
         let added = 0;
         let exists = 0;
-        for (const track of tracks) {
+        for (const track of playable) {
             const result = addTrackToPlaylist(playlistId, track);
             if (result === 'added') {
                 added += 1;
@@ -5354,10 +5435,24 @@ function openBiliFavPage(folder: BiliFavFolder): void {
     pageSub.className = 'daily-page-sub';
     pageSub.textContent = '正在加载…';
     page.appendChild(pageSub);
+    // 第 2 项：收藏夹转存——曲目由 fetchBiliFavTracks（bilibili-session.ts
+    // 已有收藏夹详情取曲逻辑，x/v3/fav/resource/list）取回，整夹存为自建歌单。
+    const saveButton = document.createElement('button');
+    saveButton.type = 'button';
+    saveButton.className = 'login-btn';
+    saveButton.textContent = '存为我的歌单';
+    saveButton.disabled = true;
+    page.appendChild(saveButton);
     const trackList = document.createElement('ul');
     trackList.className = 'track-list';
     page.appendChild(trackList);
     document.body.appendChild(page);
+    let loadedTracks: Track[] = [];
+    saveButton.addEventListener('click', () => {
+        if (loadedTracks.length > 0) {
+            openPickPlaylistForTracks(loadedTracks);
+        }
+    });
     void (async () => {
         try {
             const tracks = await fetchBiliFavTracks(folder.id);
@@ -5365,6 +5460,8 @@ function openBiliFavPage(folder: BiliFavFolder): void {
                 pageSub.textContent = '这个夹子是空的';
                 return;
             }
+            loadedTracks = tracks;
+            saveButton.disabled = false;
             pageSub.textContent = `共 ${tracks.length} 条 · 点歌播本夹`;
             tracks.forEach((track, index) => {
                 const row = document.createElement('li');
@@ -5660,6 +5757,15 @@ function openBiliChartPage(zone: BiliChartZone, tracks: Track[]): void {
         void playQueue(tracks, 0);
     });
     page.appendChild(pagePlayAll);
+    // 第 2 项：榜单转存——本榜曲目已由 fetchBilibiliChart 取回，整榜存为自建歌单。
+    const pageSaveButton = document.createElement('button');
+    pageSaveButton.type = 'button';
+    pageSaveButton.className = 'login-btn';
+    pageSaveButton.textContent = '存为我的歌单';
+    pageSaveButton.addEventListener('click', () => {
+        openPickPlaylistForTracks(tracks);
+    });
+    page.appendChild(pageSaveButton);
     const pageNotice = document.createElement('p');
     pageNotice.className = 'source-notice';
     pageNotice.textContent = `共 ${tracks.length} 条`;

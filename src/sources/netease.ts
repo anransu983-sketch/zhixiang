@@ -362,6 +362,32 @@ function chartSongToTrack(raw: NeteaseChartSong): Track {
     };
 }
 
+// 歌单转存（第 2 项）：按歌单 id 调详情取全量曲目。端点与返回结构
+// 与榜单海报同一路（见 fetchNeteaseChartPosters，2026-10-25 沙箱
+// 实测）：GET /api/playlist/detail?id=，result.tracks 是完整歌曲数
+// 组（artists／album／duration 形状）；海报只取前 20 首，这里全取。
+// 失败抛中文错由调用方显示；空歌单回空数组，由调用方报“空”。
+export async function fetchNeteasePlaylistTracks(playlistId: number): Promise<Track[]> {
+    const response = await httpGet(
+        `https://music.163.com/api/playlist/detail?id=${playlistId}`,
+        requestHeaders()
+    );
+    if (response.status !== 200) {
+        throw new Error('网易云歌单暂时拿不到，请稍后重试');
+    }
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(response.body);
+    } catch {
+        throw new Error('网易云歌单暂时拿不到，请稍后重试');
+    }
+    const songs = (parsed as { result?: { tracks?: unknown } | null } | null)?.result?.tracks;
+    if (!Array.isArray(songs)) {
+        throw new Error('网易云歌单暂时拿不到，请稍后重试');
+    }
+    return (songs as NeteaseChartSong[]).map(chartSongToTrack);
+}
+
 export async function fetchNeteaseChartPosters(): Promise<Poster[]> {
     const posters: Poster[] = [];
     // 0.1.92：榜单封面去重——多榜榜首是同一首歌时（如飙升榜与新歌榜同为

@@ -696,6 +696,26 @@ body {
     display: none;
 }
 
+/* 第 2 项：网易云榜单海报右上角的转存入口（卡片本身是 <button>，故用 span）。 */
+.poster-save {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 1;
+    padding: 4px 10px;
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.55);
+    color: #fff;
+    font-size: 12px;
+    line-height: 1.4;
+    cursor: pointer;
+}
+
+.poster-save.is-busy {
+    opacity: 0.6;
+}
+
 /* 海报墙特性位：跨两列，16/10 画幅里方形主图居中＋模糊背，标题落图下底栏。 */
 .poster-module[data-layout="wall"] .poster-card:first-child {
     grid-column: span 2;
