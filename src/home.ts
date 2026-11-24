@@ -36,7 +36,7 @@ import { nearestTraditionalColor } from './traditional-colors';
 import { SOURCES } from './sources/index';
 import { BILI_CHART_ZONES, fetchBilibiliChart, fetchBilibiliChapters, fetchBilibiliPlaylistVideos, fetchBilibiliTopCommentSegments, fetchBilibiliVideoDurationSec, fetchBilibiliViewInfo, mergeBiliSegmentSources, parseBiliDescSegments } from './sources/bilibili';
 import type { BiliChartZone } from './sources/bilibili';
-import { checkAllFilesAccess, getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalNotice, getLocalSidecarCoverDataUrl, localSource, requestAllFilesAccess } from './sources/local';
+import { checkAllFilesAccess, getLocalCoverDataUrl, getLocalCoverFromNetease, getLocalNotice, getLocalSidecarCoverDataUrl, localSource, requestAllFilesAccess, rescanLocalLibrary } from './sources/local';
 import { addMyImportIds, loadMyImportIds, removeMyImportId } from './my-imports';
 import { biliQrImageUrl, checkBiliQr, clearBiliSession, fetchBiliDailyTracks, fetchBiliFavFolders, fetchBiliFavTracks, fetchBiliQrKey, loadBiliSession, validateBiliSession, type BiliFavFolder } from './sources/bilibili-session';
 import { addTrackToPlaylist, createPlaylist, deletePlaylist, loadPlaylists, removeTrackFromPlaylist, renamePlaylist, savePlaylistOrder, trackKey } from './playlists';
@@ -6355,9 +6355,18 @@ function renderSourceSection(
     const isLocalPage = source.id === 'local';
     const tracksHidden = (): boolean => isLocalPage && localStorage.getItem(tracksHiddenKey) !== '0';
     let toggleButton: HTMLButtonElement | undefined;
+    let rescanButton: HTMLButtonElement | undefined;
     if (isLocalPage) {
         const toolbar = document.createElement('div');
         toolbar.className = 'track-list-toolbar';
+        // 6. 手动重扫：进程内缓存只在首次扫一次，新拷进手机的歌在
+        // App 重启前看不到；点按强制全量重扫并刷新列表，失败保留旧列表。
+        // 点按逻辑挂在 refresh 定义后（要读 refresh/notice），这里只建按钮。
+        rescanButton = document.createElement('button');
+        rescanButton.type = 'button';
+        rescanButton.className = 'track-list-toggle';
+        rescanButton.textContent = '重新扫描';
+        toolbar.appendChild(rescanButton);
         toggleButton = document.createElement('button');
         toggleButton.type = 'button';
         toggleButton.className = 'track-list-toggle';
@@ -6465,6 +6474,38 @@ function renderSourceSection(
         void refresh(search.value);
         renderHistory();
     });
+    // 6. 手动重扫点按：rescan 已把新缓存写好（失败时缓存不动），
+    // refresh 只读缓存、不重复扫；失败时列表仍是旧缓存，只补一句提示。
+    if (isLocalPage && rescanButton) {
+        const button = rescanButton;
+        button.addEventListener('click', () => {
+            if (button.disabled) {
+                return;
+            }
+            button.disabled = true;
+            button.textContent = '扫描中…';
+            void (async () => {
+                const result = await rescanLocalLibrary();
+                await refresh(search.value);
+                if (result.failed) {
+                    notice.textContent =
+                        getLocalNotice() ?? '重新扫描失败，已保留旧列表。';
+                    notice.classList.add('is-error');
+                    notice.hidden = false;
+                    button.textContent = '重新扫描';
+                } else {
+                    notice.classList.remove('is-error');
+                    button.textContent = result.changed
+                        ? `已更新，共 ${result.tracks.length} 首`
+                        : '没有变化';
+                    window.setTimeout(() => {
+                        button.textContent = '重新扫描';
+                    }, 2500);
+                }
+                button.disabled = false;
+            })();
+        });
+    }
     void refresh('');
 
     return { block, search };

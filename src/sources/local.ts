@@ -87,6 +87,33 @@ class LocalMusicSource implements AudioSource {
         return this.paths.get(track.id);
     }
 
+    // 6. 本地库增量扫描（成本测算后决定不做真增量，只给手动重扫）：
+    // 全量扫成本——原生 doScan 是单次 resolver.query（9 列投影、
+    // IS_MUSIC != 0、TITLE ASC），单个 Cursor 逐行只做 getString/
+    // getLong＋拼 coverUri 字符串，无 N+1 二次查询、无逐首联网、
+    // 无逐首开文件读头/解码封面（封面、内嵌歌词只在点开单曲时各调
+    // 一次，不在扫描路径上）；TS 侧每首只做一次扩展名提取＋paths.set，
+    // 排序只在同专辑内比较。触发上进程内缓存只在首次进本地页/搜本地
+    // 时扫一次，之后全走缓存——典型几百～几千首库一次全量扫是纯内存
+    // 行构造，百毫秒量级。真增量（DATE_MODIFIED 比对＋差分合并＋删改
+    // 同步）收益小、要多维护一套缓存一致性，不做；新拷进手机的歌在
+    // App 重启前看不到，才是真实痛点，用手动重扫解决（无真机计时，
+    // 以上是代码级测算：查询次数 1、逐首开销 O(1) 内存操作）。
+    // 强制重扫并刷新缓存；失败时 cached 不动，返回旧列表（不吞旧列表）。
+    async rescan(): Promise<{ tracks: Track[]; changed: boolean; failed: boolean }> {
+        const before = this.cached;
+        const tracks = await this.loadAll(true);
+        if (this.lastScanFailed) {
+            return { tracks: before ?? [], changed: false, failed: true };
+        }
+        const beforeIds = new Set((before ?? []).map((track) => track.id));
+        const changed =
+            before === null ||
+            before.length !== tracks.length ||
+            tracks.some((track) => !beforeIds.has(track.id));
+        return { tracks, changed, failed: false };
+    }
+
     // 内嵌歌词（0.1.103）：按扫描时记下的文件路径向原生要文件自带的词。
     // 路径不在缓存里（例如 App 重启后直接点了旧列表）时不重扫，
     // 回 null 让调用方落到联网补源；原生读失败同样回 null。
@@ -300,4 +327,15 @@ export async function saveFileToDownloads(
 
 export function getLocalNotice(): string | null {
     return localSource.notice;
+}
+
+export interface LocalRescanResult {
+    tracks: Track[];
+    changed: boolean;
+    failed: boolean;
+}
+
+// 6. 手动重扫：强制全量扫一次并刷新进程内缓存；失败返回旧列表。
+export async function rescanLocalLibrary(): Promise<LocalRescanResult> {
+    return localSource.rescan();
 }
