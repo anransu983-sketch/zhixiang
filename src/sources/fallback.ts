@@ -36,6 +36,20 @@ score += 30;
 score += 15;
 }
 }
+// B 站候选的 artist 是 UP 主名、几乎永不等于歌手，歌手名实际写在
+// 视频标题里（「孙燕姿 - 我不难过」式）。只查 artist 字段时歌手分
+// 永远拿不到，最高分恒为歌名包含 30＋时长 20＝50、够不到 60 线，
+// 兜底等于没接（2026-11-27 真机日志 10 首全卡 50 分）。歌手名
+// 出现在候选标题里同样是佐证：＋20。多歌手按分隔符拆开逐个查。
+if (oArtist && oArtist!== '未知歌手' && cTitle) {
+const parts = original.artist
+.split(/[/、,，&]/)
+.map((part) => clean(part))
+.filter((part) => part.length >= 2);
+if (parts.some((part) => cTitle.includes(part))) {
+score += 20;
+}
+}
 if (original.durationMs && candidate.durationMs) {
 const diff = Math.abs(original.durationMs - candidate.durationMs) / 1000;
 if (diff <= 3) {
@@ -50,7 +64,8 @@ return score;
 }
 
 // 够分线 60：歌名全对＋时长 10 秒内，或歌名包含＋歌手全对，
-// 歌名单对 50 分不够（须歌手或时长佐证，防同名翻唱）。
+// 或歌名包含＋歌手名在标题里＋时长 10 秒内。歌名单对 50 分不够
+// （须歌手或时长佐证，防同名翻唱）。
 const SCORE_THRESHOLD = 60;
 
 export async function findBilibiliFallback(track: Track): Promise<Track | null> {
@@ -78,6 +93,16 @@ console.log(
 );
 return best;
 }
-console.log(`[Playback] B 站兜底无够分候选：${track.title}（最高 ${bestScore} 分）`);
+// 没够分时把最高候选是谁、时长差多少一并记下：只记分数分不清
+// 是候选不对还是评分口径卡死，下次看日志要能直接定性。
+const bestDiff =
+best && track.durationMs && best.durationMs
+? `${Math.abs(track.durationMs - best.durationMs) / 1000}s`
+: '未知';
+console.log(
+`[Playback] B 站兜底无够分候选：${track.title}（最高 ${bestScore} 分` +
+(best ? `：${best.title} / ${best.artist} / 时长差 ${bestDiff}` : '：无候选') +
+'）'
+);
 return null;
 }

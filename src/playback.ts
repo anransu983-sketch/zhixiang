@@ -378,6 +378,11 @@ function segmentRangeOf(track: Track | null): { startSec: number; endSec: number
 // 防双重推进；新曲在 startTrack 接管时清零（含单曲循环重播同一首）。
 let segmentAdvanceFiredFor: Track | null = null;
 
+// 播放中途 audio 错误的推进计数：同一首第一次出错按播完推进；
+// 同一首再出错（单曲循环重播同一坏流）就停，不无限打转。
+let errorAdvanceTrack: Track | null = null;
+let errorAdvanceCount = 0;
+
 function bindAudioEvents(slot: PlayerSlot, audio: HTMLAudioElement): void {
     audio.addEventListener('timeupdate', () => {
         if (activeSlot !== slot || !currentTrack) {
@@ -444,9 +449,37 @@ function bindAudioEvents(slot: PlayerSlot, audio: HTMLAudioElement): void {
             `[Playback] audio 元素错误：code=${audio.error?.code ?? 'none'}` +
                 (audio.error?.message ? ` ${audio.error.message}` : '')
         );
-        playing = false;
-        lastError = '播放失败，请换一首试试';
-        emitTrackChange();
+        // 播放中途读流失败（code=2 PIPELINE_ERROR_READ 一类，含流尾
+        // 读不到尾以错误代替 ended 的情形）：按播完推进下一首，不停死
+        // （2026-11-27 真机日志两处：Snowman、湖中少女都在曲尾读错误
+        // 后整单停住）。分段推进已触发时推进已在途，不再抢；同一首
+        // 第二次出错才停（防单曲循环重播同一坏流无限打转）。暂停中
+        // 出错不推进，照旧停下报错。AutoMix 在途时也照常推进：新推进
+        // 会 ++playIntent 让在途那次变 stale，不会双重推进。
+        if (!playing) {
+            playing = false;
+            lastError = '播放失败，请换一首试试';
+            emitTrackChange();
+            return;
+        }
+        if (segmentAdvanceFiredFor !== null && segmentAdvanceFiredFor === currentTrack) {
+            console.log('[Playback] 分段推进已触发，error 兜底忽略');
+            return;
+        }
+        if (currentTrack && errorAdvanceTrack === currentTrack) {
+            errorAdvanceCount += 1;
+        } else {
+            errorAdvanceTrack = currentTrack;
+            errorAdvanceCount = 1;
+        }
+        if (errorAdvanceCount >= 2) {
+            playing = false;
+            lastError = '播放失败，请换一首试试';
+            emitTrackChange();
+            return;
+        }
+        console.log('[Playback] 播放中途出错，推进下一首');
+        void advanceAfterEnded();
     });
 }
 

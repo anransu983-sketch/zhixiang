@@ -42,7 +42,14 @@ export async function stopPlaybackService(): Promise<void> {
 }
 
 export async function ensureStreamProxy(): Promise<number> {
-    const result = await Playback.ensureProxy();
+    // 原生调用无超时时一旦不回包，起歌链会无限挂住（推进在途、ended
+    // 被守卫吞掉、整单停死且零日志）。10 秒不回就抛错，让跳歌逻辑接手。
+    const result = await Promise.race([
+        Playback.ensureProxy(),
+        new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error('本机代理启动超时')), 10000);
+        })
+    ]);
     return result.port;
 }
 
