@@ -417,6 +417,30 @@ export async function fetchNeteasePlaylistTracks(playlistId: number): Promise<Tr
     return (songs as NeteaseChartSong[]).map(chartSongToTrack);
 }
 
+// 链接识别用（借鉴 NeriPlayer 链接识别）：按歌曲 id 取单曲。
+// 端点与歌单详情同为旧 api 家族（/api/song/detail/?ids=[id]），
+// 返回 songs[0] 形状与榜单曲目一致（artists/album/duration），
+// 复用 chartSongToTrack。拿不到回 null，调用方回落普通搜索。
+export async function fetchNeteaseSongTrack(songId: number): Promise<Track | null> {
+    try {
+        const response = await httpGet(
+            `https://music.163.com/api/song/detail/?ids=[${songId}]`,
+            requestHeaders()
+        );
+        if (response.status !== 200) {
+            return null;
+        }
+        const parsed = JSON.parse(response.body) as { songs?: unknown };
+        const first = Array.isArray(parsed.songs) ? parsed.songs[0] : undefined;
+        if (!first) {
+            return null;
+        }
+        return chartSongToTrack(first as NeteaseChartSong);
+    } catch {
+        return null;
+    }
+}
+
 export async function fetchNeteaseChartPosters(): Promise<Poster[]> {
     const posters: Poster[] = [];
     // 0.1.92：榜单封面去重——多榜榜首是同一首歌时（如飙升榜与新歌榜同为

@@ -164,8 +164,9 @@ async function fetchJson(url: string, failure: string): Promise<unknown> {
     return parsed;
 }
 
-// 分 P cid：取链与字幕共用，v1 只用第一 P。
-async function getCid(bvid: string): Promise<number> {
+// 分 P cid：取链与字幕共用。page 从 1 起（链接识别保留 ?p= 分 P，
+// 借鉴 NeriPlayer 链接识别的分 P 上下文）；超界时回落第一 P。
+async function getCid(bvid: string, page = 1): Promise<number> {
     const pages = (await fetchJson(
         `${PAGELIST_URL}?bvid=${encodeURIComponent(bvid)}&jsonp=jsonp`,
         'B 站分 P 信息拿不到'
@@ -173,12 +174,26 @@ async function getCid(bvid: string): Promise<number> {
     if (pages.code !== 0 || !Array.isArray(pages.data) || pages.data.length === 0) {
         throw new Error('B 站视频没有分 P 信息');
     }
-    const first = pages.data[0] as { cid?: unknown };
-    const cid = typeof first.cid === 'number' ? first.cid : 0;
+    const index = page >= 1 && page <= pages.data.length ? page - 1 : 0;
+    const picked = pages.data[index] as { cid?: unknown };
+    const cid = typeof picked.cid === 'number' ? picked.cid : 0;
     if (cid <= 0) {
         throw new Error('B 站视频没有分 P 信息');
     }
     return cid;
+}
+
+// 曲目 id 里的分 P 后缀：bilibili:<bvid>#p<页码>（仅 page>1 时带）。
+function parseBiliTrackId(trackId: string): { bvid: string; page: number } {
+    const rawId = trackId.startsWith('bilibili:')
+        ? trackId.slice('bilibili:'.length)
+        : trackId;
+    const noSegment = rawId.split('@')[0] ?? '';
+    const match = noSegment.match(/^(BV[0-9A-Za-z]+)(?:#p(\d+))?$/);
+    if (match) {
+        return { bvid: match[1]!, page: match[2] ? Number(match[2]) : 1 };
+    }
+    return { bvid: noSegment.split('#')[0] ?? '', page: 1 };
 }
 
 // B 站 CC 字幕轨当歌词（0.1.105，思路借鉴 NeriPlayer 的 B 站字幕歌词）：
@@ -189,15 +204,13 @@ async function getCid(bvid: string): Promise<number> {
 // 字段按 B 站公开字幕格式（body[].from/to/content）解析、异常项跳过，
 // 真机以带字幕轨的视频验为准。
 export async function getBilibiliSubtitleLines(track: Track): Promise<LyricLine[] | null> {
-    const bvid = track.id.startsWith('bilibili:')
-        ? track.id.slice('bilibili:'.length)
-        : track.id;
+    const { bvid, page } = parseBiliTrackId(track.id);
     if (!bvid) {
         return null;
     }
     let cid: number;
     try {
-        cid = await getCid(bvid);
+        cid = await getCid(bvid, page);
     } catch {
         return null;
     }
@@ -793,6 +806,62 @@ export function mergeBiliSegmentSources(
 const STREAM_URL_CACHE_TTL_MS = 10 * 60 * 1000;
 const streamUrlCache = new Map<string, { url: string; fetchedAt: number }>();
 
+
+// 链接识别用（借鉴 NeriPlayer 链接识别）：按 bvid+分 P 取视频曲目。
+// view 接口给标题/UP主/封面/总时长，分 P 时长以 pagelist 对应页为准；
+// 拿不到回 null，调用方回落普通搜索。
+export async function fetchBilibiliVideoTrack(
+    bvid: string,
+    page = 1
+): Promise<Track | null> {
+    try {
+        const headers = await biliAuthedHeaders();
+        const res = await httpGet(`${VIEW_URL}?bvid=${encodeURIComponent(bvid)}`, headers);
+        if (res.status !== 200) {
+            return null;
+        }
+        const parsed = JSON.parse(res.body) as {
+            code?: unknown;
+            data?: {
+                title?: unknown;
+                pic?: unknown;
+                duration?: unknown;
+                owner?: { name?: unknown } | null;
+                pages?: unknown;
+            };
+        };
+        if (parsed.code !== 0 || typeof parsed.data?.title !== 'string' || !parsed.data.title) {
+            return null;
+        }
+        const data = parsed.data;
+        const videoTitle = data.title as string;
+        let durationSec =
+            typeof data.duration === 'number' && data.duration > 0 ? data.duration : undefined;
+        let pageTitle = '';
+        if (Array.isArray(data.pages) && page >= 1 && page <= data.pages.length) {
+            const picked = data.pages[page - 1] as { duration?: unknown; part?: unknown };
+            if (typeof picked.duration === 'number' && picked.duration > 0) {
+                durationSec = picked.duration;
+            }
+            if (typeof picked.part === 'string' && picked.part) {
+                pageTitle = picked.part;
+            }
+        }
+        const artist =
+            typeof data.owner?.name === 'string' && data.owner.name ? data.owner.name : '未知歌手';
+        return {
+            id: page > 1 ? `bilibili:${bvid}#p${page}` : `bilibili:${bvid}`,
+            title: pageTitle && page > 1 ? `${videoTitle} · ${pageTitle}` : videoTitle,
+            artist,
+            durationMs: durationSec ? durationSec * 1000 : undefined,
+            coverUrl: toHttps(typeof data.pic === 'string' ? data.pic : undefined),
+            source: 'bilibili'
+        };
+    } catch {
+        return null;
+    }
+}
+
 class BilibiliSource implements AudioSource {
     readonly id = 'bilibili' as const;
     readonly label = 'B站';
@@ -802,19 +871,18 @@ class BilibiliSource implements AudioSource {
     }
 
     async resolveStream(track: Track): Promise<string> {
-        // 分段曲 id 形如 bilibili:<bvid>@<startSec>：取 @ 之前的真 bvid。
-        const rawId = track.id.startsWith('bilibili:')
-            ? track.id.slice('bilibili:'.length)
-            : track.id;
-        const bvid = rawId.split('@')[0] ?? '';
+        // 分段曲 id 形如 bilibili:<bvid>@<startSec>，分 P 曲带 #p<页码>：
+        // parseBiliTrackId 一并剥掉，缓存按 bvid+分 P 分键。
+        const { bvid, page } = parseBiliTrackId(track.id);
         if (!bvid) {
             throw new Error('B 站视频号不对，请重新搜索再试');
         }
-        const cached = streamUrlCache.get(bvid);
+        const cacheKey = `${bvid}#p${page}`;
+        const cached = streamUrlCache.get(cacheKey);
         if (cached && Date.now() - cached.fetchedAt < STREAM_URL_CACHE_TTL_MS) {
             return cached.url;
         }
-        const cid = await getCid(bvid);
+        const cid = await getCid(bvid, page);
         const play = (await fetchJson(
             `${PLAYURL_URL}?bvid=${encodeURIComponent(bvid)}&cid=${cid}&fnval=4048&fourk=1`,
             'B 站音频流拿不到'
@@ -840,7 +908,7 @@ class BilibiliSource implements AudioSource {
             throw new Error('B 站音频流拿不到，请稍后重试');
         }
         // 只缓存成功的取链结果（短 TTL，见 streamUrlCache 注释）。
-        streamUrlCache.set(bvid, { url: best.baseUrl, fetchedAt: Date.now() });
+        streamUrlCache.set(cacheKey, { url: best.baseUrl, fetchedAt: Date.now() });
         return best.baseUrl;
     }
 }

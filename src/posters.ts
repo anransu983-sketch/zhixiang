@@ -63,6 +63,55 @@ function isPosterEntryStale(entry: PosterCacheEntry): boolean {
     return Date.now() - entry.fetchedAt >= POSTER_TTL_MS;
 }
 
+// 歌单详情缓存（借鉴 NeriPlayer）：远程海报（歌单头＋曲目）成功
+// 加载后持久化，冷启动先显上次缓存再后台刷新；本地路扫描快且
+// 封面多为 dataUrl，不持久化。曲目去掉 streamUrl，data: 封面不存。
+const POSTER_PERSIST_PREFIX = 'zx.posterCache.v1.';
+
+function persistPosters(key: string, posters: Poster[]): void {
+    if (key === 'local') {
+        return;
+    }
+    try {
+        const stripped = posters.map((poster) => ({
+            ...poster,
+            coverUrl:
+                poster.coverUrl && poster.coverUrl.startsWith('data:')
+                    ? undefined
+                    : poster.coverUrl,
+            tracks: poster.tracks.map((track) => {
+                const { streamUrl: _streamUrl, ...rest } = track;
+                return rest;
+            })
+        }));
+        localStorage.setItem(
+            POSTER_PERSIST_PREFIX + key,
+            JSON.stringify({ savedAt: Date.now(), posters: stripped })
+        );
+    } catch {
+        // 存储满了就跳过，不影响本次显示。
+    }
+}
+
+export function loadPersistedPosters(key: string): Poster[] | null {
+    if (key === 'local') {
+        return null;
+    }
+    try {
+        const raw = localStorage.getItem(POSTER_PERSIST_PREFIX + key);
+        if (!raw) {
+            return null;
+        }
+        const parsed = JSON.parse(raw) as { posters?: unknown };
+        if (!Array.isArray(parsed.posters) || parsed.posters.length === 0) {
+            return null;
+        }
+        return parsed.posters as Poster[];
+    } catch {
+        return null;
+    }
+}
+
 function startPosterLoad(
     key: string,
     load: () => Promise<Poster[]>
@@ -70,6 +119,16 @@ function startPosterLoad(
     const promise = load();
     const entry: PosterCacheEntry = { promise, fetchedAt: Date.now() };
     posterCache.set(key, entry);
+    promise.then(
+        (posters) => {
+            if (posters.length > 0) {
+                persistPosters(key, posters);
+            }
+        },
+        () => {
+            // 失败不持久化，旧缓存保留。
+        }
+    );
     promise.catch(() => {
         // 失败逐出仍按「存的条目还是这一条」守卫：过期重拉／手动刷新
         // 可能已换上新条目，旧 promise 的失败不许误删新条目。

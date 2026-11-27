@@ -16,7 +16,7 @@ import {
     isPosterCacheExpired,
     posterFallbackBackground,
     posterHue
-} from './posters';
+, loadPersistedPosters } from './posters';
 import type { PosterSectionDefinition } from './posters';
 import { destroyShelfLayer, renderShelfLayer } from './shelf';
 import { clearLogs, copyPlainText, getLogEntries, getLogModules, getLogText, subscribeLogs, type LogEntry } from './logger';
@@ -58,6 +58,8 @@ import {
 } from './roaming';
 import type { RoamScene } from './roaming';
 import { fetchNeteaseDailySongs, fetchNeteasePlaylistTracks } from './sources/netease';
+import { tryRecognizeLink } from './link-recognize';
+import { loadPlaylistCache, savePlaylistCache } from './playlist-cache';
 import { fetchNeteaseListeningRank, type NeteaseRankRange } from './sources/netease-rank';
 import { fetchYtmDailyTracks, probeYtmHome } from './sources/ytm';
 import {
@@ -2755,6 +2757,26 @@ function renderPosterModule(definition: PosterSectionDefinition): HTMLElement {
             refreshButton.disabled = true;
             refreshButton.textContent = '刷新中…';
         }
+        // 冷启动先显上次持久化缓存，再后台刷新（借鉴 NeriPlayer
+        // 歌单详情缓存）；刷新失败保留缓存并提示。
+        if (mode === 'initial') {
+            const persisted = loadPersistedPosters(definition.key);
+            if (persisted && persisted.length > 0) {
+                applyPosters(persisted, false);
+                try {
+                    const fresh = await definition.load();
+                    if (fresh.length > 0) {
+                        applyPosters(fresh, true);
+                    }
+                } catch {
+                    notice.hidden = false;
+                    notice.textContent = '已显示上次缓存';
+                } finally {
+                    loading = false;
+                }
+                return;
+            }
+        }
         try {
             const posters = await definition.load();
             applyPosters(posters, mode !== 'initial');
@@ -2766,7 +2788,7 @@ function renderPosterModule(definition: PosterSectionDefinition): HTMLElement {
                 notice.textContent = reason;
             } else if (mode === 'refresh') {
                 notice.hidden = false;
-                notice.textContent = reason;
+                notice.textContent = '已显示上次缓存';
             }
             // recheck 失败：旧海报留着，什么都不显示，下次切页再试。
         } finally {
@@ -6489,8 +6511,76 @@ function renderSourceSection(
     });
 
     let requestToken = 0;
+    let lastLinkHandled = '';
     const refresh = async (query: string): Promise<void> => {
         const token = ++requestToken;
+        // 链接识别（借鉴 NeriPlayer）：粘贴链接/分享文案先识别，
+        // 成功直接打开曲目/歌单，识别不了回落普通搜索。
+        if (query.trim() && query !== lastLinkHandled) {
+            const link = await tryRecognizeLink(query);
+            if (token !== requestToken) {
+                return;
+            }
+            if (link) {
+                lastLinkHandled = query;
+                activeQuery = query;
+                hasMore = false;
+                notice.classList.remove('is-error');
+                emptyIcon.hidden = true;
+                emptyHint.hidden = true;
+                trackList.hidden = false;
+                if (link.kind === 'tracks') {
+                    loadedTracks = link.tracks;
+                    updateMoreButton();
+                    renderTracks(trackList, link.tracks, status);
+                    notice.textContent = link.label;
+                    notice.hidden = false;
+                    if (link.autoplay) {
+                        void playQueue(link.tracks, 0);
+                    }
+                    return;
+                }
+                if (link.kind === 'playlist') {
+                    const cached = loadPlaylistCache(link.cacheKey);
+                    if (cached && cached.tracks.length > 0) {
+                        loadedTracks = cached.tracks;
+                        updateMoreButton();
+                        renderTracks(trackList, cached.tracks, status);
+                        notice.textContent = link.label;
+                        notice.hidden = false;
+                    }
+                    try {
+                        const fresh = await link.fetchFresh();
+                        if (token !== requestToken) {
+                            return;
+                        }
+                        savePlaylistCache(link.cacheKey, link.label, fresh);
+                        loadedTracks = fresh;
+                        updateMoreButton();
+                        renderTracks(trackList, fresh, status);
+                        notice.textContent = `${link.label} · 共 ${fresh.length} 首`;
+                        notice.hidden = false;
+                    } catch (error) {
+                        if (token !== requestToken) {
+                            return;
+                        }
+                        if (cached && cached.tracks.length > 0) {
+                            notice.textContent = '已显示上次缓存';
+                            notice.hidden = false;
+                        } else {
+                            notice.textContent = friendlySearchError(error);
+                            notice.classList.add('is-error');
+                            notice.hidden = false;
+                        }
+                    }
+                    return;
+                }
+                notice.textContent = link.message;
+                notice.classList.add('is-error');
+                notice.hidden = false;
+                return;
+            }
+        }
         let tracks: Track[];
         let pageHasMore = false;
         try {

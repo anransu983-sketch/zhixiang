@@ -42,7 +42,7 @@
 // 来“验证出声”——无界 Range 会被 403 拦下，那不是地址本身不可用。有界 Range 加载
 // 由第 5 块的播放引擎实现（MSE 分块加载或本地 Range 代理均可，第 5 块定）。
 
-import { httpPost } from '../native/http';
+import { httpGet, httpPost } from '../native/http';
 import { extractYtmViaPage, loadYtmSession, sapisidHash, withYtmSession } from './ytm-session';
 import type { AudioSource, Poster, SourceId, Track } from '../types';
 
@@ -1116,6 +1116,50 @@ async function expandCardTracks(browseId: string, limit: number): Promise<Track[
         push(toTrack(item));
     }
     return tracks;
+}
+
+
+// 链接识别用（借鉴 NeriPlayer 链接识别）：按歌单 list id 取曲目，
+// 复用卡片展开的 VL browse 路。拿不到回空数组，调用方按失败处理。
+export async function fetchYtmPlaylistTracks(listId: string): Promise<Track[]> {
+    return expandCardTracks(`VL${listId}`, 100);
+}
+
+// 链接识别用：按 videoId 取单曲。标题/歌手/封面走公开 oEmbed，
+// 时长 oEmbed 不给、留空（取链不依赖时长）；拿不到回 null。
+export async function fetchYtmVideoTrack(videoId: string): Promise<Track | null> {
+    try {
+        const watchUrl = `https://music.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
+        const res = await httpGet(
+            `https://www.youtube.com/oembed?url=${encodeURIComponent(watchUrl)}&format=json`
+        );
+        if (res.status !== 200) {
+            return null;
+        }
+        const parsed = JSON.parse(res.body) as {
+            title?: unknown;
+            author_name?: unknown;
+            thumbnail_url?: unknown;
+        };
+        if (typeof parsed.title !== 'string' || !parsed.title) {
+            return null;
+        }
+        return {
+            id: `ytm:${videoId}`,
+            title: parsed.title,
+            artist:
+                typeof parsed.author_name === 'string' && parsed.author_name
+                    ? parsed.author_name
+                    : '未知歌手',
+            coverUrl:
+                typeof parsed.thumbnail_url === 'string' && parsed.thumbnail_url
+                    ? parsed.thumbnail_url
+                    : undefined,
+            source: 'ytm'
+        };
+    } catch {
+        return null;
+    }
 }
 
 async function browseYtm(browseId: string): Promise<unknown> {
