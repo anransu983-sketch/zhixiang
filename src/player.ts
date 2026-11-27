@@ -49,7 +49,8 @@ import { loadVisualToggles, saveVisualToggles, VISUAL_PRESETS, VisualStage } fro
 import { LyricDrops } from './lyric-drops';
 import type { VisualToggles } from './visuals';
 import { deleteManualLyrics, getManualLyrics, saveManualLyrics } from './manual-lyrics';
-import { listBilibiliSubtitleTracks } from './sources/bilibili';
+import { listBilibiliSubtitleTracks, resolveBiliSkipKey } from './sources/bilibili';
+import { addSkipInterval, getSkipIntervals, removeSkipInterval } from './bili-skip';
 import { CC_OFFSET_STEP_MS, ccPickFor, loadCcPrefs, setCcEnabled, setCcOffsetMs, setCcPick } from './cc-lyrics';
 import {
     computeBlurRadiiByIntensity,
@@ -763,6 +764,12 @@ function buildPlayerPage(): HTMLElement {
     ccButton.className = 'player-text-chip';
     ccButton.textContent = 'CC字幕';
     ccButton.hidden = true;
+    // B 站自定义跳过区间入口（借鉴 NeriPlayer）：只对 B 站曲显示。
+    const skipButton = document.createElement('button');
+    skipButton.type = 'button';
+    skipButton.className = 'player-text-chip';
+    skipButton.textContent = '跳过区间';
+    skipButton.hidden = true;
     const flashButton = (button: HTMLButtonElement, text: string): void => {
         const original = button.textContent;
         button.textContent = text;
@@ -899,6 +906,130 @@ function buildPlayerPage(): HTMLElement {
             }
         })();
     });
+    // 跳过区间面板（借鉴 NeriPlayer）：设为开始/结束用当前进度，
+    // 区间列表可删；按 BVID+CID 存本机。
+    const skipPanel = document.createElement('div');
+    skipPanel.className = 'player-sheet';
+    skipPanel.hidden = true;
+    const skipCard = document.createElement('div');
+    skipCard.className = 'player-sheet-card';
+    const skipTitle = document.createElement('div');
+    skipTitle.className = 'player-sheet-title';
+    skipTitle.textContent = '跳过区间';
+    const skipHint = document.createElement('p');
+    skipHint.className = 'player-note';
+    const skipList = document.createElement('div');
+    skipList.className = 'cc-track-list';
+    const skipRow = document.createElement('div');
+    skipRow.className = 'player-sheet-row';
+    const skipStartBtn = document.createElement('button');
+    skipStartBtn.type = 'button';
+    skipStartBtn.className = 'login-btn';
+    skipStartBtn.textContent = '设为开始';
+    const skipEndBtn = document.createElement('button');
+    skipEndBtn.type = 'button';
+    skipEndBtn.className = 'login-btn';
+    skipEndBtn.textContent = '设为结束';
+    const skipClose = document.createElement('button');
+    skipClose.type = 'button';
+    skipClose.className = 'login-btn';
+    skipClose.textContent = '关闭';
+    skipClose.addEventListener('click', () => {
+        skipPanel.hidden = true;
+    });
+    skipRow.append(skipStartBtn, skipEndBtn, skipClose);
+    skipCard.append(skipTitle, skipHint, skipList, skipRow);
+    skipPanel.appendChild(skipCard);
+    skipPanel.addEventListener('click', (event) => {
+        if (event.target === skipPanel) {
+            skipPanel.hidden = true;
+        }
+    });
+    let skipPendingStart: number | null = null;
+    let skipPanelKey: string | null = null;
+    const skipAbsPos = (): number => {
+        const state = getCurrentState();
+        const segStart =
+            typeof state.track?.segmentStartMs === 'number'
+                ? state.track.segmentStartMs / 1000
+                : 0;
+        return state.currentTime + segStart;
+    };
+    const fmtSkipTime = (sec: number): string =>
+        `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
+    const renderSkipList = (): void => {
+        skipList.replaceChildren();
+        skipHint.textContent =
+            skipPendingStart === null
+                ? '播到要跳过的起点点「设为开始」，再播到终点点「设为结束」。'
+                : `开始已设为 ${fmtSkipTime(skipPendingStart)}，播到终点后点「设为结束」。`;
+        if (!skipPanelKey) {
+            return;
+        }
+        const intervals = getSkipIntervals(skipPanelKey);
+        if (intervals.length === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'player-note';
+            empty.textContent = '这个视频还没有跳过区间。';
+            skipList.appendChild(empty);
+            return;
+        }
+        intervals.forEach((interval, index) => {
+            const row = document.createElement('div');
+            row.className = 'skip-interval-row';
+            const label = document.createElement('span');
+            label.textContent = `${fmtSkipTime(interval.startSec)} – ${fmtSkipTime(interval.endSec)}`;
+            const del = document.createElement('button');
+            del.type = 'button';
+            del.className = 'login-btn';
+            del.textContent = '删除';
+            del.addEventListener('click', () => {
+                if (skipPanelKey) {
+                    removeSkipInterval(skipPanelKey, index);
+                    renderSkipList();
+                }
+            });
+            row.append(label, del);
+            skipList.appendChild(row);
+        });
+    };
+    skipStartBtn.addEventListener('click', () => {
+        skipPendingStart = skipAbsPos();
+        renderSkipList();
+    });
+    skipEndBtn.addEventListener('click', () => {
+        if (!skipPanelKey || skipPendingStart === null) {
+            return;
+        }
+        const end = skipAbsPos();
+        if (end > skipPendingStart) {
+            addSkipInterval(skipPanelKey, skipPendingStart, end);
+            skipPendingStart = null;
+            renderSkipList();
+        }
+    });
+    skipButton.addEventListener('click', () => {
+        const track = getCurrentState().track;
+        if (!track || track.source !== 'bilibili') {
+            return;
+        }
+        skipPanel.hidden = false;
+        skipPendingStart = null;
+        skipPanelKey = null;
+        skipList.replaceChildren();
+        skipHint.textContent = '正在读取区间…';
+        void resolveBiliSkipKey(track).then((key) => {
+            if (getCurrentState().track?.id !== track.id) {
+                return;
+            }
+            skipPanelKey = key;
+            if (!key) {
+                skipHint.textContent = '这个视频的分 P 信息拿不到，暂时设不了跳过区间。';
+                return;
+            }
+            renderSkipList();
+        });
+    });
     const sheet = document.createElement('div');
     sheet.className = 'player-sheet';
     sheet.hidden = true;
@@ -969,6 +1100,7 @@ function buildPlayerPage(): HTMLElement {
     sheet.appendChild(sheetCard);
     content.appendChild(sheet);
     content.appendChild(ccPanel);
+    content.appendChild(skipPanel);
     pasteButton.addEventListener('click', () => {
         const track = getCurrentState().track;
         if (!track) {
@@ -1168,7 +1300,7 @@ function buildPlayerPage(): HTMLElement {
         }
         syncMomentDotsPage?.(getCurrentState());
     });
-    bottomRow2.append(pasteButton, coverButton, ccButton, selectButton, momentButton, momentsListButton, qualityBadge);
+    bottomRow2.append(pasteButton, coverButton, ccButton, skipButton, selectButton, momentButton, momentsListButton, qualityBadge);
     content.appendChild(bottomRow);
     content.appendChild(bottomRow2);
     content.appendChild(sleepPicker);
@@ -2041,6 +2173,7 @@ function buildPlayerPage(): HTMLElement {
             updateHeart(state.track);
             updateQualityBadge(state.track);
             ccButton.hidden = state.track.source !== 'bilibili';
+            skipButton.hidden = state.track.source !== 'bilibili';
         } else {
             title.textContent = '还没播放任何歌曲';
             artist.textContent = '';
@@ -2048,6 +2181,7 @@ function buildPlayerPage(): HTMLElement {
             updateHeart(null);
             updateQualityBadge(null);
             ccButton.hidden = true;
+            skipButton.hidden = true;
         }
         if (state.playing) {
             // 暂停不用 ⏸ 字符：三星会把它画成黄底 emoji，U+FE0E 也压不住，

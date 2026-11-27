@@ -4875,3 +4875,9 @@ body.perf-mode * {
 .cc-track-list { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
 .cc-track-option { padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); color: inherit; text-align: left; font-size: 14px; }
 .cc-offset-value { align-self: center; min-width: 76px; text-align: center; font-size: 14px; }
+
+/* 脱机模式（借鉴 NeriPlayer） */
+.offline-banner { margin: 8px 12px 0; padding: 8px 12px; border-radius: 10px; background: rgba(255,255,255,0.06); font-size: 13px; text-align: center; opacity: 0.85; }
+
+/* B站跳过区间（借鉴 NeriPlayer） */
+.skip-interval-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 4px; font-size: 14px; }

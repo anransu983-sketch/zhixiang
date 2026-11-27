@@ -72,6 +72,8 @@ import {
 } from './automix';
 import { isBiliSegmentTrack, resolveBiliSegmentMatch } from './bili-segment-match';
 import { getLongResumeMs } from './long-resume';
+import { getSkipIntervals, onSkipChange, type BiliSkipInterval } from './bili-skip';
+import { resolveBiliSkipKey } from './sources/bilibili';
 import type { Track } from './types';
 
 // ---- 淡入淡出常量（集中一处，见文件头注释） ----
@@ -379,6 +381,14 @@ function segmentRangeOf(track: Track | null): { startSec: number; endSec: number
 // 防双重推进；新曲在 startTrack 接管时清零（含单曲循环重播同一首）。
 let segmentAdvanceFiredFor: Track | null = null;
 
+// B 站自定义跳过区间（借鉴 NeriPlayer）：当前曲的区间在起播后按
+// BVID+CID 异步解析，面板改动经 onSkipChange 刷新。
+let currentSkipKey: string | null = null;
+let currentSkipIntervals: BiliSkipInterval[] = [];
+onSkipChange(() => {
+    currentSkipIntervals = currentSkipKey ? getSkipIntervals(currentSkipKey) : [];
+});
+
 // 播放中途 audio 错误的推进计数：同一首第一次出错按播完推进；
 // 同一首再出错（单曲循环重播同一坏流）就停，不无限打转。
 let errorAdvanceTrack: Track | null = null;
@@ -388,6 +398,24 @@ function bindAudioEvents(slot: PlayerSlot, audio: HTMLAudioElement): void {
     audio.addEventListener('timeupdate', () => {
         if (activeSlot !== slot || !currentTrack) {
             return;
+        }
+        // 自定义跳过区间：进度进入区间直接跳到区间尾（绝对时间口径，
+        // 分段曲同样适用；跳过段尾时分段推进在下一拍自然触发）。
+        for (const interval of currentSkipIntervals) {
+            if (
+                audio.currentTime >= interval.startSec &&
+                audio.currentTime < interval.endSec - 0.3
+            ) {
+                try {
+                    audio.currentTime = interval.endSec;
+                    console.log(
+                        `[Playback] B站跳过区间：${Math.floor(interval.startSec)}s–${Math.floor(interval.endSec)}s`
+                    );
+                } catch {
+                    // 流不支持跳转时保持原位。
+                }
+                return;
+            }
         }
         const segment = segmentRangeOf(currentTrack);
         if (segment) {
@@ -1012,6 +1040,16 @@ async function startTrack(track: Track, crossfade: boolean): Promise<'ok' | 'sta
     // 新曲接管：上一首的分段推进标记作废（含单曲循环重播同一首，
     // 否则重播到段尾时标记挡住第二次推进）。
     segmentAdvanceFiredFor = null;
+    currentSkipKey = null;
+    currentSkipIntervals = [];
+    if (track.source === 'bilibili') {
+        void resolveBiliSkipKey(track).then((key) => {
+            if (currentTrack === track) {
+                currentSkipKey = key;
+                currentSkipIntervals = key ? getSkipIntervals(key) : [];
+            }
+        });
+    }
     playing = true;
     lastError = null;
     currentTime = resumeSec;

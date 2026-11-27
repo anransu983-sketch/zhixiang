@@ -59,6 +59,7 @@ import {
 import type { RoamScene } from './roaming';
 import { fetchNeteaseDailySongs, fetchNeteasePlaylistTracks } from './sources/netease';
 import { tryRecognizeLink } from './link-recognize';
+import { initOfflineTracking, isOffline, onOfflineChange } from './offline';
 import { loadPlaylistCache, savePlaylistCache } from './playlist-cache';
 import { fetchNeteaseListeningRank, type NeteaseRankRange } from './sources/netease-rank';
 import { fetchYtmDailyTracks, probeYtmHome } from './sources/ytm';
@@ -150,8 +151,18 @@ interface TabPage {
 export function renderHome(): HTMLElement {
     // 0.1.115 断点续听：启动即开始记队列与位置，只订阅一次。
     initResumeTracking();
+    // 脱机模式（借鉴 NeriPlayer）：顶部一行小提示，远程区停发请求。
+    initOfflineTracking();
     const section = document.createElement('section');
     section.className = 'home';
+    const offlineBanner = document.createElement('div');
+    offlineBanner.className = 'offline-banner';
+    offlineBanner.textContent = '脱机中 · 本地歌、歌单与足迹仍可使用';
+    offlineBanner.hidden = !isOffline();
+    section.appendChild(offlineBanner);
+    onOfflineChange((offlineNow) => {
+        offlineBanner.hidden = !offlineNow;
+    });
 
     // 花里胡哨的节流阀：减动效或低内存机器（deviceMemory<=4）直接进 lite，
     // CSS 里把光环/闪光/呼吸/入场动画一律关掉，只留静态辉光与渐变。
@@ -2796,6 +2807,22 @@ function renderPosterModule(definition: PosterSectionDefinition): HTMLElement {
             refreshButton.disabled = true;
             refreshButton.textContent = '刷新中…';
         }
+        if (isOffline() && definition.key !== 'local') {
+            const persisted = loadPersistedPosters(definition.key);
+            if (persisted && persisted.length > 0) {
+                applyPosters(persisted, mode !== 'initial');
+                notice.textContent = '脱机中 · 已显示上次缓存';
+            } else {
+                notice.textContent = '脱机中';
+            }
+            notice.hidden = false;
+            loading = false;
+            if (mode === 'refresh') {
+                refreshButton.disabled = false;
+                refreshButton.textContent = '刷新';
+            }
+            return;
+        }
         // 冷启动先显上次持久化缓存，再后台刷新（借鉴 NeriPlayer
         // 歌单详情缓存）；刷新失败保留缓存并提示。
         if (mode === 'initial') {
@@ -2843,6 +2870,12 @@ function renderPosterModule(definition: PosterSectionDefinition): HTMLElement {
     // 切回本页时缓存已过期才静默重拉，没过期不发请求。
     registerTabRecheck(definition.key as HomeTabId, () => {
         if (isPosterCacheExpired(definition.key)) {
+            void loadPosters('recheck');
+        }
+    });
+    onOfflineChange((offlineNow) => {
+        if (!offlineNow && definition.key !== 'local') {
+            invalidatePosterCache(definition.key);
             void loadPosters('recheck');
         }
     });
@@ -6566,6 +6599,14 @@ function renderSourceSection(
     let lastLinkHandled = '';
     const refresh = async (query: string): Promise<void> => {
         const token = ++requestToken;
+        if (isOffline() && source.id !== 'local') {
+            notice.textContent = '脱机中 · 本地歌、歌单与足迹仍可使用';
+            notice.classList.remove('is-error');
+            notice.hidden = false;
+            emptyIcon.hidden = true;
+            emptyHint.hidden = true;
+            return;
+        }
         // 链接识别（借鉴 NeriPlayer）：粘贴链接/分享文案先识别，
         // 成功直接打开曲目/歌单，识别不了回落普通搜索。
         if (query.trim() && query !== lastLinkHandled) {
@@ -6803,6 +6844,11 @@ function renderSourceSection(
         });
     }
 
+    onOfflineChange((offlineNow) => {
+        if (!offlineNow && source.id !== 'local') {
+            void refresh(search.value);
+        }
+    });
     search.addEventListener('input', () => {
         if (search.value.trim()) {
             artistMode = 'off';

@@ -894,6 +894,22 @@ export async function fetchBilibiliVideoTrack(
     }
 }
 
+
+// 自定义跳过区间的存储键：BVID+CID（借鉴 NeriPlayer 按 BVID+CID
+// 存区间）；拿不到 CID 回 null，调用方不启用跳过。
+export async function resolveBiliSkipKey(track: Track): Promise<string | null> {
+    const { bvid, page } = parseBiliTrackId(track.id);
+    if (!bvid) {
+        return null;
+    }
+    try {
+        const cid = await getCid(bvid, page);
+        return `${bvid}:${cid}`;
+    } catch {
+        return null;
+    }
+}
+
 class BilibiliSource implements AudioSource {
     readonly id = 'bilibili' as const;
     readonly label = 'B站';
