@@ -2,6 +2,7 @@
 // 位置存 localStorage，键 zx.resume.v1。流地址不进库（签名会过期，
 // 恢复时按曲目 id 重新取链）；我的页“上次听到”卡片读它恢复。
 import { getCurrentState, onTimeUpdate, onTrackChange } from './playback';
+import { recordLongResumePosition } from './long-resume';
 import type { Track } from './types';
 
 const KEY = 'zx.resume.v1';
@@ -71,6 +72,9 @@ export function initResumeTracking(): void {
         saveResumeNow();
     });
     onTimeUpdate(() => {
+        // 长音频单曲进度记忆：与队列续听共用同一条进度回调。
+        const state = getCurrentState();
+        recordLongResumePosition(state.track, state.currentTime * 1000);
         const now = Date.now();
         if (now - lastSaveAt < 10000) {
             return;

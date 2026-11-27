@@ -4,6 +4,7 @@
 // （错版比没声糟）。兜底只在播放层 tryPlayFrom 里触发，本模块不碰队列。
 
 import { bilibiliSource} from './bilibili';
+import { localSource } from './local';
 import type { Track} from '../types';
 
 // 比对用：小写、去空白与常见标点，不动原文字。
@@ -105,4 +106,67 @@ console.log(
 '）'
 );
 return null;
+}
+
+// 本地兜底归一化（借鉴 NeriPlayer 本地音频兜底）：去 feat 尾巴后
+// 再走 clean 的小写去标点；歌手取分隔符前的第一位主歌手。
+function stripFeat(text: string): string {
+return text
+.replace(/[（(][^）)]*\b(?:feat\.?|ft\.?|featuring)\b[^）)]*[）)]/gi, '')
+.replace(/\s*\b(?:feat\.?|ft\.?|featuring)\b.*$/i, '');
+}
+
+function mainArtistNorm(artist: string): string {
+const first = stripFeat(artist).split(/[/、,，&;；]|\s+(?:with|和|与)\s+/i)[0] ?? '';
+return clean(first);
+}
+
+function titleNorm(title: string): string {
+return clean(stripFeat(title));
+}
+
+// 本地兜底：标题与主歌手归一化后严格相等、且时长差 ≤3 秒才命中
+// （错版比没声糟，宁可不兜）；多命中取时长差最小的一首。
+export async function findLocalFallback(track: Track): Promise<Track | null> {
+if (!track.durationMs || track.durationMs <= 0) {
+return null;
+}
+let all: Track[];
+try {
+all = await localSource.search('');
+} catch {
+return null;
+}
+const wantTitle = titleNorm(track.title);
+const wantArtist = mainArtistNorm(track.artist);
+if (!wantTitle || !wantArtist || wantArtist === '未知歌手') {
+return null;
+}
+let best: Track | null = null;
+let bestDiff = Infinity;
+for (const candidate of all) {
+if (!candidate.durationMs || candidate.durationMs <= 0) {
+continue;
+}
+const diff = Math.abs(candidate.durationMs - track.durationMs);
+if (diff > 3000) {
+continue;
+}
+if (titleNorm(candidate.title) !== wantTitle) {
+continue;
+}
+if (mainArtistNorm(candidate.artist) !== wantArtist) {
+continue;
+}
+if (diff < bestDiff) {
+bestDiff = diff;
+best = candidate;
+}
+}
+if (best) {
+console.log(
+`[Playback] 本地兜底：${track.title} → ${best.title}（${best.artist}，时长差 ${(bestDiff / 1000).toFixed(1)}s）`
+);
+}
+return best;
 }

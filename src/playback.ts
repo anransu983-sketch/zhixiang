@@ -51,7 +51,7 @@
 
 import { Capacitor } from '@capacitor/core';
 import { getSource } from './sources/index';
-import { findBilibiliFallback } from './sources/fallback';
+import { findBilibiliFallback, findLocalFallback } from './sources/fallback';
 import { NETEASE_MINT_UA } from './sources/netease';
 import { BILIBILI_MINT_UA } from './sources/bilibili';
 import { eapiRequest } from './sources/netease-eapi';
@@ -71,6 +71,7 @@ import {
     measureRms
 } from './automix';
 import { isBiliSegmentTrack, resolveBiliSegmentMatch } from './bili-segment-match';
+import { getLongResumeMs } from './long-resume';
 import type { Track } from './types';
 
 // ---- 淡入淡出常量（集中一处，见文件头注释） ----
@@ -981,11 +982,27 @@ async function startTrack(track: Track, crossfade: boolean): Promise<'ok' | 'sta
     //（初值 0，见下方 currentTime 重置），由 timeupdate 按段换算回写。
     // 流不支持跳转时静默从头播，不抛错打断起播。
     const segment = segmentRangeOf(track);
+    let resumeSec = 0;
     if (segment) {
         try {
             audio.currentTime = segment.startSec;
         } catch {
             // 保持原位。
+        }
+    } else {
+        // 长音频单曲进度记忆（借鉴 NeriPlayer）：有记忆位置就续上；
+        // 分段曲走上面的显式段首，不进这里。
+        const resumeMs = getLongResumeMs(track);
+        if (resumeMs !== null) {
+            try {
+                audio.currentTime = resumeMs / 1000;
+                resumeSec = resumeMs / 1000;
+                console.log(
+                    `[Playback] 长音频续播：${track.title} 从 ${Math.floor(resumeSec)}s 继续`
+                );
+            } catch {
+                // 流不支持跳转时从头播。
+            }
         }
     }
     const previousTrack = currentTrack;
@@ -997,7 +1014,7 @@ async function startTrack(track: Track, crossfade: boolean): Promise<'ok' | 'sta
     segmentAdvanceFiredFor = null;
     playing = true;
     lastError = null;
-    currentTime = 0;
+    currentTime = resumeSec;
     currentDuration = track.durationMs ?? 0;
     emitTrackChange();
     // 保活：起前台服务失败不中断播放（原生侧降级，见文件头）。
@@ -1081,8 +1098,23 @@ async function tryPlayFrom(
             // 0.1.105：网易云曲目起不来时，先试 B 站兜底（歌名歌手时长评分）；
             // 兜底成功则把队列里这首换成 B 站版继续播，不计入失败跳歌。
             if (track.source === 'netease' && intent === playIntent) {
-                const fallback = await findBilibiliFallback(track);
-                if (fallback && intent === playIntent) {
+                // 借鉴 NeriPlayer：先查本地同名文件（严格匹配），
+                // 本地没有再走 B 站评分兜底。
+                const fallbacks: Track[] = [];
+                const localFallback = await findLocalFallback(track);
+                if (localFallback) {
+                    fallbacks.push(localFallback);
+                }
+                if (intent === playIntent) {
+                    const biliFallback = await findBilibiliFallback(track);
+                    if (biliFallback) {
+                        fallbacks.push(biliFallback);
+                    }
+                }
+                for (const fallback of fallbacks) {
+                    if (intent !== playIntent) {
+                        return { played: false, failed, stale: true };
+                    }
                     try {
                         const fbResult = await startTrack(fallback, crossfade);
                         if (fbResult === 'stale') {
@@ -1093,7 +1125,7 @@ async function tryPlayFrom(
                         recordHistory(i);
                         return { played: true, failed, stale: false };
                     } catch {
-                        // 兜底也失败：按原路计失败、继续跳歌。
+                        // 这一路兜底也失败：继续试下一路，都不行按原路计失败。
                     }
                 }
             }

@@ -223,49 +223,57 @@ class NeteaseSource implements AudioSource {
         // 0.1.78 Claude 评审后补强：记两级码、fee、level/br/size/type、
         // time 对 dt、expi、试听，v1 只给 10 秒（探针实测 v1 约 3 秒内），
         // 超时即回落老接口，不等 eapi 自身 25 秒。
-        try {
-            const v1Race = await Promise.race([
-                eapiRequest('/api/song/enhance/player/url/v1', {
-                    ids: `[${songId}]`,
-                    level: 'exhigh',
-                    encodeType: 'flac'
-                }),
-                new Promise<never>((_, reject) => {
-                    window.setTimeout(() => reject(new Error('v1 取链 10 秒超时')), 10000);
-                })
-            ]);
-            const parsedV1 = JSON.parse(v1Race.body) as {
-                code?: unknown;
-                data?: NeteaseRawStream[];
-            };
-            const v1First = Array.isArray(parsedV1.data) ? parsedV1.data[0] : undefined;
-            const v1Url = typeof v1First?.url === 'string' && v1First.url ? v1First.url : null;
-            const v1DataCode = v1First?.code;
-            const v1Trial = !!v1First?.freeTrialInfo ||
-                (typeof v1First?.time === 'number' && typeof track.durationMs === 'number' &&
-                    track.durationMs > 0 && v1First.time < 0.8 * track.durationMs);
-            const v1Blocked = v1DataCode === 404 || v1DataCode === 403;
-            if (v1Url && !v1Trial && !v1Blocked) {
-                const httpsUrl = v1Url.replace(/^http:/, 'https:');
-                try {
-                    const parsedUrl = new URL(httpsUrl);
-                    const paramNames = [...new URLSearchParams(parsedUrl.search).keys()].join(',');
-                    console.log(
-                        `[Netease] 取链路径=v1 顶码=${parsedV1.code} 数据码=${v1DataCode} fee=${v1First?.fee} level=${v1First?.level} br=${v1First?.br} size=${v1First?.size} type=${v1First?.type} time=${v1First?.time} dt=${track.durationMs} expi=${v1First?.expi} 试听=无 host=${parsedUrl.hostname} 协议=${parsedUrl.protocol} 长度=${httpsUrl.length} 参数=[${paramNames}]`
-                    );
-                } catch {
-                    console.log(`[Netease] 取链路径=v1 顶码=${parsedV1.code} 数据码=${v1DataCode} 地址解析失败`);
+        // 借鉴 NeriPlayer 网易云兜底：先降音质再换源。v1 依次试
+        // exhigh→higher→standard，任一级拿到非试听完整地址即用；
+        // 三级都不行再回落老接口。exhigh 成功时与原路径完全一致。
+        const levels = ['exhigh', 'higher', 'standard'];
+        for (const level of levels) {
+            try {
+                const v1Race = await Promise.race([
+                    eapiRequest('/api/song/enhance/player/url/v1', {
+                        ids: `[${songId}]`,
+                        level,
+                        encodeType: 'flac'
+                    }),
+                    new Promise<never>((_, reject) => {
+                        window.setTimeout(() => reject(new Error('v1 取链 10 秒超时')), 10000);
+                    })
+                ]);
+                const parsedV1 = JSON.parse(v1Race.body) as {
+                    code?: unknown;
+                    data?: NeteaseRawStream[];
+                };
+                const v1First = Array.isArray(parsedV1.data) ? parsedV1.data[0] : undefined;
+                const v1Url = typeof v1First?.url === 'string' && v1First.url ? v1First.url : null;
+                const v1DataCode = v1First?.code;
+                const v1Trial = !!v1First?.freeTrialInfo ||
+                    (typeof v1First?.time === 'number' && typeof track.durationMs === 'number' &&
+                        track.durationMs > 0 && v1First.time < 0.8 * track.durationMs);
+                const v1Blocked = v1DataCode === 404 || v1DataCode === 403;
+                if (v1Url && !v1Trial && !v1Blocked) {
+                    const httpsUrl = v1Url.replace(/^http:/, 'https:');
+                    console.log(`[Netease] 降音质 level=${level} 结果=可用`);
+                    try {
+                        const parsedUrl = new URL(httpsUrl);
+                        const paramNames = [...new URLSearchParams(parsedUrl.search).keys()].join(',');
+                        console.log(
+                            `[Netease] 取链路径=v1 顶码=${parsedV1.code} 数据码=${v1DataCode} fee=${v1First?.fee} level=${v1First?.level} br=${v1First?.br} size=${v1First?.size} type=${v1First?.type} time=${v1First?.time} dt=${track.durationMs} expi=${v1First?.expi} 试听=无 host=${parsedUrl.hostname} 协议=${parsedUrl.protocol} 长度=${httpsUrl.length} 参数=[${paramNames}]`
+                        );
+                    } catch {
+                        console.log(`[Netease] 取链路径=v1 顶码=${parsedV1.code} 数据码=${v1DataCode} 地址解析失败`);
+                    }
+                    return httpsUrl;
                 }
-                return httpsUrl;
+                console.log(
+                    `[Netease] 降音质 level=${level} 结果=不用 顶码=${parsedV1.code} 数据码=${v1DataCode} fee=${v1First?.fee} br=${v1First?.br} time=${v1First?.time} dt=${track.durationMs} 试听=${v1Trial ? '有' : '无'} 有地址=${v1Url ? '是' : '否'}`
+                );
+            } catch (error) {
+                console.log(
+                    `[Netease] 降音质 level=${level} 结果=失败：${error instanceof Error ? `${error.name} ${error.message}` : String(error)}`
+                );
             }
-            console.log(
-                `[Netease] 取链v1不用回落老接口，顶码=${parsedV1.code} 数据码=${v1DataCode} fee=${v1First?.fee} level=${v1First?.level} br=${v1First?.br} size=${v1First?.size} type=${v1First?.type} time=${v1First?.time} dt=${track.durationMs} expi=${v1First?.expi} 试听=${v1Trial ? '有' : '无'} 有地址=${v1Url ? '是' : '否'}`
-            );
-        } catch (error) {
-            console.log(
-                `[Netease] 取链v1失败回落老接口：${error instanceof Error ? `${error.name} ${error.message}` : String(error)}`
-            );
         }
+        console.log('[Netease] 降音质三级均不行，回落老接口');
         const params = new URLSearchParams({
             ids: `[${songId}]`,
             br: String(STREAM_BITRATE)
