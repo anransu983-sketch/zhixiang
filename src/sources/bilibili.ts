@@ -203,16 +203,27 @@ function parseBiliTrackId(trackId: string): { bvid: string; page: number } {
 // 时回 null，调用方回落联网补源，不硬编。字幕 JSON 本身未实测到真轨，
 // 字段按 B 站公开字幕格式（body[].from/to/content）解析、异常项跳过，
 // 真机以带字幕轨的视频验为准。
-export async function getBilibiliSubtitleLines(track: Track): Promise<LyricLine[] | null> {
+export interface BiliSubtitleTrack {
+    lan: string;
+    label: string;
+    isAuto: boolean;
+    url: string;
+}
+
+// 列 CC 字幕轨（借鉴 NeriPlayer CC 字幕面板）：语言、语言名、
+// 是否自动生成、字幕地址；无轨回空数组。
+export async function listBilibiliSubtitleTracks(
+    track: Track
+): Promise<BiliSubtitleTrack[]> {
     const { bvid, page } = parseBiliTrackId(track.id);
     if (!bvid) {
-        return null;
+        return [];
     }
     let cid: number;
     try {
         cid = await getCid(bvid, page);
     } catch {
-        return null;
+        return [];
     }
     let parsed: unknown;
     try {
@@ -220,29 +231,50 @@ export async function getBilibiliSubtitleLines(track: Track): Promise<LyricLine[
         const { qs, wRid } = signQuery({ bvid, cid: String(cid), wts }, await getMixinKey());
         const res = await httpGet(`${PLAYER_V2_URL}?${qs}&w_rid=${wRid}`, BILI_HEADERS);
         if (res.status !== 200) {
-            return null;
+            return [];
         }
         parsed = JSON.parse(res.body) as unknown;
     } catch {
-        return null;
+        return [];
     }
     const subs = (parsed as { data?: { subtitle?: { subtitles?: unknown } } })
         .data?.subtitle?.subtitles;
-    if (!Array.isArray(subs) || subs.length === 0) {
+    if (!Array.isArray(subs)) {
+        return [];
+    }
+    const tracks: BiliSubtitleTrack[] = [];
+    for (const raw of subs as Array<Record<string, unknown>>) {
+        const url = toHttps(raw.subtitle_url);
+        if (!url) {
+            continue;
+        }
+        const lan = typeof raw.lan === 'string' ? raw.lan : '';
+        const label =
+            typeof raw.lan_doc === 'string' && raw.lan_doc ? raw.lan_doc : lan || '字幕';
+        const isAuto =
+            /^ai[-_]/i.test(lan) || lan.toLowerCase() === 'ai' || label.includes('自动');
+        tracks.push({ lan, label, isAuto, url });
+    }
+    return tracks;
+}
+
+// pickedUrl 给了就用选定轨；没给按原口径自动选中文轨、否则第一条。
+export async function getBilibiliSubtitleLines(
+    track: Track,
+    pickedUrl?: string | null
+): Promise<LyricLine[] | null> {
+    const tracks = await listBilibiliSubtitleTracks(track);
+    if (tracks.length === 0) {
         return null;
     }
-    const tracks = subs as Array<Record<string, unknown>>;
     const picked =
-        tracks.find(
-            (item) => typeof item.lan === 'string' && item.lan.toLowerCase().includes('zh')
-        ) ?? tracks[0];
+        (pickedUrl ? tracks.find((item) => item.url === pickedUrl) : undefined) ??
+        tracks.find((item) => item.lan.toLowerCase().includes('zh')) ??
+        tracks[0];
     if (!picked) {
         return null;
     }
-    const url = toHttps(picked.subtitle_url);
-    if (!url) {
-        return null;
-    }
+    const url = picked.url;
     let body: unknown;
     try {
         const res = await httpGet(url, BILI_HEADERS);

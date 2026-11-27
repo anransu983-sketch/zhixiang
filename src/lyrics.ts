@@ -47,6 +47,7 @@ import { withSessionCookie } from './sources/netease-session';
 import { neteaseSource } from './sources/netease';
 import { getLocalEmbeddedLyrics } from './sources/local';
 import { getBilibiliSubtitleLines } from './sources/bilibili';
+import { ccPickFor, loadCcPrefs } from './cc-lyrics';
 import { getYtmCaptions } from './sources/ytm';
 import type { Track } from './types';
 
@@ -786,9 +787,20 @@ async function fetchBilibiliLyrics(track: Track): Promise<LyricResult> {
         }
     }
     // 0.1.105：先试 B 站 CC 字幕轨（有轨才用，实测音乐视频多无轨）。
-    const cc = await getBilibiliSubtitleLines(track);
-    if (cc) {
-        return { lines: cc, note: null };
+    // CC 面板（借鉴 NeriPlayer）：可关、可选轨、独立偏移只作用于 CC。
+    const ccPrefs = loadCcPrefs();
+    if (ccPrefs.enabled) {
+        const cc = await getBilibiliSubtitleLines(track, ccPickFor(track));
+        if (cc) {
+            const shifted =
+                ccPrefs.offsetMs === 0
+                    ? cc
+                    : cc.map((line) => ({
+                          ...line,
+                          timeMs: Math.max(0, line.timeMs + ccPrefs.offsetMs)
+                      }));
+            return { lines: shifted, note: null };
+        }
     }
     // 无轨时回落联网补源，但不用视频标题＋UP 主原值查，改拆出来的候选逐个试。
     for (const candidate of parseBiliTitleCandidates(track.title, track.artist)) {

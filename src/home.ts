@@ -229,6 +229,7 @@ export function renderHome(): HTMLElement {
     // 按住 600ms 且不滑动即开架子，随后的 click 要吞掉，免得又打开播放页。
     let longPressTimer: number | null = null;
     let longPressFired = false;
+    let miniSwipeFired = false;
     info.addEventListener('pointerdown', (event) => {
         longPressFired = false;
         const startX = event.clientX;
@@ -259,6 +260,10 @@ export function renderHome(): HTMLElement {
     info.addEventListener('click', () => {
         if (longPressFired) {
             longPressFired = false;
+            return;
+        }
+        if (miniSwipeFired) {
+            miniSwipeFired = false;
             return;
         }
         openPlayerPage();
@@ -299,6 +304,40 @@ export function renderHome(): HTMLElement {
     });
     bar.appendChild(nextButton);
     section.appendChild(bar);
+    // 迷你条横滑切歌（借鉴 NeriPlayer）：左滑下一首、右滑上一首，
+    // 阈值 50px 且横向占优才触发；滑动开始即取消长按计时（长按的
+    // pointermove 超过 12px 已取消），滑完吞掉随后的 click。
+    let swipeStartX = 0;
+    let swipeStartY = 0;
+    let swipeTracking = false;
+    bar.addEventListener('pointerdown', (event) => {
+        if ((event.target as HTMLElement).closest('.np-btn')) {
+            swipeTracking = false;
+            return;
+        }
+        swipeTracking = true;
+        swipeStartX = event.clientX;
+        swipeStartY = event.clientY;
+    });
+    bar.addEventListener('pointerup', (event) => {
+        if (!swipeTracking) {
+            return;
+        }
+        swipeTracking = false;
+        const dx = event.clientX - swipeStartX;
+        const dy = event.clientY - swipeStartY;
+        if (Math.abs(dx) >= 50 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+            miniSwipeFired = true;
+            if (dx < 0) {
+                void next();
+            } else {
+                void previous();
+            }
+        }
+    });
+    bar.addEventListener('pointercancel', () => {
+        swipeTracking = false;
+    });
 
     const updateProgress = (state: PlaybackState): void => {
         // duration 是毫秒（audio.duration 秒 ×1000 或 durationMs），currentTime 是秒。
@@ -6378,6 +6417,7 @@ function renderSourceSection(
     const tracksHidden = (): boolean => isLocalPage && localStorage.getItem(tracksHiddenKey) !== '0';
     let toggleButton: HTMLButtonElement | undefined;
     let rescanButton: HTMLButtonElement | undefined;
+    let artistButton: HTMLButtonElement | undefined;
     if (isLocalPage) {
         const toolbar = document.createElement('div');
         toolbar.className = 'track-list-toolbar';
@@ -6412,6 +6452,13 @@ function renderSourceSection(
             }
         });
         toolbar.appendChild(toggleButton);
+        // 本地歌手分类（借鉴 NeriPlayer 本地歌手分类）：按主歌手聚合，
+        // 点歌手进其曲目页可播放全部。按钮逻辑挂在 refresh 定义后。
+        artistButton = document.createElement('button');
+        artistButton.type = 'button';
+        artistButton.className = 'track-list-toggle';
+        artistButton.textContent = '歌手';
+        toolbar.appendChild(artistButton);
         block.appendChild(toolbar);
     }
 
@@ -6436,6 +6483,11 @@ function renderSourceSection(
     const trackList = document.createElement('ul');
     trackList.className = 'track-list';
     block.appendChild(trackList);
+
+    const artistBox = document.createElement('div');
+    artistBox.className = 'artist-box';
+    artistBox.hidden = true;
+    block.appendChild(artistBox);
 
     // 3. 搜索加载更多（只有实现 searchMore 的源才有按钮，目前仅网易云）：
     // 首屏与翻页走同一接口，offset＝已加载条数；新搜词时 refresh 重置状态。
@@ -6615,6 +6667,10 @@ function renderSourceSection(
         hasMore = pageHasMore;
         updateMoreButton();
         renderTracks(trackList, tracks, status);
+        if (isLocalPage && artistMode !== 'off' && query.trim() === '') {
+            renderArtistView();
+            return;
+        }
         // 本地默认藏歌：无查询且开关开时列表与空态提示都不出；有查询时结果照常。
         const hideLocalList = isLocalPage && query.trim() === '' && tracksHidden();
         trackList.hidden = hideLocalList;
@@ -6645,7 +6701,116 @@ function renderSourceSection(
         }
     };
 
+    // 本地歌手分类逻辑：主歌手＝去 feat 尾巴后按合作分隔符取第一位。
+    let artistMode: 'off' | 'list' | 'detail' = 'off';
+    let artistDetailName = '';
+    const mainArtistOf = (artist: string): string => {
+        const stripped = artist
+            .replace(/\s*[（(][^）)]*(?:feat\.?|ft\.?|featuring)[^）)]*[）)]/gi, '')
+            .replace(/\s+(?:feat\.?|ft\.?|featuring)\s+.*$/i, '');
+        const first = stripped.split(/[/、,，&;；]|\s+(?:with|和|与)\s+/i)[0]?.trim() ?? '';
+        return first || '未知歌手';
+    };
+    const artistGroups = (): Map<string, Track[]> => {
+        const groups = new Map<string, Track[]>();
+        for (const track of loadedTracks) {
+            const name = mainArtistOf(track.artist);
+            const list = groups.get(name) ?? [];
+            list.push(track);
+            groups.set(name, list);
+        }
+        return groups;
+    };
+    const renderArtistView = (): void => {
+        if (!isLocalPage || artistMode === 'off') {
+            artistBox.hidden = true;
+            return;
+        }
+        artistBox.hidden = false;
+        notice.hidden = true;
+        emptyIcon.hidden = true;
+        emptyHint.hidden = true;
+        artistBox.replaceChildren();
+        const groups = artistGroups();
+        if (artistMode === 'list') {
+            trackList.hidden = true;
+            const names = [...groups.keys()].sort((a, b) => a.localeCompare(b, 'zh'));
+            if (names.length === 0) {
+                const empty = document.createElement('p');
+                empty.className = 'source-notice';
+                empty.textContent = '本地还没有歌曲。';
+                artistBox.appendChild(empty);
+                return;
+            }
+            for (const name of names) {
+                const row = document.createElement('button');
+                row.type = 'button';
+                row.className = 'artist-row';
+                const nameEl = document.createElement('span');
+                nameEl.textContent = name;
+                const countEl = document.createElement('span');
+                countEl.className = 'artist-count';
+                countEl.textContent = `${groups.get(name)!.length} 首`;
+                row.append(nameEl, countEl);
+                row.addEventListener('click', () => {
+                    artistMode = 'detail';
+                    artistDetailName = name;
+                    renderArtistView();
+                });
+                artistBox.appendChild(row);
+            }
+            return;
+        }
+        const tracks = groups.get(artistDetailName) ?? [];
+        const head = document.createElement('div');
+        head.className = 'artist-detail-head';
+        const back = document.createElement('button');
+        back.type = 'button';
+        back.className = 'track-list-toggle';
+        back.textContent = '‹ 歌手';
+        back.addEventListener('click', () => {
+            artistMode = 'list';
+            renderArtistView();
+        });
+        const nameEl = document.createElement('span');
+        nameEl.className = 'artist-detail-name';
+        nameEl.textContent = `${artistDetailName} · ${tracks.length} 首`;
+        const playAll = document.createElement('button');
+        playAll.type = 'button';
+        playAll.className = 'track-list-toggle';
+        playAll.textContent = '▶ 播放全部';
+        playAll.addEventListener('click', () => {
+            if (tracks.length > 0) {
+                void playQueue(tracks, 0);
+            }
+        });
+        head.append(back, nameEl, playAll);
+        artistBox.appendChild(head);
+        trackList.hidden = false;
+        renderTracks(trackList, tracks, status);
+    };
+    if (isLocalPage && artistButton) {
+        const button = artistButton;
+        button.addEventListener('click', () => {
+            artistMode = artistMode === 'off' ? 'list' : 'off';
+            button.textContent = artistMode === 'off' ? '歌手' : '歌曲';
+            if (artistMode === 'off') {
+                artistBox.hidden = true;
+                void refresh(search.value);
+            } else {
+                renderArtistView();
+            }
+        });
+    }
+
     search.addEventListener('input', () => {
+        if (search.value.trim()) {
+            artistMode = 'off';
+            artistBox.hidden = true;
+            if (artistButton) {
+                artistButton.textContent = '歌手';
+            }
+        }
         onQuery(search.value);
         void refresh(search.value);
         renderHistory();

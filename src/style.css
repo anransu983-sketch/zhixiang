@@ -4863,3 +4863,15 @@ body.perf-mode * {
     gap: 8px;
     flex-wrap: wrap;
 }
+
+/* 本地歌手分类（借鉴 NeriPlayer） */
+.artist-box { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.artist-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.04); color: inherit; font-size: 15px; text-align: left; }
+.artist-count { opacity: 0.6; font-size: 13px; }
+.artist-detail-head { display: flex; align-items: center; gap: 10px; }
+.artist-detail-name { flex: 1; font-weight: 600; }
+
+/* CC 字幕面板（借鉴 NeriPlayer） */
+.cc-track-list { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
+.cc-track-option { padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); color: inherit; text-align: left; font-size: 14px; }
+.cc-offset-value { align-self: center; min-width: 76px; text-align: center; font-size: 14px; }

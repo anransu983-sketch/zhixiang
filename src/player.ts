@@ -49,6 +49,8 @@ import { loadVisualToggles, saveVisualToggles, VISUAL_PRESETS, VisualStage } fro
 import { LyricDrops } from './lyric-drops';
 import type { VisualToggles } from './visuals';
 import { deleteManualLyrics, getManualLyrics, saveManualLyrics } from './manual-lyrics';
+import { listBilibiliSubtitleTracks } from './sources/bilibili';
+import { CC_OFFSET_STEP_MS, ccPickFor, loadCcPrefs, setCcEnabled, setCcOffsetMs, setCcPick } from './cc-lyrics';
 import {
     computeBlurRadiiByIntensity,
     loadLyricBlurEnabled,
@@ -755,6 +757,12 @@ function buildPlayerPage(): HTMLElement {
     coverButton.type = 'button';
     coverButton.className = 'player-text-chip';
     coverButton.textContent = '换封面';
+    // CC 字幕入口（借鉴 NeriPlayer CC 字幕面板）：只对 B 站曲显示。
+    const ccButton = document.createElement('button');
+    ccButton.type = 'button';
+    ccButton.className = 'player-text-chip';
+    ccButton.textContent = 'CC字幕';
+    ccButton.hidden = true;
     const flashButton = (button: HTMLButtonElement, text: string): void => {
         const original = button.textContent;
         button.textContent = text;
@@ -777,6 +785,120 @@ function buildPlayerPage(): HTMLElement {
             renderLyrics(result.note);
         });
     };
+    // CC 字幕面板（借鉴 NeriPlayer）：关字幕歌词／自动选轨／选具体
+    // 轨道／CC 独立偏移，改完立即按新口径重拉歌词。
+    const ccPanel = document.createElement('div');
+    ccPanel.className = 'player-sheet';
+    ccPanel.hidden = true;
+    const ccCard = document.createElement('div');
+    ccCard.className = 'player-sheet-card';
+    const ccTitle = document.createElement('div');
+    ccTitle.className = 'player-sheet-title';
+    ccTitle.textContent = 'CC字幕';
+    const ccList = document.createElement('div');
+    ccList.className = 'cc-track-list';
+    const ccOffsetRow = document.createElement('div');
+    ccOffsetRow.className = 'player-sheet-row';
+    const ccOffsetMinus = document.createElement('button');
+    ccOffsetMinus.type = 'button';
+    ccOffsetMinus.className = 'login-btn';
+    ccOffsetMinus.textContent = '偏移 −0.5s';
+    const ccOffsetValue = document.createElement('span');
+    ccOffsetValue.className = 'cc-offset-value';
+    const ccOffsetPlus = document.createElement('button');
+    ccOffsetPlus.type = 'button';
+    ccOffsetPlus.className = 'login-btn';
+    ccOffsetPlus.textContent = '偏移 +0.5s';
+    ccOffsetRow.append(ccOffsetMinus, ccOffsetValue, ccOffsetPlus);
+    const ccCloseRow = document.createElement('div');
+    ccCloseRow.className = 'player-sheet-row';
+    const ccClose = document.createElement('button');
+    ccClose.type = 'button';
+    ccClose.className = 'login-btn';
+    ccClose.textContent = '关闭';
+    ccClose.addEventListener('click', () => {
+        ccPanel.hidden = true;
+    });
+    ccCloseRow.appendChild(ccClose);
+    ccCard.append(ccTitle, ccList, ccOffsetRow, ccCloseRow);
+    ccPanel.appendChild(ccCard);
+    ccPanel.addEventListener('click', (event) => {
+        if (event.target === ccPanel) {
+            ccPanel.hidden = true;
+        }
+    });
+    const renderCcOffset = (): void => {
+        const offsetMs = loadCcPrefs().offsetMs;
+        ccOffsetValue.textContent =
+            offsetMs === 0 ? '偏移 0s' : `偏移 ${offsetMs > 0 ? '+' : ''}${(offsetMs / 1000).toFixed(1)}s`;
+    };
+    ccOffsetMinus.addEventListener('click', () => {
+        setCcOffsetMs(loadCcPrefs().offsetMs - CC_OFFSET_STEP_MS);
+        renderCcOffset();
+        refreshLyricsNow();
+    });
+    ccOffsetPlus.addEventListener('click', () => {
+        setCcOffsetMs(loadCcPrefs().offsetMs + CC_OFFSET_STEP_MS);
+        renderCcOffset();
+        refreshLyricsNow();
+    });
+    ccButton.addEventListener('click', () => {
+        const track = getCurrentState().track;
+        if (!track || track.source !== 'bilibili') {
+            return;
+        }
+        ccPanel.hidden = false;
+        renderCcOffset();
+        ccList.replaceChildren();
+        const loading = document.createElement('p');
+        loading.className = 'player-note';
+        loading.textContent = '正在读取字幕轨…';
+        ccList.appendChild(loading);
+        void (async () => {
+            const tracks = await listBilibiliSubtitleTracks(track);
+            if (getCurrentState().track?.id !== track.id) {
+                return;
+            }
+            ccList.replaceChildren();
+            const prefs = loadCcPrefs();
+            const pick = ccPickFor(track);
+            const addOption = (label: string, active: boolean, apply: () => void): void => {
+                const option = document.createElement('button');
+                option.type = 'button';
+                option.className = 'cc-track-option';
+                option.textContent = `${active ? '✓ ' : ''}${label}`;
+                option.addEventListener('click', () => {
+                    apply();
+                    refreshLyricsNow();
+                    ccPanel.hidden = true;
+                });
+                ccList.appendChild(option);
+            };
+            addOption('关闭字幕歌词', !prefs.enabled, () => {
+                setCcEnabled(false);
+            });
+            addOption('自动（默认中文轨）', prefs.enabled && !pick, () => {
+                setCcEnabled(true);
+                setCcPick(track, null);
+            });
+            if (tracks.length === 0) {
+                const empty = document.createElement('p');
+                empty.className = 'player-note';
+                empty.textContent = '这个视频没有 CC 字幕轨。';
+                ccList.appendChild(empty);
+            }
+            for (const item of tracks) {
+                addOption(
+                    `${item.label}${item.isAuto ? '（自动生成）' : ''}`,
+                    prefs.enabled && pick === item.url,
+                    () => {
+                        setCcEnabled(true);
+                        setCcPick(track, item.url);
+                    }
+                );
+            }
+        })();
+    });
     const sheet = document.createElement('div');
     sheet.className = 'player-sheet';
     sheet.hidden = true;
@@ -846,6 +968,7 @@ function buildPlayerPage(): HTMLElement {
     sheetCard.append(sheetTitle, sheetSong, sheetArea, sheetHint, sheetStatus, sheetRow, sheetFileInput);
     sheet.appendChild(sheetCard);
     content.appendChild(sheet);
+    content.appendChild(ccPanel);
     pasteButton.addEventListener('click', () => {
         const track = getCurrentState().track;
         if (!track) {
@@ -1045,7 +1168,7 @@ function buildPlayerPage(): HTMLElement {
         }
         syncMomentDotsPage?.(getCurrentState());
     });
-    bottomRow2.append(pasteButton, coverButton, selectButton, momentButton, momentsListButton, qualityBadge);
+    bottomRow2.append(pasteButton, coverButton, ccButton, selectButton, momentButton, momentsListButton, qualityBadge);
     content.appendChild(bottomRow);
     content.appendChild(bottomRow2);
     content.appendChild(sleepPicker);
@@ -1917,12 +2040,14 @@ function buildPlayerPage(): HTMLElement {
             applyCover(state.track);
             updateHeart(state.track);
             updateQualityBadge(state.track);
+            ccButton.hidden = state.track.source !== 'bilibili';
         } else {
             title.textContent = '还没播放任何歌曲';
             artist.textContent = '';
             applyCover(null);
             updateHeart(null);
             updateQualityBadge(null);
+            ccButton.hidden = true;
         }
         if (state.playing) {
             // 暂停不用 ⏸ 字符：三星会把它画成黄底 emoji，U+FE0E 也压不住，
